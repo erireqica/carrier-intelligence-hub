@@ -1,26 +1,31 @@
-# Foundation Architecture
-
-The current application is a small monorepo with one browser client and one API service:
+# Stage 2 Architecture
 
 ```text
-React + TypeScript
+React + TanStack Query
         |
-        | HTTP/REST
+        | credentialed JSON API + X-CSRF-Token on mutations
         v
-FastAPI + Pydantic
+FastAPI routes
         |
-        | SQLAlchemy sessions
+        | authentication/RBAC dependencies
+        | agency-scoped domain services
         v
-PostgreSQL
+SQLAlchemy 2 + Alembic
+        |
+        v
+PostgreSQL 17
 ```
 
-The readiness page calls the typed `GET /api/v1/health` endpoint through TanStack Query. FastAPI validates the response with a Pydantic schema. The database module prepares a synchronous SQLAlchemy engine and request-scoped session pattern, while Alembic points at the same settings and model metadata. No domain tables exist yet, so there is intentionally no placeholder migration.
+The browser starts with `GET /api/v1/auth/me`. A valid HttpOnly session cookie produces the current user, agency, role, and a session-bound CSRF token; otherwise protected routes redirect to login. TanStack Query owns server state and the typed API client centralizes credentials, CSRF headers, errors, and JSON parsing.
 
-## Why this shape fits the product
+FastAPI handlers remain thin. Reusable dependencies authenticate sessions and require Manager access. Services enforce agency ownership, Agent assignments, state transitions, and audit creation. Pydantic schemas define request and response contracts. SQLAlchemy models preserve the separation among long-lived cases, individual communications, tasks, review decisions, source evidence, and audit events.
 
-- **React + TypeScript** supports a responsive, data-heavy operations interface while catching client-side contract mistakes early.
-- **FastAPI** provides typed REST endpoints, validation, dependency injection, and generated API documentation with little framework ceremony.
-- **PostgreSQL** is a durable relational system of record suited to cases, tasks, users, audit events, and uniqueness constraints needed for idempotent email processing.
-- **A monorepo** keeps the frontend, backend, documentation, and shared development workflow together while preserving clear service boundaries.
+The current data path is:
 
-Configuration comes from environment variables. Browser code receives only its public API base URL; database credentials remain backend-only. Future features should extend these boundaries rather than bypass them.
+```text
+explicit development seed -> PostgreSQL -> scoped FastAPI endpoint -> TanStack Query -> React page
+```
+
+Future Gmail ingestion should enter at the left side of the same domain model: a connection supplies idempotent carrier messages, processing associates them with carriers/cases, and extracted tasks/evidence/review items become visible through the existing API. OAuth secrets and live processing are deliberately absent in Stage 2.
+
+Security boundaries are server-side. The raw session token exists only in an HttpOnly cookie, passwords use Argon2id, unsafe requests require CSRF validation, CORS allows credentials only from the configured frontend origin, and every Manager API independently checks the role. `backend/.env` contains local secrets and is ignored by Git.

@@ -10,14 +10,14 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title=settings.app_name,
         version="0.1.0",
-        description="API foundation for Carrier Intelligence Hub.",
+        description="Authenticated operations API for Carrier Intelligence Hub.",
     )
     application.add_middleware(
         CORSMiddleware,
         allow_origins=[str(settings.frontend_origin).rstrip("/")],
-        allow_credentials=False,
-        allow_methods=["GET"],
-        allow_headers=["Accept", "Content-Type"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Accept", "Content-Type", "X-CSRF-Token"],
     )
     application.include_router(api_router, prefix=settings.api_v1_prefix)
     return application

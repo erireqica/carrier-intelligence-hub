@@ -1,0 +1,74 @@
+from enum import StrEnum
+
+
+class UserRole(StrEnum):
+    AGENT = "AGENT"
+    MANAGER = "MANAGER"
+
+
+class GmailConnectionStatus(StrEnum):
+    CONNECTED = "CONNECTED"
+    NEEDS_REAUTH = "NEEDS_REAUTH"
+    ERROR = "ERROR"
+    DISCONNECTED = "DISCONNECTED"
+
+
+class PolicyStatus(StrEnum):
+    ISSUED = "ISSUED"
+    PENDING = "PENDING"
+    LAPSED = "LAPSED"
+    DECLINED = "DECLINED"
+    ACTIVE = "ACTIVE"
+    GRACE_PERIOD = "GRACE_PERIOD"
+    UNKNOWN = "UNKNOWN"
+
+
+class MessageClassification(StrEnum):
+    POLICY_ISSUED = "POLICY_ISSUED"
+    PENDING_REQUIREMENTS = "PENDING_REQUIREMENTS"
+    LAPSE_NOTICE = "LAPSE_NOTICE"
+    COMMISSION_UPDATE = "COMMISSION_UPDATE"
+    OTHER = "OTHER"
+
+
+class Priority(StrEnum):
+    LOW = "LOW"
+    NORMAL = "NORMAL"
+    HIGH = "HIGH"
+    URGENT = "URGENT"
+
+
+class ProcessingStatus(StrEnum):
+    RECEIVED = "RECEIVED"
+    PROCESSING = "PROCESSING"
+    PROCESSED = "PROCESSED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+    FAILED = "FAILED"
+    IGNORED = "IGNORED"
+
+
+class AttachmentStatus(StrEnum):
+    PENDING = "PENDING"
+    EXTRACTED = "EXTRACTED"
+    FAILED = "FAILED"
+    UNSUPPORTED = "UNSUPPORTED"
+
+
+class TaskStatus(StrEnum):
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    DISMISSED = "DISMISSED"
+
+
+class ReviewStatus(StrEnum):
+    OPEN = "OPEN"
+    IN_REVIEW = "IN_REVIEW"
+    RESOLVED = "RESOLVED"
+    DISMISSED = "DISMISSED"
+
+
+class AuditSeverity(StrEnum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"

@@ -1,0 +1,235 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useParams } from 'react-router-dom'
+
+import {
+  ErrorState,
+  LoadingState,
+  PageHeader,
+  PriorityBadge,
+  StatusBadge,
+} from '../components/ui'
+import { formatDate } from '../lib/format'
+import { getCase, updateTask } from '../lib/api'
+import type { TaskStatus } from '../lib/types'
+
+export function CaseDetailPage() {
+  const { caseId = '' } = useParams()
+  const queryClient = useQueryClient()
+  const detail = useQuery({
+    queryKey: ['case', caseId],
+    queryFn: () => getCase(caseId),
+    enabled: Boolean(caseId),
+  })
+  const taskMutation = useMutation({
+    mutationFn: ({ id, status }: { id: number; status: TaskStatus }) =>
+      updateTask(id, status),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['case', caseId] })
+      await queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+    },
+  })
+  if (detail.isPending) return <LoadingState label="Loading case history…" />
+  if (detail.isError)
+    return (
+      <ErrorState
+        message={detail.error.message}
+        retry={() => detail.refetch()}
+      />
+    )
+  const item = detail.data
+  return (
+    <div className="space-y-6">
+      <Link className="text-sm font-semibold text-blue-700" to="/cases">
+        ← Back to cases
+      </Link>
+      <PageHeader
+        eyebrow={`${item.carrier.name} · ${item.policy_number ?? 'Policy number pending'}`}
+        title={item.client_name}
+        description={item.summary}
+        action={
+          <div className="flex gap-2">
+            <PriorityBadge priority={item.priority} />
+            <StatusBadge status={item.policy_status} />
+          </div>
+        }
+      />
+      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          ['Assigned agent', item.assigned_agent?.full_name ?? 'Unassigned'],
+          ['Key deadline', formatDate(item.deadline)],
+          [
+            'Premium',
+            item.premium_amount
+              ? `${item.currency ?? 'USD'} ${item.premium_amount}`
+              : '—',
+          ],
+          [
+            'Effective date',
+            item.effective_date ? formatDate(item.effective_date) : '—',
+          ],
+        ].map(([label, value]) => (
+          <div key={label} className="border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold text-slate-500 uppercase">
+              {label}
+            </p>
+            <p className="mt-2 font-medium text-slate-900">{value}</p>
+          </div>
+        ))}
+      </section>
+      <section className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(300px,0.6fr)]">
+        <div className="space-y-6">
+          <div className="border border-slate-200 bg-white">
+            <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
+              Required actions
+            </h2>
+            <div className="divide-y divide-slate-100">
+              {item.tasks.map((task) => (
+                <div
+                  key={task.id}
+                  className="flex items-start justify-between gap-4 px-5 py-4"
+                >
+                  <div>
+                    <p className="font-medium">{task.title}</p>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {task.description}
+                    </p>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Due {formatDate(task.due_at)}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <StatusBadge status={task.status} />
+                    <label className="sr-only" htmlFor={`case-task-${task.id}`}>
+                      Update {task.title}
+                    </label>
+                    <select
+                      id={`case-task-${task.id}`}
+                      className="mt-2 block border border-slate-300 bg-white px-2 py-1.5 text-sm"
+                      value={task.status}
+                      disabled={taskMutation.isPending}
+                      onChange={(event) =>
+                        taskMutation.mutate({
+                          id: task.id,
+                          status: event.target.value as TaskStatus,
+                        })
+                      }
+                    >
+                      {['OPEN', 'IN_PROGRESS', 'COMPLETED', 'DISMISSED'].map(
+                        (status) => (
+                          <option key={status} value={status}>
+                            {status.replaceAll('_', ' ')}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="border border-slate-200 bg-white">
+            <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
+              Carrier communications
+            </h2>
+            <div className="divide-y divide-slate-100">
+              {item.messages.map((message) => (
+                <article key={message.id} className="px-5 py-5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <StatusBadge status={message.processing_status} />
+                    <span className="text-xs font-semibold text-slate-500">
+                      {message.classification.replaceAll('_', ' ')}
+                    </span>
+                  </div>
+                  <h3 className="mt-3 font-semibold">{message.subject}</h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    From {message.sender} · {formatDate(message.received_at)}
+                  </p>
+                  <p className="mt-3 text-sm text-slate-700">
+                    {message.summary}
+                  </p>
+                  <details className="mt-4 border-t border-slate-100 pt-3">
+                    <summary className="cursor-pointer text-sm font-semibold text-blue-800">
+                      View cleaned source content
+                    </summary>
+                    <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                      {message.cleaned_content}
+                    </p>
+                  </details>
+                </article>
+              ))}
+            </div>
+          </div>
+          <div className="border border-slate-200 bg-white">
+            <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
+              Attachments
+            </h2>
+            {item.attachments.length ? (
+              <div className="divide-y divide-slate-100">
+                {item.attachments.map((attachment) => (
+                  <div
+                    key={attachment.id}
+                    className="flex justify-between px-5 py-4"
+                  >
+                    <div>
+                      <p className="font-medium">{attachment.filename}</p>
+                      <p className="text-xs text-slate-500">
+                        {attachment.mime_type} ·{' '}
+                        {Math.ceil(attachment.size_bytes / 1024)} KB
+                      </p>
+                    </div>
+                    <StatusBadge status={attachment.processing_status} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="p-5 text-sm text-slate-600">
+                No attachments are associated with this case.
+              </p>
+            )}
+          </div>
+        </div>
+        <aside className="space-y-6">
+          <div className="border border-slate-200 bg-white">
+            <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
+              Evidence
+            </h2>
+            <div className="divide-y divide-slate-100">
+              {item.evidence.length ? (
+                item.evidence.map((evidence) => (
+                  <blockquote key={evidence.id} className="px-5 py-4">
+                    <p className="text-xs font-semibold text-slate-500 uppercase">
+                      {evidence.field_name.replaceAll('_', ' ')}
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-slate-700">
+                      “{evidence.excerpt}”
+                    </p>
+                  </blockquote>
+                ))
+              ) : (
+                <p className="p-5 text-sm text-slate-600">
+                  No evidence excerpts recorded.
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="border border-slate-200 bg-white">
+            <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
+              Activity
+            </h2>
+            <div className="divide-y divide-slate-100">
+              {item.activity.map((event) => (
+                <div key={event.id} className="px-5 py-4">
+                  <p className="text-sm font-medium">{event.description}</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {formatDate(event.created_at)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
+      </section>
+    </div>
+  )
+}
