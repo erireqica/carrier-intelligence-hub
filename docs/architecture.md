@@ -26,6 +26,6 @@ The current data path is:
 explicit development seed -> PostgreSQL -> scoped FastAPI endpoint -> TanStack Query -> React page
 ```
 
-Future Gmail ingestion should enter at the left side of the same domain model: a connection supplies idempotent carrier messages, processing associates them with carriers/cases, and extracted tasks/evidence/review items become visible through the existing API. OAuth secrets and live processing are deliberately absent in Stage 2.
+Future Gmail ingestion should enter at the left side of the same domain model: a connection supplies an idempotent source message in `RECEIVED` state before semantic fields are known, processing associates it with carriers/cases, and validated tasks/evidence/review items become visible through the existing API. Dashboard Gmail health is derived from scoped connection status—not merely row existence. OAuth secrets and live processing are deliberately absent in Stage 2.
 
 Security boundaries are server-side. The raw session token exists only in an HttpOnly cookie, passwords use Argon2id, unsafe requests require CSRF validation, CORS allows credentials only from the configured frontend origin, and every Manager API independently checks the role. `backend/.env` contains local secrets and is ignored by Git.

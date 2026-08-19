@@ -17,6 +17,8 @@ from app.models.audit import AuditEvent
 from app.models.carriers import Carrier
 from app.models.enums import (
     AuditSeverity,
+    GmailConnectionStatus,
+    GmailHealth,
     ProcessingStatus,
     ReviewStatus,
     TaskStatus,
@@ -137,9 +139,16 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
         ).all()
         workload = [WorkloadItem(agent=agent_brief(user), open_tasks=count) for user, count in rows]
 
-    gmail_connected = bool(
-        db.scalar(select(func.count()).select_from(GmailConnection).where(*gmail_filters))
-    )
+    gmail_statuses = set(db.scalars(select(GmailConnection.status).where(*gmail_filters)).all())
+    if GmailConnectionStatus.CONNECTED in gmail_statuses:
+        gmail_health = GmailHealth.CONNECTED
+    elif gmail_statuses & {
+        GmailConnectionStatus.NEEDS_REAUTH,
+        GmailConnectionStatus.ERROR,
+    }:
+        gmail_health = GmailHealth.NEEDS_ATTENTION
+    else:
+        gmail_health = GmailHealth.NOT_CONNECTED
     return DashboardResponse(
         metrics=DashboardMetrics(
             urgent_cases=urgent_cases,
@@ -161,7 +170,8 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
             for event in activities
         ],
         workload=workload,
-        gmail_connected=gmail_connected,
+        gmail_connected=gmail_health == GmailHealth.CONNECTED,
+        gmail_health=gmail_health,
     )
 
 
@@ -254,18 +264,17 @@ def analytics(db: Session, current: AuthContext) -> AnalyticsResponse:
     carrier_names = dict(
         db.execute(select(Carrier.id, Carrier.name).where(Carrier.agency_id == agency_id)).all()
     )
-    workload = dict(
-        db.execute(
-            select(User.full_name, func.count(Task.id))
-            .outerjoin(
-                Task,
-                (Task.assigned_agent_id == User.id)
-                & Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
-            )
-            .where(User.agency_id == agency_id, User.is_active.is_(True))
-            .group_by(User.full_name)
-        ).all()
-    )
+    workload_rows = db.execute(
+        select(User, func.count(Task.id))
+        .outerjoin(
+            Task,
+            (Task.assigned_agent_id == User.id)
+            & Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+        )
+        .where(User.agency_id == agency_id, User.is_active.is_(True))
+        .group_by(User.id)
+        .order_by(User.full_name, User.id)
+    ).all()
     task_counts = db.execute(
         select(
             func.count().filter(Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS])),
@@ -283,7 +292,9 @@ def analytics(db: Session, current: AuthContext) -> AnalyticsResponse:
     return AnalyticsResponse(
         cases_by_status={key.value: value for key, value in cases_by_status.items()},
         cases_by_carrier={carrier_names[key]: value for key, value in cases_by_carrier.items()},
-        workload_by_agent=workload,
+        workload_by_agent=[
+            WorkloadItem(agent=agent_brief(user), open_tasks=count) for user, count in workload_rows
+        ],
         urgent_high_cases=db.scalar(
             select(func.count())
             .select_from(PolicyCase)

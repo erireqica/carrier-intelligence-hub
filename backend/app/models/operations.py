@@ -102,6 +102,11 @@ class CarrierMessage(TimestampMixin, Base):
             "'FAILED', 'IGNORED')",
             name="ck_carrier_messages_processing_status",
         ),
+        CheckConstraint(
+            "processing_status != 'PROCESSED' OR "
+            "(classification IS NOT NULL AND summary IS NOT NULL AND priority IS NOT NULL)",
+            name="ck_carrier_messages_processed_semantics",
+        ),
         UniqueConstraint(
             "gmail_connection_id", "gmail_message_id", name="uq_gmail_connection_message"
         ),
@@ -119,14 +124,11 @@ class CarrierMessage(TimestampMixin, Base):
     sender: Mapped[str] = mapped_column(String(320), nullable=False)
     subject: Mapped[str] = mapped_column(String(500), nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    classification: Mapped[MessageClassification] = mapped_column(
+    classification: Mapped[MessageClassification | None] = mapped_column(
         Enum(MessageClassification, native_enum=False, length=32),
-        nullable=False,
     )
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    priority: Mapped[Priority] = mapped_column(
-        Enum(Priority, native_enum=False, length=16), nullable=False
-    )
+    summary: Mapped[str | None] = mapped_column(Text)
+    priority: Mapped[Priority | None] = mapped_column(Enum(Priority, native_enum=False, length=16))
     processing_status: Mapped[ProcessingStatus] = mapped_column(
         Enum(ProcessingStatus, native_enum=False, length=24),
         nullable=False,

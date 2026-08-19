@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import get_settings
@@ -15,6 +15,8 @@ from app.core.security import (
 )
 from app.core.time import utc_now
 from app.models.organization import Agency, AuthSession, User
+
+SESSION_TOUCH_INTERVAL = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,10 @@ def resolve_session(db: Session, raw_token: str) -> AuthContext | None:
     if token_hash(csrf_token) != session.csrf_token_hash:
         return None
 
-    session.last_seen_at = now
+    if session.last_seen_at <= now - SESSION_TOUCH_INTERVAL:
+        db.execute(update(AuthSession).where(AuthSession.id == session.id).values(last_seen_at=now))
+        db.commit()
+        session.last_seen_at = now
     return AuthContext(
         user=session.user,
         agency=session.user.agency,

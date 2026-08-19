@@ -38,7 +38,13 @@ export function DashboardPage() {
         title={`Good day, ${auth.data!.user.full_name.split(' ')[0]}`}
         description="Prioritized operational work based on the current database state."
       />
-      {!data.gmail_connected && (
+      {data.gmail_health === 'NEEDS_ATTENTION' && (
+        <div className="border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <strong>Gmail connection needs attention.</strong> Automatic carrier
+          monitoring is paused until the inbox is reconnected.
+        </div>
+      )}
+      {data.gmail_health === 'NOT_CONNECTED' && (
         <div className="border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
           <strong>No Gmail inbox connected.</strong> Automatic carrier
           monitoring is not active yet. The current records are deterministic

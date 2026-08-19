@@ -1,12 +1,19 @@
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.time import utc_now
 from app.models.audit import AuditEvent
 from app.models.carriers import Carrier, CarrierDomain, CarrierSender
-from app.models.enums import TaskStatus
-from app.models.operations import PolicyCase, ReviewItem, Task
-from app.models.organization import Agency, User
+from app.models.enums import (
+    GmailConnectionStatus,
+    ProcessingStatus,
+    TaskStatus,
+)
+from app.models.operations import CarrierMessage, PolicyCase, ReviewItem, Task
+from app.models.organization import Agency, GmailConnection, User
 
 
 def test_role_authorization_case_and_task_scoping(client: TestClient, db: Session, login) -> None:
@@ -200,3 +207,277 @@ def test_seed_is_idempotent(seeded_db: Session) -> None:
         "reviews": seeded_db.scalar(select(func.count()).select_from(ReviewItem)),
     }
     assert before == after
+
+
+def test_carrier_messages_support_pre_analysis_lifecycle(seeded_db: Session) -> None:
+    agency = seeded_db.scalar(select(Agency))
+    carrier = seeded_db.scalar(select(Carrier).where(Carrier.name == "Americo"))
+    assert agency is not None and carrier is not None
+
+    for processing_status in (
+        ProcessingStatus.RECEIVED,
+        ProcessingStatus.PROCESSING,
+        ProcessingStatus.FAILED,
+        ProcessingStatus.NEEDS_REVIEW,
+    ):
+        seeded_db.add(
+            CarrierMessage(
+                agency_id=agency.id,
+                carrier_id=carrier.id,
+                gmail_message_id=f"lifecycle-{processing_status.value.lower()}",
+                sender="lifecycle@example.test",
+                subject=f"Lifecycle {processing_status.value}",
+                received_at=utc_now(),
+                classification=None,
+                summary=None,
+                priority=None,
+                processing_status=processing_status,
+                raw_content="Synthetic source message.",
+                cleaned_content="Synthetic source message.",
+            )
+        )
+    seeded_db.flush()
+
+    processed_messages = seeded_db.scalars(
+        select(CarrierMessage).where(CarrierMessage.processing_status == ProcessingStatus.PROCESSED)
+    ).all()
+    assert processed_messages
+    assert all(
+        message.classification is not None
+        and message.summary is not None
+        and message.priority is not None
+        for message in processed_messages
+    )
+
+    with pytest.raises(IntegrityError), seeded_db.begin_nested():
+        seeded_db.add(
+            CarrierMessage(
+                agency_id=agency.id,
+                carrier_id=carrier.id,
+                gmail_message_id="invalid-processed-message",
+                sender="lifecycle@example.test",
+                subject="Invalid processed message",
+                received_at=utc_now(),
+                classification=None,
+                summary=None,
+                priority=None,
+                processing_status=ProcessingStatus.PROCESSED,
+                raw_content="Synthetic source message.",
+                cleaned_content="Synthetic source message.",
+            )
+        )
+        seeded_db.flush()
+
+
+def test_case_detail_serializes_unanalyzed_message(client: TestClient, db: Session, login) -> None:
+    case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "John Doe"))
+    assert case is not None
+    message = CarrierMessage(
+        agency_id=case.agency_id,
+        case_id=case.id,
+        carrier_id=case.carrier_id,
+        gmail_message_id="case-detail-processing-message",
+        sender="lifecycle@example.test",
+        subject="New source awaiting analysis",
+        received_at=utc_now(),
+        classification=None,
+        summary=None,
+        priority=None,
+        processing_status=ProcessingStatus.PROCESSING,
+        raw_content="Synthetic source message.",
+        cleaned_content="Synthetic source message.",
+    )
+    db.add(message)
+    db.commit()
+
+    login(client, "agent.one@demo.local")
+    response = client.get(f"/api/v1/cases/{case.id}")
+    assert response.status_code == 200
+    payload = next(
+        item
+        for item in response.json()["messages"]
+        if item["subject"] == "New source awaiting analysis"
+    )
+    assert payload["processing_status"] == "PROCESSING"
+    assert payload["classification"] is None
+    assert payload["summary"] is None
+    assert payload["priority"] is None
+
+
+def test_dashboard_gmail_health_states(client: TestClient, db: Session, login) -> None:
+    login(client, "agent.one@demo.local")
+    dashboard = client.get("/api/v1/dashboard")
+    assert dashboard.status_code == 200
+    assert dashboard.json()["gmail_connected"] is False
+    assert dashboard.json()["gmail_health"] == "NOT_CONNECTED"
+
+
+@pytest.mark.parametrize(
+    ("connection_status", "expected_connected", "expected_health"),
+    [
+        (GmailConnectionStatus.CONNECTED, True, "CONNECTED"),
+        (GmailConnectionStatus.NEEDS_REAUTH, False, "NEEDS_ATTENTION"),
+        (GmailConnectionStatus.ERROR, False, "NEEDS_ATTENTION"),
+        (GmailConnectionStatus.DISCONNECTED, False, "NOT_CONNECTED"),
+    ],
+)
+def test_dashboard_gmail_health_reflects_connection_status(
+    client: TestClient,
+    db: Session,
+    login,
+    connection_status: GmailConnectionStatus,
+    expected_connected: bool,
+    expected_health: str,
+) -> None:
+    owner = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert owner is not None
+    db.add(
+        GmailConnection(
+            agency_id=owner.agency_id,
+            user_id=owner.id,
+            gmail_address=f"{connection_status.value.lower()}@example.test",
+            status=connection_status,
+        )
+    )
+    db.commit()
+
+    login(client, owner.email)
+    payload = client.get("/api/v1/dashboard").json()
+    assert payload["gmail_connected"] is expected_connected
+    assert payload["gmail_health"] == expected_health
+
+
+def test_dashboard_gmail_health_respects_agent_scope(
+    client: TestClient, db: Session, login
+) -> None:
+    other_agent = db.scalar(select(User).where(User.email == "agent.two@demo.local"))
+    assert other_agent is not None
+    db.add(
+        GmailConnection(
+            agency_id=other_agent.agency_id,
+            user_id=other_agent.id,
+            gmail_address="other-agent@example.test",
+            status=GmailConnectionStatus.CONNECTED,
+        )
+    )
+    db.commit()
+
+    login(client, "agent.one@demo.local")
+    assert client.get("/api/v1/dashboard").json()["gmail_health"] == "NOT_CONNECTED"
+    login(client, "manager@demo.local")
+    assert client.get("/api/v1/dashboard").json()["gmail_health"] == "CONNECTED"
+
+
+def test_task_patch_validation_and_change_specific_audits(
+    client: TestClient, db: Session, login
+) -> None:
+    auth = login(client, "manager@demo.local")
+    headers = {"X-CSRF-Token": auth["csrf_token"]}
+    task = db.scalar(select(Task).where(Task.status == TaskStatus.OPEN))
+    target_agent = db.scalar(select(User).where(User.email == "agent.two@demo.local"))
+    original_agent = (
+        db.scalar(select(User).where(User.id == task.assigned_agent_id)) if task else None
+    )
+    assert task is not None and target_agent is not None and original_agent is not None
+
+    assert client.patch(f"/api/v1/tasks/{task.id}", json={}, headers=headers).status_code == 422
+    assert (
+        client.patch(
+            f"/api/v1/tasks/{task.id}",
+            json={"status": None, "assigned_agent_id": None},
+            headers=headers,
+        ).status_code
+        == 422
+    )
+
+    no_op = client.patch(
+        f"/api/v1/tasks/{task.id}",
+        json={"status": task.status.value, "assigned_agent_id": task.assigned_agent_id},
+        headers=headers,
+    )
+    assert no_op.status_code == 200
+    assert (
+        db.scalar(select(func.count()).select_from(AuditEvent).where(AuditEvent.task_id == task.id))
+        == 0
+    )
+
+    completed = client.patch(
+        f"/api/v1/tasks/{task.id}",
+        json={"status": "COMPLETED"},
+        headers=headers,
+    )
+    assert completed.status_code == 200
+    assert completed.json()["completed_at"] is not None
+    status_event = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.task_id == task.id,
+            AuditEvent.event_type == "TASK_STATUS_CHANGED",
+        )
+    )
+    assert status_event is not None
+    assert status_event.event_metadata == {
+        "previous_status": "OPEN",
+        "new_status": "COMPLETED",
+    }
+
+    reassigned = client.patch(
+        f"/api/v1/tasks/{task.id}",
+        json={"assigned_agent_id": target_agent.id},
+        headers=headers,
+    )
+    assert reassigned.status_code == 200
+    assignment_event = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.task_id == task.id,
+            AuditEvent.event_type == "TASK_ASSIGNED",
+        )
+    )
+    assert assignment_event is not None
+    assert assignment_event.event_metadata == {
+        "previous_assignee_id": original_agent.id,
+        "new_assignee_id": target_agent.id,
+    }
+
+    combined = client.patch(
+        f"/api/v1/tasks/{task.id}",
+        json={"status": "IN_PROGRESS", "assigned_agent_id": original_agent.id},
+        headers=headers,
+    )
+    assert combined.status_code == 200
+    assert combined.json()["completed_at"] is None
+    event_counts = dict(
+        db.execute(
+            select(AuditEvent.event_type, func.count())
+            .where(AuditEvent.task_id == task.id)
+            .group_by(AuditEvent.event_type)
+        ).all()
+    )
+    assert event_counts == {"TASK_ASSIGNED": 2, "TASK_STATUS_CHANGED": 2}
+
+    agent_auth = login(client, original_agent.email)
+    forbidden = client.patch(
+        f"/api/v1/tasks/{task.id}",
+        json={"assigned_agent_id": original_agent.id},
+        headers={"X-CSRF-Token": agent_auth["csrf_token"]},
+    )
+    assert forbidden.status_code == 403
+
+
+def test_analytics_keeps_duplicate_display_names_separate(
+    client: TestClient, db: Session, login
+) -> None:
+    agents = db.scalars(select(User).where(User.role == "AGENT").order_by(User.id)).all()
+    assert len(agents) == 2
+    agents[1].full_name = agents[0].full_name
+    db.commit()
+
+    login(client, "manager@demo.local")
+    response = client.get("/api/v1/manager/analytics")
+    assert response.status_code == 200
+    matching = [
+        item
+        for item in response.json()["workload_by_agent"]
+        if item["agent"]["full_name"] == agents[0].full_name
+    ]
+    assert len(matching) == 2
+    assert {item["agent"]["id"] for item in matching} == {agents[0].id, agents[1].id}

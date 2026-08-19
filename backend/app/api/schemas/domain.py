@@ -1,13 +1,14 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.api.schemas.common import InternalEmail
 from app.core.security import normalize_domain, normalize_email
 from app.models.enums import (
     AttachmentStatus,
     AuditSeverity,
+    GmailHealth,
     MessageClassification,
     PolicyStatus,
     Priority,
@@ -77,7 +78,13 @@ class TaskListResponse(BaseModel):
 
 class TaskUpdate(BaseModel):
     status: TaskStatus | None = None
-    assigned_agent_id: int | None = None
+    assigned_agent_id: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def require_supported_change(self) -> TaskUpdate:
+        if self.status is None and self.assigned_agent_id is None:
+            raise ValueError("Provide status or assigned_agent_id")
+        return self
 
 
 class MessageItem(BaseModel):
@@ -85,9 +92,9 @@ class MessageItem(BaseModel):
     sender: str
     subject: str
     received_at: datetime
-    classification: MessageClassification
-    summary: str
-    priority: Priority
+    classification: MessageClassification | None
+    summary: str | None
+    priority: Priority | None
     processing_status: ProcessingStatus
     cleaned_content: str
     original_deadline_text: str | None
@@ -183,6 +190,7 @@ class DashboardResponse(BaseModel):
     recent_activity: list[ActivityItem]
     workload: list[WorkloadItem]
     gmail_connected: bool
+    gmail_health: GmailHealth
 
 
 class AgentListItem(BaseModel):
@@ -259,7 +267,7 @@ class EnabledUpdate(BaseModel):
 class AnalyticsResponse(BaseModel):
     cases_by_status: dict[str, int]
     cases_by_carrier: dict[str, int]
-    workload_by_agent: dict[str, int]
+    workload_by_agent: list[WorkloadItem]
     urgent_high_cases: int
     open_tasks: int
     overdue_tasks: int

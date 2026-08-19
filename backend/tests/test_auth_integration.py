@@ -9,6 +9,7 @@ from app.core.security import token_hash
 from app.core.time import utc_now
 from app.models.enums import UserRole
 from app.models.organization import AuthSession, User
+from app.services import auth as auth_service
 
 TEST_PASSWORD = "demo-test-password"
 
@@ -86,3 +87,28 @@ def test_disabling_user_invalidates_an_existing_session(
     user.is_active = False
     db.commit()
     assert client.get("/api/v1/dashboard").status_code == 401
+
+
+def test_session_activity_is_persisted_and_throttled(
+    client: TestClient, db: Session, login, monkeypatch
+) -> None:
+    login(client, "agent.one@demo.local")
+    session = db.scalar(select(AuthSession).order_by(AuthSession.id.desc()))
+    assert session is not None
+
+    now = utc_now()
+    old_last_seen = now - auth_service.SESSION_TOUCH_INTERVAL - timedelta(seconds=1)
+    session.last_seen_at = old_last_seen
+    db.commit()
+    monkeypatch.setattr(auth_service, "utc_now", lambda: now)
+
+    assert client.get("/api/v1/dashboard").status_code == 200
+    db.expire(session, ["last_seen_at"])
+    assert session.last_seen_at == now
+
+    recent_last_seen = now - timedelta(minutes=1)
+    session.last_seen_at = recent_last_seen
+    db.commit()
+    assert client.get("/api/v1/cases").status_code == 200
+    db.expire(session, ["last_seen_at"])
+    assert session.last_seen_at == recent_last_seen

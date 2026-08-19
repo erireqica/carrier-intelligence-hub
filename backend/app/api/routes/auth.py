@@ -70,8 +70,7 @@ def login(data: LoginRequest, response: Response, db: DbSession) -> AuthResponse
 
 
 @router.get("/me", response_model=AuthResponse)
-def me(current: CurrentUser, db: DbSession) -> AuthResponse:
-    db.commit()
+def me(current: CurrentUser) -> AuthResponse:
     return auth_response(current.user, current.csrf_token)
 
 

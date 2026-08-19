@@ -19,7 +19,9 @@ The schema keeps identity, incoming communications, operational work, and audit 
 | `case_evidence` | Short source excerpts supporting extracted case fields; never hidden reasoning. |
 | `audit_events` | Append-oriented operational/security history with safe JSON metadata. |
 
-`cases` and `carrier_messages` are intentionally separate. A case represents the latest known state of an ongoing policy; several emails can update it over time. Keeping each communication preserves its sender, source text, received time, classification, attachments, and processing status. Tasks, evidence, reviews, and audit events can then trace back to the exact communication that caused them without overwriting case history.
+`cases` and `carrier_messages` are intentionally separate. A case represents the latest known state of an ongoing policy; several emails can update it over time. Keeping each communication preserves its sender, source text, received time, attachments, and processing status. Tasks, evidence, reviews, and audit events can then trace back to the exact communication that caused them without overwriting case history.
+
+A carrier message is persisted before semantic analysis begins. Its `processing_status` records the ingestion/analysis lifecycle (`RECEIVED`, `PROCESSING`, `PROCESSED`, `NEEDS_REVIEW`, `FAILED`, or `IGNORED`), while `classification`, `summary`, and `priority` are semantic results that may initially be null. The database does not invent placeholder AI results: a conditional constraint instead requires all three semantic fields only when a message is marked `PROCESSED`. Other lifecycle states can truthfully represent incomplete or failed analysis.
 
 ```mermaid
 erDiagram
@@ -42,4 +44,4 @@ erDiagram
     AGENCY ||--o{ AUDIT_EVENT : records
 ```
 
-Important database rules include globally unique user emails for unambiguous login; unique carrier names, approved domains, and exact senders within an agency; a partial unique case identity on agency/carrier/policy number when a policy number exists; and unique `(gmail_connection_id, gmail_message_id)` pairs for future Gmail idempotency. Focused indexes support agency/role lookups, session lookup/expiration, assigned task status/due dates, case priority/status, message processing state, open reviews, and chronological/type-filtered audit logs.
+Important database rules include globally unique user emails for unambiguous login; unique carrier names, approved domains, and exact senders within an agency; a partial unique case identity on agency/carrier/policy number when a policy number exists; unique `(gmail_connection_id, gmail_message_id)` pairs for future Gmail idempotency; and complete semantic fields for every `PROCESSED` carrier message. Focused indexes support agency/role lookups, session lookup/expiration, assigned task status/due dates, case priority/status, message processing state, open reviews, and chronological/type-filtered audit logs.

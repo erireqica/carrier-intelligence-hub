@@ -7,16 +7,22 @@ import { CasesPage } from '../pages/CasesPage'
 import { DashboardPage } from '../pages/DashboardPage'
 import { GmailConnectionsPage } from '../pages/GmailConnectionsPage'
 import { LoginPage } from '../pages/LoginPage'
-import {
-  AgentsPage,
-  AnalyticsPage,
-  CarriersPage,
-  SettingsPage,
-  SystemLogsPage,
-} from '../pages/ManagerPages'
+import { AgentsPage } from '../pages/manager/AgentsPage'
+import { AnalyticsPage } from '../pages/manager/AnalyticsPage'
+import { CarriersPage } from '../pages/manager/CarriersPage'
+import { SettingsPage } from '../pages/manager/SettingsPage'
+import { SystemLogsPage } from '../pages/manager/SystemLogsPage'
 import { ProfilePage } from '../pages/ProfilePage'
 import { ReviewsPage } from '../pages/ReviewsPage'
 import { TasksPage } from '../pages/TasksPage'
+
+export const managerRoutes = [
+  { path: 'manager/analytics', element: <AnalyticsPage /> },
+  { path: 'manager/agents', element: <AgentsPage /> },
+  { path: 'manager/carriers', element: <CarriersPage /> },
+  { path: 'manager/system-logs', element: <SystemLogsPage /> },
+  { path: 'manager/settings', element: <SettingsPage /> },
+]
 
 export const router = createBrowserRouter([
   {
@@ -40,13 +46,7 @@ export const router = createBrowserRouter([
           { path: 'profile', element: <ProfilePage /> },
           {
             element: <ManagerRoute />,
-            children: [
-              { path: 'manager/analytics', element: <AnalyticsPage /> },
-              { path: 'manager/agents', element: <AgentsPage /> },
-              { path: 'manager/carriers', element: <CarriersPage /> },
-              { path: 'manager/system-logs', element: <SystemLogsPage /> },
-              { path: 'manager/settings', element: <SettingsPage /> },
-            ],
+            children: managerRoutes,
           },
         ],
       },

@@ -1,6 +1,14 @@
 export type Role = 'AGENT' | 'MANAGER'
 export type Priority = 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT'
 export type TaskStatus = 'OPEN' | 'IN_PROGRESS' | 'COMPLETED' | 'DISMISSED'
+export type ProcessingStatus =
+  | 'RECEIVED'
+  | 'PROCESSING'
+  | 'PROCESSED'
+  | 'NEEDS_REVIEW'
+  | 'FAILED'
+  | 'IGNORED'
+export type GmailHealth = 'CONNECTED' | 'NEEDS_ATTENTION' | 'NOT_CONNECTED'
 
 export type AgentBrief = { id: number; full_name: string; email: string }
 export type CarrierBrief = { id: number; name: string; code: string | null }
@@ -71,10 +79,10 @@ export type CaseDetail = CaseItem & {
     sender: string
     subject: string
     received_at: string
-    classification: string
-    summary: string
-    priority: Priority
-    processing_status: string
+    classification: string | null
+    summary: string | null
+    priority: Priority | null
+    processing_status: ProcessingStatus
     cleaned_content: string
     original_deadline_text: string | null
   }>
@@ -124,6 +132,7 @@ export type Dashboard = {
   recent_activity: ActivityItem[]
   workload: Array<{ agent: AgentBrief; open_tasks: number }>
   gmail_connected: boolean
+  gmail_health: GmailHealth
 }
 
 export type AgentItem = {
@@ -151,7 +160,7 @@ export type CarrierItem = {
 export type Analytics = {
   cases_by_status: Record<string, number>
   cases_by_carrier: Record<string, number>
-  workload_by_agent: Record<string, number>
+  workload_by_agent: Array<{ agent: AgentBrief; open_tasks: number }>
   urgent_high_cases: number
   open_tasks: number
   overdue_tasks: number

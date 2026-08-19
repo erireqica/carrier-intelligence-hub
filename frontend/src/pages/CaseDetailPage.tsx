@@ -12,6 +12,32 @@ import { formatDate } from '../lib/format'
 import { getCase, updateTask } from '../lib/api'
 import type { TaskStatus } from '../lib/types'
 
+function pendingAnalysisLabel(processingStatus: string) {
+  switch (processingStatus) {
+    case 'PROCESSING':
+      return 'Processing'
+    case 'FAILED':
+      return 'Analysis failed'
+    case 'NEEDS_REVIEW':
+      return 'Needs review'
+    default:
+      return 'Pending analysis'
+  }
+}
+
+function pendingAnalysisSummary(processingStatus: string) {
+  switch (processingStatus) {
+    case 'PROCESSING':
+      return 'Semantic analysis is currently in progress.'
+    case 'FAILED':
+      return 'Semantic analysis did not complete. Review the source content for details.'
+    case 'NEEDS_REVIEW':
+      return 'Semantic analysis is incomplete and requires human review.'
+    default:
+      return 'Semantic analysis has not started yet.'
+  }
+}
+
 export function CaseDetailPage() {
   const { caseId = '' } = useParams()
   const queryClient = useQueryClient()
@@ -138,7 +164,9 @@ export function CaseDetailPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <StatusBadge status={message.processing_status} />
                     <span className="text-xs font-semibold text-slate-500">
-                      {message.classification.replaceAll('_', ' ')}
+                      {message.classification
+                        ? message.classification.replaceAll('_', ' ')
+                        : pendingAnalysisLabel(message.processing_status)}
                     </span>
                   </div>
                   <h3 className="mt-3 font-semibold">{message.subject}</h3>
@@ -146,7 +174,8 @@ export function CaseDetailPage() {
                     From {message.sender} · {formatDate(message.received_at)}
                   </p>
                   <p className="mt-3 text-sm text-slate-700">
-                    {message.summary}
+                    {message.summary ??
+                      pendingAnalysisSummary(message.processing_status)}
                   </p>
                   <details className="mt-4 border-t border-slate-100 pt-3">
                     <summary className="cursor-pointer text-sm font-semibold text-blue-800">

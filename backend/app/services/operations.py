@@ -252,15 +252,22 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
+    if update.assigned_agent_id is not None and current.user.role is not UserRole.MANAGER:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
+
     previous_status = task.status
-    if update.status is not None:
+    previous_assignee_id = task.assigned_agent_id
+    status_changed = update.status is not None and update.status != task.status
+    assignment_changed = (
+        update.assigned_agent_id is not None and update.assigned_agent_id != task.assigned_agent_id
+    )
+
+    if status_changed:
+        assert update.status is not None
         task.status = update.status
         task.completed_at = utc_now() if update.status is TaskStatus.COMPLETED else None
-    if update.assigned_agent_id is not None:
-        if current.user.role is not UserRole.MANAGER:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required"
-            )
+    if assignment_changed:
+        assert update.assigned_agent_id is not None
         assignee = db.scalar(
             select(User).where(
                 User.id == update.assigned_agent_id,
@@ -273,16 +280,37 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
         task.assigned_agent = assignee
         task.assigned_agent_id = assignee.id
 
-    record_audit_event(
-        db,
-        agency_id=current.user.agency_id,
-        actor_user_id=current.user.id,
-        case_id=task.case_id,
-        task_id=task.id,
-        event_type="TASK_STATUS_CHANGED" if update.status else "TASK_ASSIGNED",
-        description=f"Task updated: {task.title}",
-        metadata={"previous_status": previous_status.value, "new_status": task.status.value},
-    )
+    if status_changed:
+        record_audit_event(
+            db,
+            agency_id=current.user.agency_id,
+            actor_user_id=current.user.id,
+            case_id=task.case_id,
+            task_id=task.id,
+            event_type="TASK_STATUS_CHANGED",
+            description=f"Task status changed: {task.title}",
+            metadata={
+                "previous_status": previous_status.value,
+                "new_status": task.status.value,
+            },
+        )
+    if assignment_changed:
+        record_audit_event(
+            db,
+            agency_id=current.user.agency_id,
+            actor_user_id=current.user.id,
+            case_id=task.case_id,
+            task_id=task.id,
+            event_type="TASK_ASSIGNED",
+            description=f"Task assignment changed: {task.title}",
+            metadata={
+                "previous_assignee_id": previous_assignee_id,
+                "new_assignee_id": task.assigned_agent_id,
+            },
+        )
+    if not status_changed and not assignment_changed:
+        return task_item(task)
+
     db.commit()
     db.refresh(task)
     return task_item(task)

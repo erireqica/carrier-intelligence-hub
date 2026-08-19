@@ -13,6 +13,12 @@ class GmailConnectionStatus(StrEnum):
     DISCONNECTED = "DISCONNECTED"
 
 
+class GmailHealth(StrEnum):
+    CONNECTED = "CONNECTED"
+    NEEDS_ATTENTION = "NEEDS_ATTENTION"
+    NOT_CONNECTED = "NOT_CONNECTED"
+
+
 class PolicyStatus(StrEnum):
     ISSUED = "ISSUED"
     PENDING = "PENDING"
