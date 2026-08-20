@@ -56,6 +56,7 @@ class ProcessingStatus(StrEnum):
 class AttachmentStatus(StrEnum):
     PENDING = "PENDING"
     EXTRACTED = "EXTRACTED"
+    NEEDS_OCR = "NEEDS_OCR"
     FAILED = "FAILED"
     UNSUPPORTED = "UNSUPPORTED"
 

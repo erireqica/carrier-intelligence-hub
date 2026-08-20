@@ -177,6 +177,28 @@ export function CaseDetailPage() {
                     {message.summary ??
                       pendingAnalysisSummary(message.processing_status)}
                   </p>
+                  {(message.analysis_confidence !== null ||
+                    message.validation_flags.length > 0) && (
+                    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                      {message.analysis_confidence !== null && (
+                        <span>
+                          Analysis confidence:{' '}
+                          {Math.round(message.analysis_confidence * 100)}%
+                        </span>
+                      )}
+                      {message.validation_flags.map((flag) => (
+                        <StatusBadge key={flag} status={flag} />
+                      ))}
+                      {message.review_id && (
+                        <Link
+                          className="font-semibold text-blue-700"
+                          to={`/reviews/${message.review_id}`}
+                        >
+                          Review analysis
+                        </Link>
+                      )}
+                    </div>
+                  )}
                   <details className="mt-4 border-t border-slate-100 pt-3">
                     <summary className="cursor-pointer text-sm font-semibold text-blue-800">
                       View cleaned source content
@@ -205,7 +227,34 @@ export function CaseDetailPage() {
                       <p className="text-xs text-slate-500">
                         {attachment.mime_type} ·{' '}
                         {Math.ceil(attachment.size_bytes / 1024)} KB
+                        {attachment.page_count
+                          ? ` · ${attachment.page_count} pages`
+                          : ''}
                       </p>
+                      {attachment.extraction_error_code && (
+                        <p className="mt-1 text-xs text-amber-800">
+                          {attachment.extraction_error_code.replaceAll(
+                            '_',
+                            ' ',
+                          )}
+                        </p>
+                      )}
+                      {attachment.processing_status === 'NEEDS_OCR' && (
+                        <p className="mt-2 text-sm text-amber-900">
+                          This PDF contains little or no extractable text and
+                          requires manual review.
+                        </p>
+                      )}
+                      {attachment.extracted_text_preview && (
+                        <details className="mt-3">
+                          <summary className="cursor-pointer text-sm font-semibold text-blue-700">
+                            View extracted text
+                          </summary>
+                          <p className="mt-2 max-w-3xl whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                            {attachment.extracted_text_preview}
+                          </p>
+                        </details>
+                      )}
                     </div>
                     <StatusBadge status={attachment.processing_status} />
                   </div>

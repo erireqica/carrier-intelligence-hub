@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     google_oauth_redirect_uri: AnyHttpUrl = "http://localhost:8000/api/v1/gmail/oauth/callback"
     gmail_poll_interval_seconds: int = Field(default=60, ge=5)
     gmail_initial_lookback_days: int = Field(default=7, ge=1, le=365)
+    openai_api_key: SecretStr | None = None
+    openai_model: str = "gpt-5.6"
+    ai_auto_apply_confidence_threshold: float = Field(default=0.80, ge=0, le=1)
+    ai_max_source_chars: int = Field(default=120_000, ge=1_000, le=1_000_000)
+    message_process_poll_interval_seconds: int = Field(default=10, ge=5)
+    pdf_max_attachment_bytes: int = Field(default=10_485_760, ge=1_024)
+    pdf_max_pages: int = Field(default=50, ge=1, le=1_000)
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_ROOT / ".env",
@@ -40,6 +47,12 @@ class Settings(BaseSettings):
         )
         return all(
             value is not None and bool(value.get_secret_value().strip()) for value in secrets
+        )
+
+    @property
+    def openai_configured(self) -> bool:
+        return self.openai_api_key is not None and bool(
+            self.openai_api_key.get_secret_value().strip()
         )
 
 

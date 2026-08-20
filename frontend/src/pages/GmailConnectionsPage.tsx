@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { useCurrentUser } from '../app/auth'
 import {
@@ -16,6 +16,7 @@ import {
   disconnectGmailConnection,
   getGmailConnections,
   getGmailMessages,
+  processMessage,
   redirectToOAuth,
   startGmailOAuth,
   syncGmailConnection,
@@ -46,9 +47,21 @@ const oauthMessages: Record<string, { tone: string; message: string }> = {
 }
 
 function RecentMessages({ connectionId }: { connectionId: number }) {
+  const queryClient = useQueryClient()
   const messages = useQuery({
     queryKey: ['gmail-connections', connectionId, 'messages'],
     queryFn: () => getGmailMessages(connectionId),
+  })
+  const process = useMutation({
+    mutationFn: (messageId: number) => processMessage(messageId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['gmail-connections', connectionId, 'messages'],
+      })
+      await queryClient.invalidateQueries({ queryKey: ['reviews'] })
+      await queryClient.invalidateQueries({ queryKey: ['cases'] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+    },
   })
   if (messages.isPending)
     return (
@@ -80,6 +93,7 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
             <th className="px-3 py-2">Subject</th>
             <th className="px-3 py-2">State</th>
             <th className="px-3 py-2">Attachments</th>
+            <th className="px-3 py-2">Action</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
@@ -93,10 +107,48 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
                 <StatusBadge status={message.processing_status} />
               </td>
               <td className="px-3 py-3">{message.attachment_count}</td>
+              <td className="px-3 py-3">
+                {message.review_id ? (
+                  <Link
+                    className="font-semibold text-blue-700"
+                    to={`/reviews/${message.review_id}`}
+                  >
+                    Review
+                  </Link>
+                ) : message.case_id ? (
+                  <Link
+                    className="font-semibold text-blue-700"
+                    to={`/cases/${message.case_id}`}
+                  >
+                    Open case
+                  </Link>
+                ) : ['RECEIVED', 'FAILED'].includes(
+                    message.processing_status,
+                  ) ? (
+                  <Button
+                    variant="secondary"
+                    onClick={() => process.mutate(message.id)}
+                    disabled={process.isPending}
+                  >
+                    {process.isPending && process.variables === message.id
+                      ? 'Analyzing…'
+                      : message.processing_status === 'FAILED'
+                        ? 'Retry analysis'
+                        : 'Analyze now'}
+                  </Button>
+                ) : (
+                  <span className="text-slate-500">Processing…</span>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
+      {process.error && (
+        <p className="mt-3 text-sm text-red-700" role="alert">
+          {process.error.message}
+        </p>
+      )}
     </div>
   )
 }

@@ -10,8 +10,12 @@ import type {
   GmailConnectionsResponse,
   GmailMessage,
   GmailSyncResult,
+  HumanAnalysisInput,
+  MessageAnalysis,
+  MessageProcessingResult,
   PageInfo,
   ReviewItem,
+  ReviewDetail,
   TaskItem,
   TaskStatus,
 } from './types'
@@ -127,6 +131,24 @@ export const updateReview = (
   apiRequest<ReviewItem>(`/reviews/${id}`, {
     method: 'PATCH',
     body: JSON.stringify({ status, resolution_notes: resolutionNotes ?? null }),
+  })
+export const getReviewAnalysis = (id: number) =>
+  apiRequest<ReviewDetail>(`/reviews/${id}/analysis`)
+export const getMessageAnalysis = (id: number) =>
+  apiRequest<MessageAnalysis>(`/carrier-messages/${id}/analysis`)
+export const processMessage = (id: number) =>
+  apiRequest<MessageProcessingResult>(`/carrier-messages/${id}/process`, {
+    method: 'POST',
+  })
+export const applyReviewAnalysis = (id: number, data: HumanAnalysisInput) =>
+  apiRequest<MessageProcessingResult>(`/reviews/${id}/apply-analysis`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+export const dismissReviewAnalysis = (id: number, resolutionNotes?: string) =>
+  apiRequest<MessageProcessingResult>(`/reviews/${id}/dismiss-analysis`, {
+    method: 'POST',
+    body: JSON.stringify({ resolution_notes: resolutionNotes ?? null }),
   })
 export const getGmailConnections = () =>
   apiRequest<GmailConnectionsResponse>('/gmail-connections')

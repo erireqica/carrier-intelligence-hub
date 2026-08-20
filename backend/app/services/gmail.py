@@ -22,8 +22,8 @@ from app.core.time import utc_now
 from app.integrations.gmail.crypto import TokenCipher
 from app.integrations.gmail.oauth import GMAIL_READONLY_SCOPE, GoogleOAuthClient, OAuthTokenSet
 from app.integrations.gmail.sync import MailboxFactory, sync_connection
-from app.models.enums import GmailConnectionStatus, UserRole
-from app.models.operations import Attachment, CarrierMessage
+from app.models.enums import GmailConnectionStatus, ReviewStatus, UserRole
+from app.models.operations import Attachment, CarrierMessage, ReviewItem
 from app.models.organization import (
     GmailConnection,
     GmailOAuthCredential,
@@ -282,8 +282,17 @@ def recent_messages(
     db: Session, current: AuthContext, connection_id: int
 ) -> list[GmailMessageListItem]:
     connection = get_connection(db, current, connection_id, manager_can_access=True)
+    open_review_id = (
+        select(func.max(ReviewItem.id))
+        .where(
+            ReviewItem.carrier_message_id == CarrierMessage.id,
+            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+        )
+        .correlate(CarrierMessage)
+        .scalar_subquery()
+    )
     rows = db.execute(
-        select(CarrierMessage, func.count(Attachment.id))
+        select(CarrierMessage, func.count(Attachment.id), open_review_id)
         .outerjoin(Attachment, Attachment.carrier_message_id == CarrierMessage.id)
         .where(CarrierMessage.gmail_connection_id == connection.id)
         .group_by(CarrierMessage.id)
@@ -303,8 +312,11 @@ def recent_messages(
             received_at=message.received_at,
             processing_status=message.processing_status,
             attachment_count=attachment_count,
+            case_id=message.case_id,
+            review_id=review_id,
+            last_processing_error_code=message.last_processing_error_code,
         )
-        for message, attachment_count in rows
+        for message, attachment_count, review_id in rows
     ]
 
 

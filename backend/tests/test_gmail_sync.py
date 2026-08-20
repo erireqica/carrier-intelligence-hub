@@ -198,6 +198,58 @@ def test_same_gmail_id_is_safe_across_connections(seeded_db: Session) -> None:
     )
 
 
+def test_unrelated_integrity_error_is_not_misreported_as_duplicate(seeded_db: Session) -> None:
+    owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert owner is not None
+    connection = create_connection(seeded_db, owner, "integrity@gmail.test")
+    fixture = gmail_message("bad-attachments", "alerts@americo.com", attachment=True)
+    duplicate = dict(fixture["payload"]["parts"][1])
+    duplicate["partId"] = "2"
+    fixture["payload"]["parts"].append(duplicate)
+    mailbox = FakeMailbox([fixture])
+
+    with pytest.raises(GmailTransientError, match="failed safely"):
+        sync_connection(
+            seeded_db,
+            connection.id,
+            mailbox_factory=lambda credential: (mailbox, False),
+        )
+
+    seeded_db.refresh(connection)
+    assert connection.status is GmailConnectionStatus.ERROR
+    assert (
+        seeded_db.scalar(
+            select(CarrierMessage).where(CarrierMessage.gmail_message_id == "bad-attachments")
+        )
+        is None
+    )
+
+
+def test_realistic_long_gmail_attachment_identity_is_persisted(seeded_db: Session) -> None:
+    owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert owner is not None
+    connection = create_connection(seeded_db, owner, "long-attachment@gmail.test")
+    fixture = gmail_message("long-attachment", "alerts@americo.com", attachment=True)
+    long_identity = "opaque-" + "x" * 397
+    fixture["payload"]["parts"][1]["body"]["attachmentId"] = long_identity
+    mailbox = FakeMailbox([fixture])
+
+    result = sync_connection(
+        seeded_db,
+        connection.id,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+
+    assert result.ingested == 1
+    attachment = seeded_db.scalar(
+        select(Attachment)
+        .join(CarrierMessage)
+        .where(CarrierMessage.gmail_message_id == "long-attachment")
+    )
+    assert attachment is not None
+    assert attachment.external_id == long_identity
+
+
 def test_sync_credential_and_transient_errors_update_health(seeded_db: Session) -> None:
     owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
     assert owner is not None

@@ -1,9 +1,8 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import {
-  Button,
   EmptyState,
   ErrorState,
   LoadingState,
@@ -11,10 +10,9 @@ import {
   StatusBadge,
 } from '../components/ui'
 import { formatDate } from '../lib/format'
-import { getReviews, updateReview } from '../lib/api'
+import { getReviews } from '../lib/api'
 
 export function ReviewsPage() {
-  const queryClient = useQueryClient()
   const [status, setStatus] = useState('')
   const reviews = useQuery({
     queryKey: ['reviews', status],
@@ -25,18 +23,6 @@ export function ReviewsPage() {
           ...(status ? { status } : {}),
         }).toString(),
       ),
-  })
-  const mutation = useMutation({
-    mutationFn: (id: number) =>
-      updateReview(
-        id,
-        'RESOLVED',
-        'Reviewed and resolved by the assigned user.',
-      ),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['reviews'] })
-      await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
-    },
   })
   if (reviews.isPending) return <LoadingState label="Loading review queue…" />
   if (reviews.isError)
@@ -119,6 +105,9 @@ export function ReviewsPage() {
                   </p>
                   <p className="mt-3 text-xs text-slate-500">
                     Opened {formatDate(item.created_at)}
+                    {item.analysis_confidence === null
+                      ? ''
+                      : ` · Confidence ${Math.round(item.analysis_confidence * 100)}%`}
                     {item.assigned_reviewer
                       ? ` · Assigned to ${item.assigned_reviewer.full_name}`
                       : ''}
@@ -134,12 +123,12 @@ export function ReviewsPage() {
                     </Link>
                   )}
                   {!['RESOLVED', 'DISMISSED'].includes(item.status) && (
-                    <Button
-                      onClick={() => mutation.mutate(item.id)}
-                      disabled={mutation.isPending}
+                    <Link
+                      className="border border-slate-900 bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+                      to={`/reviews/${item.id}`}
                     >
-                      Resolve
-                    </Button>
+                      Review analysis
+                    </Link>
                   )}
                 </div>
               </div>

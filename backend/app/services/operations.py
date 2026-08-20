@@ -13,8 +13,10 @@ from app.api.schemas.domain import (
     CaseListItem,
     CaseListResponse,
     EvidenceItem,
+    MessageAnalysisResponse,
     MessageItem,
     PageInfo,
+    ReviewDetailResponse,
     ReviewItemResponse,
     ReviewListResponse,
     ReviewUpdate,
@@ -23,9 +25,10 @@ from app.api.schemas.domain import (
     TaskUpdate,
 )
 from app.core.time import utc_now
+from app.integrations.ai.schemas import AnalysisResult
 from app.models.audit import AuditEvent
 from app.models.enums import PolicyStatus, Priority, ReviewStatus, TaskStatus, UserRole
-from app.models.operations import CarrierMessage, PolicyCase, ReviewItem, Task
+from app.models.operations import Attachment, CarrierMessage, PolicyCase, ReviewItem, Task
 from app.models.organization import User
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
@@ -75,6 +78,22 @@ def case_item(case: PolicyCase) -> CaseListItem:
         needs_review=any(
             item.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW} for item in case.reviews
         ),
+    )
+
+
+def attachment_item(attachment: Attachment) -> AttachmentItem:
+    preview = None
+    if attachment.extracted_text:
+        preview = attachment.extracted_text[:4_000]
+    return AttachmentItem(
+        id=attachment.id,
+        filename=attachment.filename,
+        mime_type=attachment.mime_type,
+        size_bytes=attachment.size_bytes,
+        processing_status=attachment.processing_status,
+        page_count=attachment.page_count,
+        extraction_error_code=attachment.extraction_error_code,
+        extracted_text_preview=preview,
     )
 
 
@@ -137,6 +156,7 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
             joinedload(PolicyCase.assigned_agent),
             selectinload(PolicyCase.reviews),
             selectinload(PolicyCase.messages).selectinload(CarrierMessage.attachments),
+            selectinload(PolicyCase.messages).joinedload(CarrierMessage.analysis),
             selectinload(PolicyCase.tasks).joinedload(Task.assigned_agent),
             selectinload(PolicyCase.evidence),
         )
@@ -168,17 +188,26 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
                 processing_status=message.processing_status,
                 cleaned_content=message.cleaned_content,
                 original_deadline_text=message.original_deadline_text,
+                analysis_confidence=(
+                    float(message.analysis.overall_confidence) if message.analysis else None
+                ),
+                validation_flags=(
+                    list(message.analysis.validation_flags) if message.analysis else []
+                ),
+                review_id=next(
+                    (
+                        review.id
+                        for review in case.reviews
+                        if review.carrier_message_id == message.id
+                        and review.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW}
+                    ),
+                    None,
+                ),
             )
             for message in case.messages
         ],
         attachments=[
-            AttachmentItem(
-                id=attachment.id,
-                filename=attachment.filename,
-                mime_type=attachment.mime_type,
-                size_bytes=attachment.size_bytes,
-                processing_status=attachment.processing_status,
-            )
+            attachment_item(attachment)
             for message in case.messages
             for attachment in message.attachments
         ],
@@ -340,6 +369,7 @@ def list_reviews(
             query.options(
                 joinedload(ReviewItem.case),
                 joinedload(ReviewItem.carrier_message).joinedload(CarrierMessage.carrier),
+                joinedload(ReviewItem.carrier_message).joinedload(CarrierMessage.analysis),
                 joinedload(ReviewItem.assigned_reviewer),
             )
             .order_by(ReviewItem.created_at.desc())
@@ -349,26 +379,7 @@ def list_reviews(
         .unique()
         .all()
     )
-    items = [
-        ReviewItemResponse(
-            id=item.id,
-            case_id=item.case_id,
-            client_name=item.case.client_name if item.case else None,
-            policy_number=item.case.policy_number if item.case else None,
-            carrier_name=item.carrier_message.carrier.name,
-            message_subject=item.carrier_message.subject,
-            reason_code=item.reason_code,
-            reason=item.reason,
-            status=item.status,
-            resolution_notes=item.resolution_notes,
-            assigned_reviewer=(
-                agent_brief(item.assigned_reviewer) if item.assigned_reviewer else None
-            ),
-            created_at=item.created_at,
-            resolved_at=item.resolved_at,
-        )
-        for item in reviews
-    ]
+    items = [review_item_response(item) for item in reviews]
     return ReviewListResponse(items=items, page=page_info(page, page_size, total))
 
 
@@ -382,6 +393,7 @@ def get_review_item(db: Session, current: AuthContext, review_id: int) -> Review
         .options(
             joinedload(ReviewItem.case),
             joinedload(ReviewItem.carrier_message).joinedload(CarrierMessage.carrier),
+            joinedload(ReviewItem.carrier_message).joinedload(CarrierMessage.analysis),
             joinedload(ReviewItem.assigned_reviewer),
         )
     )
@@ -395,11 +407,32 @@ def get_review_item(db: Session, current: AuthContext, review_id: int) -> Review
     item = db.scalar(query)
     if item is None:
         raise HTTPException(status_code=404, detail="Review item not found")
+    return review_item_response(item)
+
+
+def review_item_response(item: ReviewItem) -> ReviewItemResponse:
+    proposed = None
+    confidence = None
+    if item.carrier_message.analysis is not None:
+        confidence = float(item.carrier_message.analysis.overall_confidence)
+        try:
+            proposed = AnalysisResult.model_validate(
+                item.carrier_message.analysis.model_result_json
+            )
+        except ValueError:
+            proposed = None
     return ReviewItemResponse(
         id=item.id,
+        message_id=item.carrier_message_id,
         case_id=item.case_id,
-        client_name=item.case.client_name if item.case else None,
-        policy_number=item.case.policy_number if item.case else None,
+        client_name=item.case.client_name
+        if item.case
+        else proposed.client_name
+        if proposed
+        else None,
+        policy_number=(
+            item.case.policy_number if item.case else proposed.policy_number if proposed else None
+        ),
         carrier_name=item.carrier_message.carrier.name,
         message_subject=item.carrier_message.subject,
         reason_code=item.reason_code,
@@ -409,7 +442,60 @@ def get_review_item(db: Session, current: AuthContext, review_id: int) -> Review
         assigned_reviewer=(agent_brief(item.assigned_reviewer) if item.assigned_reviewer else None),
         created_at=item.created_at,
         resolved_at=item.resolved_at,
+        analysis_confidence=confidence,
     )
+
+
+def message_analysis_response(
+    db: Session, current: AuthContext, message_id: int
+) -> MessageAnalysisResponse:
+    from app.services.message_processing import authorize_message
+
+    message = authorize_message(db, current, message_id)
+    analysis = message.analysis
+    proposed = None
+    final = None
+    if analysis is not None:
+        try:
+            proposed = AnalysisResult.model_validate(analysis.model_result_json)
+        except ValueError:
+            proposed = None
+        if analysis.final_result_json:
+            try:
+                final = AnalysisResult.model_validate(analysis.final_result_json)
+            except ValueError:
+                final = None
+    review_id = db.scalar(
+        select(ReviewItem.id)
+        .where(
+            ReviewItem.carrier_message_id == message.id,
+            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+        )
+        .order_by(ReviewItem.id.desc())
+        .limit(1)
+    )
+    return MessageAnalysisResponse(
+        message_id=message.id,
+        carrier_name=message.carrier.name,
+        processing_status=message.processing_status,
+        case_id=message.case_id,
+        review_id=review_id,
+        model_name=analysis.model_name if analysis else None,
+        schema_version=analysis.schema_version if analysis else None,
+        prompt_version=analysis.prompt_version if analysis else None,
+        overall_confidence=float(analysis.overall_confidence) if analysis else None,
+        validation_flags=list(analysis.validation_flags) if analysis else [],
+        proposed_result=proposed,
+        final_result=final,
+        source_content=message.cleaned_content,
+        attachments=[attachment_item(item) for item in message.attachments],
+    )
+
+
+def get_review_detail(db: Session, current: AuthContext, review_id: int) -> ReviewDetailResponse:
+    base = get_review_item(db, current, review_id)
+    analysis = message_analysis_response(db, current, base.message_id)
+    return ReviewDetailResponse(**base.model_dump(), analysis=analysis)
 
 
 def update_review(

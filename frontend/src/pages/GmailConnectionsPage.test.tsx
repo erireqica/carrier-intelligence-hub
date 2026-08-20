@@ -14,6 +14,7 @@ import {
   disconnectGmailConnection,
   getGmailConnections,
   getGmailMessages,
+  processMessage,
   redirectToOAuth,
   startGmailOAuth,
   syncGmailConnection,
@@ -27,6 +28,7 @@ vi.mock('../lib/api', () => ({
   disconnectGmailConnection: vi.fn(),
   getGmailConnections: vi.fn(),
   getGmailMessages: vi.fn(),
+  processMessage: vi.fn(),
   redirectToOAuth: vi.fn(),
   startGmailOAuth: vi.fn(),
   syncGmailConnection: vi.fn(),
@@ -69,6 +71,16 @@ function renderPage(
 beforeEach(() => {
   vi.resetAllMocks()
   vi.mocked(getGmailMessages).mockResolvedValue([])
+  vi.mocked(processMessage).mockResolvedValue({
+    message_id: 21,
+    processing_status: 'PROCESSED',
+    case_id: 31,
+    review_id: null,
+    tasks_created: 1,
+    attachments_extracted: 0,
+    analysis_confidence: 0.95,
+    validation_flags: [],
+  })
 })
 
 afterEach(cleanup)
@@ -202,12 +214,17 @@ describe('GmailConnectionsPage', () => {
         received_at: '2026-08-20T09:00:00Z',
         processing_status: 'RECEIVED',
         attachment_count: 2,
+        case_id: null,
+        review_id: null,
+        last_processing_error_code: null,
       },
     ])
     renderPage()
 
     expect(await screen.findByText('Renewal notice')).toBeInTheDocument()
     expect(screen.getByText('RECEIVED')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze now' }))
+    await waitFor(() => expect(processMessage).toHaveBeenCalledWith(21))
     fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Gmail could not be reached.',

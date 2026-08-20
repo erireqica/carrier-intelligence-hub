@@ -15,8 +15,9 @@ The schema keeps identity, incoming communications, operational work, and audit 
 | `carrier_senders` | Normalized exact approved sender addresses for a carrier. |
 | `cases` | Current, long-lived policy workflow state for one client/policy. |
 | `carrier_messages` | Individual incoming communications and their classification/processing state. |
-| `attachments` | Gmail attachment metadata in `PENDING` state; no attachment bytes are fetched yet. |
-| `tasks` | Assigned actions caused by a communication, including due date, priority, and completion. |
+| `attachments` | Gmail metadata plus extraction state, page count, safe error code, and extracted text; original bytes are never stored. |
+| `message_analyses` | One versioned model proposal per message, deterministic flags, and a separate optional human-finalized result. |
+| `tasks` | Assigned actions caused by a communication, including stable source action index, due date, priority, and completion. |
 | `review_items` | Human-review queue entries explaining what needs attention and how it was resolved. |
 | `case_evidence` | Short source excerpts supporting extracted case fields; never hidden reasoning. |
 | `audit_events` | Append-oriented operational/security history with safe JSON metadata. |
@@ -40,6 +41,7 @@ erDiagram
     POLICY_CASE o|--o{ CARRIER_MESSAGE : may_receive
     GMAIL_CONNECTION ||--o{ CARRIER_MESSAGE : ingests
     CARRIER_MESSAGE ||--o{ ATTACHMENT : supplies
+    CARRIER_MESSAGE ||--o| MESSAGE_ANALYSIS : proposes
     POLICY_CASE ||--o{ TASK : requires
     CARRIER_MESSAGE ||--o{ TASK : causes
     POLICY_CASE ||--o{ REVIEW_ITEM : flags
@@ -49,6 +51,6 @@ erDiagram
     AGENCY ||--o{ AUDIT_EVENT : records
 ```
 
-Important database rules include globally unique user emails for unambiguous login; unique carrier names, approved domains, and exact senders within an agency; a partial unique case identity on agency/carrier/policy number when a policy number exists; one OAuth credential row per Gmail connection; unique `(gmail_connection_id, gmail_message_id)` pairs for Gmail idempotency; unique `(carrier_message_id, external_id)` attachment metadata; and complete semantic fields for every `PROCESSED` carrier message. Focused indexes support agency/role lookups, session lookup/expiration, expiring OAuth state, assigned task status/due dates, case priority/status, message processing state, open reviews, and chronological/type-filtered audit logs.
+Important database rules include globally unique user emails; unique carrier configuration; a partial unique case identity on agency/carrier/policy number; one OAuth credential per connection; unique Gmail message and attachment identities; one analysis per message; one task per `(source message, action index)`; and complete semantic fields for every `PROCESSED` message. Model proposals remain preserved when a human supplies corrected final values, retaining accountability without hidden reasoning.
 
 Credential columns contain Fernet ciphertext, not plaintext Google tokens. The encryption key is deliberately outside PostgreSQL and Git. OAuth state stores a SHA-256 lookup hash rather than the browser value, expires after ten minutes, is bound to the initiating agency/user/session, and records consumption so callbacks cannot be replayed.

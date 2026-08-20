@@ -1,3 +1,5 @@
+import base64
+import binascii
 from collections.abc import Mapping
 from datetime import UTC
 from typing import Any, Protocol
@@ -25,6 +27,8 @@ class GmailMailbox(Protocol):
     def get_metadata(self, message_id: str) -> Mapping[str, Any]: ...
 
     def get_full_message(self, message_id: str) -> Mapping[str, Any]: ...
+
+    def get_attachment(self, message_id: str, attachment_id: str) -> bytes: ...
 
 
 class GoogleGmailMailbox:
@@ -65,6 +69,23 @@ class GoogleGmailMailbox:
         return self._execute(
             self._service.users().messages().get(userId="me", id=message_id, format="full")
         )
+
+    def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        response = self._execute(
+            self._service.users()
+            .messages()
+            .attachments()
+            .get(userId="me", messageId=message_id, id=attachment_id)
+        )
+        encoded = response.get("data")
+        if not isinstance(encoded, str):
+            raise GmailTransientError("Gmail attachment data was unavailable.")
+        try:
+            return base64.b64decode(
+                encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
+            )
+        except (binascii.Error, ValueError) as error:
+            raise GmailTransientError("Gmail attachment data was unavailable.") from error
 
 
 def mailbox_from_credential(

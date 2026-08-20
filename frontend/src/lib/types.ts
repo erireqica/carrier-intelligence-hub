@@ -11,6 +11,20 @@ export type ProcessingStatus =
 export type GmailHealth = 'CONNECTED' | 'NEEDS_ATTENTION' | 'NOT_CONNECTED'
 export type GmailConnectionStatus =
   'CONNECTED' | 'NEEDS_REAUTH' | 'ERROR' | 'DISCONNECTED'
+export type MessageClassification =
+  | 'POLICY_ISSUED'
+  | 'PENDING_REQUIREMENTS'
+  | 'LAPSE_NOTICE'
+  | 'COMMISSION_UPDATE'
+  | 'OTHER'
+export type PolicyStatus =
+  | 'ISSUED'
+  | 'PENDING'
+  | 'LAPSED'
+  | 'DECLINED'
+  | 'ACTIVE'
+  | 'GRACE_PERIOD'
+  | 'UNKNOWN'
 
 export type AgentBrief = { id: number; full_name: string; email: string }
 export type CarrierBrief = { id: number; name: string; code: string | null }
@@ -87,6 +101,9 @@ export type CaseDetail = CaseItem & {
     processing_status: ProcessingStatus
     cleaned_content: string
     original_deadline_text: string | null
+    analysis_confidence: number | null
+    validation_flags: string[]
+    review_id: number | null
   }>
   attachments: Array<{
     id: number
@@ -94,6 +111,9 @@ export type CaseDetail = CaseItem & {
     mime_type: string
     size_bytes: number
     processing_status: string
+    page_count: number | null
+    extraction_error_code: string | null
+    extracted_text_preview: string | null
   }>
   tasks: TaskItem[]
   evidence: Array<{
@@ -107,6 +127,7 @@ export type CaseDetail = CaseItem & {
 
 export type ReviewItem = {
   id: number
+  message_id: number
   case_id: number | null
   client_name: string | null
   policy_number: string | null
@@ -119,6 +140,81 @@ export type ReviewItem = {
   assigned_reviewer: AgentBrief | null
   created_at: string
   resolved_at: string | null
+  analysis_confidence: number | null
+}
+
+export type Deadline = {
+  raw_text: string | null
+  explicit_date: string | null
+  relative_count: number | null
+  relative_unit: 'BUSINESS_DAYS' | 'CALENDAR_DAYS' | null
+}
+
+export type ActionItem = {
+  title: string
+  description: string | null
+  priority: Priority
+  explicit_due_date: string | null
+  due_text: string | null
+}
+
+export type Evidence = {
+  field_name: string
+  source_id: string
+  excerpt: string
+}
+
+export type AnalysisResult = {
+  classification: MessageClassification
+  summary: string
+  priority: Priority
+  client_name: string | null
+  policy_number: string | null
+  policy_status: PolicyStatus
+  premium_amount: string | null
+  currency: string | null
+  effective_date: string | null
+  deadline: Deadline
+  requirements: string[]
+  action_items: ActionItem[]
+  evidence: Evidence[]
+  overall_confidence: number
+  uncertainties: string[]
+}
+
+export type HumanAnalysisInput = Omit<
+  AnalysisResult,
+  'evidence' | 'overall_confidence' | 'uncertainties'
+>
+
+export type MessageAnalysis = {
+  message_id: number
+  carrier_name: string
+  processing_status: ProcessingStatus
+  case_id: number | null
+  review_id: number | null
+  model_name: string | null
+  schema_version: string | null
+  prompt_version: string | null
+  overall_confidence: number | null
+  validation_flags: string[]
+  proposed_result: AnalysisResult | null
+  final_result: AnalysisResult | null
+  source_content: string
+  attachments: CaseDetail['attachments']
+}
+
+export type ReviewDetail = ReviewItem & { analysis: MessageAnalysis }
+
+export type MessageProcessingResult = {
+  message_id: number
+  processing_status: ProcessingStatus
+  case_id: number | null
+  review_id: number | null
+  tasks_created: number
+  attachments_extracted: number
+  analysis_confidence: number | null
+  validation_flags: string[]
 }
 
 export type Dashboard = {
@@ -172,6 +268,9 @@ export type GmailMessage = {
   received_at: string
   processing_status: ProcessingStatus
   attachment_count: number
+  case_id: number | null
+  review_id: number | null
+  last_processing_error_code: string | null
 }
 
 export type AgentItem = {

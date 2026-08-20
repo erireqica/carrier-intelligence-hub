@@ -14,6 +14,7 @@ import { SettingsPage } from '../pages/manager/SettingsPage'
 import { SystemLogsPage } from '../pages/manager/SystemLogsPage'
 import { ProfilePage } from '../pages/ProfilePage'
 import { ReviewsPage } from '../pages/ReviewsPage'
+import { ReviewDetailPage } from '../pages/ReviewDetailPage'
 import { TasksPage } from '../pages/TasksPage'
 
 export const managerRoutes = [
@@ -42,6 +43,7 @@ export const router = createBrowserRouter([
           { path: 'cases/:caseId', element: <CaseDetailPage /> },
           { path: 'tasks', element: <TasksPage /> },
           { path: 'reviews', element: <ReviewsPage /> },
+          { path: 'reviews/:reviewId', element: <ReviewDetailPage /> },
           { path: 'gmail-connections', element: <GmailConnectionsPage /> },
           { path: 'profile', element: <ProfilePage /> },
           {

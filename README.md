@@ -1,6 +1,6 @@
 # Carrier Intelligence Hub
 
-Carrier Intelligence Hub is an authenticated internal operations application for insurance agencies. It turns carrier communications into durable policy cases, assigned work, review items, evidence, and audit history. Stage 3 adds Google OAuth and read-only Gmail ingestion to the PostgreSQL-backed Agent and Manager workflow. AI analysis and case generation remain future work.
+Carrier Intelligence Hub is an authenticated internal operations application for insurance agencies. It turns approved carrier communications into durable policy cases, assigned work, review items, verified evidence, and audit history. Stage 4 adds in-memory PDF extraction and structured OpenAI analysis behind deterministic validation and human review.
 
 ## Stack
 
@@ -9,6 +9,7 @@ Carrier Intelligence Hub is an authenticated internal operations application for
 - PostgreSQL 17
 - Argon2id password hashing and database-backed browser sessions
 - Google OAuth 2.0, encrypted Gmail tokens, and a separate polling worker
+- PyMuPDF extraction and OpenAI Responses API Structured Outputs
 - Vitest/Testing Library, pytest, ESLint/Prettier, and Ruff
 
 ## Local setup
@@ -61,6 +62,9 @@ GOOGLE_TOKEN_ENCRYPTION_KEY=
 GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/api/v1/gmail/oauth/callback
 GMAIL_POLL_INTERVAL_SECONDS=60
 GMAIL_INITIAL_LOOKBACK_DAYS=7
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.6
+AI_AUTO_APPLY_CONFIDENCE_THRESHOLD=0.80
 ```
 
 `GOOGLE_TOKEN_ENCRYPTION_KEY` must be a dedicated Fernet key. Start the API and frontend as above, sign in to Carrier Hub, open **Gmail Connections**, and choose **Connect Gmail**. Select the Google account manually and approve only the Gmail read permission. The application never receives or stores the Gmail password.
@@ -78,6 +82,16 @@ For one polling pass, or one specific connection:
 & .\.venv\Scripts\python.exe -m app.workers.gmail_poll --once
 & .\.venv\Scripts\python.exe -m app.workers.gmail_poll --once --connection-id 1
 ```
+
+Run structured message processing separately from FastAPI and the Gmail poller:
+
+```powershell
+& .\.venv\Scripts\python.exe -m app.workers.message_process
+& .\.venv\Scripts\python.exe -m app.workers.message_process --once
+& .\.venv\Scripts\python.exe -m app.workers.message_process --once --message-id 1
+```
+
+The API starts normally without `OPENAI_API_KEY`; manual analysis returns a safe unconfigured response and the processor exits clearly. To exercise the real provider without database writes, configure the key only in ignored `backend/.env`, then run `python scripts/evaluate_stage4_samples.py`.
 
 Google testing-mode refresh-token policies may require reconnection. The application reports that condition as `NEEDS_REAUTH`; it does not bypass Google's policies. This stage is development-tested and must not be described as Google production verification, a security assessment, HIPAA compliance, SOC 2 compliance, or production authorization approval. Production deployment requires review of Google's applicable OAuth verification, user-data, and security requirements. See [Gmail integration](docs/gmail-integration.md).
 
@@ -107,6 +121,6 @@ Authentication uses an HttpOnly cookie containing an opaque random session token
 
 ## Current boundary
 
-Implemented now: login/logout, Agent/Manager authorization, database-backed sessions, CSRF defense, seeded operational records, cases, tasks, reviews, carrier configuration, analytics, audit history, Google OAuth, encrypted Gmail credentials, read-only polling, sender-whitelist filtering, MIME body parsing, and attachment metadata discovery.
+Implemented now: login/logout, Agent/Manager authorization, database-backed sessions, CSRF defense, cases/tasks/reviews/evidence/audits, carrier configuration, Google OAuth, encrypted Gmail credentials, read-only polling, sender-whitelist filtering, MIME parsing, in-memory Gmail PDF download, PyMuPDF extraction, strict structured AI proposals, deterministic validation, automatic case/task materialization, and human correction or dismissal.
 
-Not implemented yet: Gmail labels or mailbox mutation, push notifications, attachment download, PDF extraction, live AI classification/extraction, automatic Case/Task/Review generation, CRM integrations, invitations, or production deployment. A Gmail message enters as a source-only `CarrierMessage` in `RECEIVED` state with its case and semantic fields unset.
+Not implemented yet: OCR, Gmail labels or mailbox mutation, push notifications, CRM delivery, invitations, or production deployment. Confidence is a review signal, not a calibrated probability. The sender whitelist is not cryptographic SPF/DKIM/DMARC proof, and this development stage makes no production-compliance claim. See [AI processing](docs/ai-processing.md).

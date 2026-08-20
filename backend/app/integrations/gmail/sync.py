@@ -26,6 +26,7 @@ from app.models.organization import GmailConnection, GmailOAuthCredential
 from app.services.audit import record_audit_event
 
 MailboxFactory = Callable[[GmailOAuthCredential], tuple[GmailMailbox, bool]]
+MESSAGE_DUPLICATE_CONSTRAINT = "uq_gmail_connection_message"
 
 
 @dataclass
@@ -83,6 +84,11 @@ def _record_failure(
         metadata={"connection_id": connection.id},
     )
     db.commit()
+
+
+def _is_message_duplicate(error: IntegrityError) -> bool:
+    diagnostic = getattr(error.orig, "diag", None)
+    return getattr(diagnostic, "constraint_name", None) == MESSAGE_DUPLICATE_CONSTRAINT
 
 
 def sync_connection(
@@ -183,10 +189,12 @@ def sync_connection(
                         },
                     )
                     db.commit()
-                except IntegrityError:
+                except IntegrityError as error:
                     db.rollback()
-                    result.already_ingested += 1
-                    continue
+                    if _is_message_duplicate(error):
+                        result.already_ingested += 1
+                        continue
+                    raise
                 result.ingested += 1
                 result.attachments_discovered += len(parsed.attachments)
 

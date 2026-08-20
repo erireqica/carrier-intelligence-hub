@@ -13,6 +13,7 @@ from pydantic import (
 
 from app.api.schemas.common import InternalEmail
 from app.core.security import normalize_domain, normalize_email
+from app.integrations.ai.schemas import AnalysisResult
 from app.models.enums import (
     AttachmentStatus,
     AuditSeverity,
@@ -107,6 +108,9 @@ class MessageItem(BaseModel):
     processing_status: ProcessingStatus
     cleaned_content: str
     original_deadline_text: str | None
+    analysis_confidence: float | None
+    validation_flags: list[str]
+    review_id: int | None
 
 
 class AttachmentItem(BaseModel):
@@ -115,6 +119,9 @@ class AttachmentItem(BaseModel):
     mime_type: str
     size_bytes: int
     processing_status: AttachmentStatus
+    page_count: int | None
+    extraction_error_code: str | None
+    extracted_text_preview: str | None
 
 
 class EvidenceItem(BaseModel):
@@ -145,6 +152,7 @@ class CaseDetail(CaseListItem):
 
 class ReviewItemResponse(BaseModel):
     id: int
+    message_id: int
     case_id: int | None
     client_name: str | None
     policy_number: str | None
@@ -157,6 +165,28 @@ class ReviewItemResponse(BaseModel):
     assigned_reviewer: AgentBrief | None
     created_at: datetime
     resolved_at: datetime | None
+    analysis_confidence: float | None
+
+
+class MessageAnalysisResponse(BaseModel):
+    message_id: int
+    carrier_name: str
+    processing_status: ProcessingStatus
+    case_id: int | None
+    review_id: int | None
+    model_name: str | None
+    schema_version: str | None
+    prompt_version: str | None
+    overall_confidence: float | None
+    validation_flags: list[str]
+    proposed_result: AnalysisResult | None
+    final_result: AnalysisResult | None
+    source_content: str
+    attachments: list[AttachmentItem]
+
+
+class ReviewDetailResponse(ReviewItemResponse):
+    analysis: MessageAnalysisResponse
 
 
 class ReviewListResponse(BaseModel):
@@ -212,6 +242,24 @@ class GmailMessageListItem(BaseModel):
     received_at: datetime
     processing_status: ProcessingStatus
     attachment_count: int
+    case_id: int | None
+    review_id: int | None
+    last_processing_error_code: str | None
+
+
+class MessageProcessingResult(BaseModel):
+    message_id: int
+    processing_status: ProcessingStatus
+    case_id: int | None
+    review_id: int | None
+    tasks_created: int
+    attachments_extracted: int
+    analysis_confidence: float | None
+    validation_flags: list[str]
+
+
+class ReviewDismissRequest(BaseModel):
+    resolution_notes: str | None = Field(default=None, max_length=2_000)
 
 
 class DashboardMetrics(BaseModel):

@@ -17,6 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -136,17 +137,24 @@ class CarrierMessage(TimestampMixin, Base):
     raw_content: Mapped[str] = mapped_column(Text, nullable=False)
     cleaned_content: Mapped[str] = mapped_column(Text, nullable=False)
     original_deadline_text: Mapped[str | None] = mapped_column(String(500))
+    processing_attempt_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_processing_error_code: Mapped[str | None] = mapped_column(String(100))
 
     case: Mapped[PolicyCase | None] = relationship(back_populates="messages")
     carrier: Mapped[Carrier] = relationship()
     attachments: Mapped[list[Attachment]] = relationship(back_populates="carrier_message")
+    analysis: Mapped[MessageAnalysis | None] = relationship(
+        back_populates="carrier_message", cascade="all, delete-orphan", uselist=False
+    )
 
 
 class Attachment(TimestampMixin, Base):
     __tablename__ = "attachments"
     __table_args__ = (
         CheckConstraint(
-            "processing_status IN ('PENDING', 'EXTRACTED', 'FAILED', 'UNSUPPORTED')",
+            "processing_status IN ('PENDING', 'EXTRACTED', 'NEEDS_OCR', 'FAILED', 'UNSUPPORTED')",
             name="ck_attachments_processing_status",
         ),
         UniqueConstraint(
@@ -158,7 +166,7 @@ class Attachment(TimestampMixin, Base):
     carrier_message_id: Mapped[int] = mapped_column(
         ForeignKey("carrier_messages.id", ondelete="CASCADE"), index=True, nullable=False
     )
-    external_id: Mapped[str | None] = mapped_column(String(255))
+    external_id: Mapped[str | None] = mapped_column(String(2048))
     filename: Mapped[str] = mapped_column(String(500), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -166,6 +174,9 @@ class Attachment(TimestampMixin, Base):
         Enum(AttachmentStatus, native_enum=False, length=24), nullable=False
     )
     extracted_text: Mapped[str | None] = mapped_column(Text)
+    extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    page_count: Mapped[int | None]
+    extraction_error_code: Mapped[str | None] = mapped_column(String(100))
 
     carrier_message: Mapped[CarrierMessage] = relationship(back_populates="attachments")
 
@@ -183,12 +194,22 @@ class Task(TimestampMixin, Base):
         ),
         Index("ix_tasks_assignee_status_due", "assigned_agent_id", "status", "due_at"),
         Index("ix_tasks_agency_priority", "agency_id", "priority"),
+        Index(
+            "uq_tasks_source_action",
+            "source_carrier_message_id",
+            "source_action_index",
+            unique=True,
+            postgresql_where=text(
+                "source_carrier_message_id IS NOT NULL AND source_action_index IS NOT NULL"
+            ),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id"), nullable=False)
     case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), nullable=False)
     source_carrier_message_id: Mapped[int | None] = mapped_column(ForeignKey("carrier_messages.id"))
+    source_action_index: Mapped[int | None]
     assigned_agent_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
@@ -254,3 +275,26 @@ class CaseEvidence(Base):
     case: Mapped[PolicyCase] = relationship(back_populates="evidence")
     carrier_message: Mapped[CarrierMessage] = relationship()
     attachment: Mapped[Attachment | None] = relationship()
+
+
+class MessageAnalysis(TimestampMixin, Base):
+    __tablename__ = "message_analyses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    carrier_message_id: Mapped[int] = mapped_column(
+        ForeignKey("carrier_messages.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    overall_confidence: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
+    model_result_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    validation_flags: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    final_result_json: Mapped[dict | None] = mapped_column(JSONB)
+    finalized_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    carrier_message: Mapped[CarrierMessage] = relationship(back_populates="analysis")
+    finalized_by: Mapped[User | None] = relationship()
