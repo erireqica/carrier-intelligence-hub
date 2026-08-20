@@ -16,6 +16,7 @@ from app.integrations.ai.schemas import (
     Evidence,
     HumanAnalysisInput,
 )
+from app.integrations.gmail.errors import GmailReauthorizationRequired, GmailTransientError
 from app.models.audit import AuditEvent
 from app.models.carriers import Carrier
 from app.models.enums import (
@@ -171,6 +172,30 @@ def auth_context(db: Session, user_id: int) -> AuthContext:
     return AuthContext(user=user, agency=user.agency, session=session, csrf_token=csrf)
 
 
+def add_pending_pdf_attachment(db: Session, message: CarrierMessage) -> Attachment:
+    connection = db.get(GmailConnection, message.gmail_connection_id)
+    assert connection is not None
+    db.add(
+        GmailOAuthCredential(
+            gmail_connection_id=connection.id,
+            encrypted_access_token="synthetic",
+            encrypted_refresh_token="synthetic",
+            granted_scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+        )
+    )
+    attachment = Attachment(
+        carrier_message_id=message.id,
+        external_id=f"attachment-{message.id}",
+        filename="requirements.pdf",
+        mime_type="application/pdf",
+        size_bytes=2048,
+        processing_status=AttachmentStatus.PENDING,
+    )
+    db.add(attachment)
+    db.commit()
+    return attachment
+
+
 def test_strong_analysis_creates_case_tasks_evidence_and_is_idempotent(
     seeded_db: Session,
 ) -> None:
@@ -279,6 +304,137 @@ def test_pdf_attachment_is_downloaded_in_memory_extracted_and_joined_to_source(
     assert attachment.page_count == 1
     assert "Synthetic PDF requirement" in (attachment.extracted_text or "")
     assert "Synthetic PDF requirement" in analyzer.last_source
+
+
+def test_attachment_reauthorization_pauses_processing_until_reconnect(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Reauthorization Client",
+        policy="REAUTH-100",
+        subject_suffix="attachment-reauth",
+    )
+    attachment = add_pending_pdf_attachment(seeded_db, message)
+    other_message = create_received_message(
+        seeded_db,
+        client="Other Connection Client",
+        policy="OTHER-100",
+        subject_suffix="other-connection",
+    )
+    connection = seeded_db.get(GmailConnection, message.gmail_connection_id)
+    other_connection = seeded_db.get(GmailConnection, other_message.gmail_connection_id)
+    assert connection is not None and other_connection is not None
+
+    class ReauthorizationMailbox:
+        def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
+            raise GmailReauthorizationRequired("synthetic secret provider detail")
+
+    analyzer = FakeAnalyzer(analysis_result(client="Reauthorization Client", policy="REAUTH-100"))
+    failed = process_message(
+        seeded_db,
+        message.id,
+        analyzer=analyzer,
+        settings=Settings(message_process_max_auto_attempts=3),
+        mailbox_factory=lambda credential: (ReauthorizationMailbox(), False),
+    )
+
+    seeded_db.refresh(message)
+    seeded_db.refresh(attachment)
+    seeded_db.refresh(connection)
+    seeded_db.refresh(other_connection)
+    assert failed.processing_status is ProcessingStatus.FAILED
+    assert message.last_processing_error_code == "GMAIL_REAUTH_REQUIRED"
+    assert message.processing_next_retry_at is None
+    assert attachment.processing_status is AttachmentStatus.PENDING
+    assert connection.status is GmailConnectionStatus.NEEDS_REAUTH
+    assert other_connection.status is GmailConnectionStatus.CONNECTED
+    assert analyzer.calls == 0
+    assert message.case_id is None
+    assert message.raw_content.startswith("Client: Reauthorization Client")
+    assert message.cleaned_content.startswith("Client: Reauthorization Client")
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(Task)
+            .where(Task.source_carrier_message_id == message.id)
+        )
+        == 0
+    )
+    assert claim_message(seeded_db, message_id=message.id) is None
+    event = seeded_db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.carrier_message_id == message.id,
+            AuditEvent.event_type == "GMAIL_REAUTH_REQUIRED",
+        )
+    )
+    assert event is not None
+    assert event.event_metadata == {
+        "connection_id": connection.id,
+        "error_code": "GMAIL_REAUTH_REQUIRED",
+    }
+    assert "secret" not in event.description.lower()
+    assert "secret" not in str(event.event_metadata).lower()
+
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "Recovered PDF requirement for policy REAUTH-100")
+    content = document.tobytes()
+    document.close()
+
+    class ReconnectedMailbox:
+        def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
+            return content
+
+    connection.status = GmailConnectionStatus.CONNECTED
+    connection.last_error_summary = None
+    seeded_db.commit()
+    succeeded = process_message(
+        seeded_db,
+        message.id,
+        analyzer=analyzer,
+        mailbox_factory=lambda credential: (ReconnectedMailbox(), False),
+    )
+
+    seeded_db.refresh(message)
+    seeded_db.refresh(attachment)
+    assert succeeded.processing_status is ProcessingStatus.PROCESSED
+    assert message.processing_attempt_count == 2
+    assert attachment.processing_status is AttachmentStatus.EXTRACTED
+    assert analyzer.calls == 1
+
+
+def test_transient_attachment_failure_keeps_automatic_retry_semantics(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Transient Client",
+        policy="TRANSIENT-100",
+        subject_suffix="attachment-transient",
+    )
+    add_pending_pdf_attachment(seeded_db, message)
+    connection = seeded_db.get(GmailConnection, message.gmail_connection_id)
+    assert connection is not None
+
+    class TransientMailbox:
+        def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
+            raise GmailTransientError("synthetic provider outage")
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(analysis_result(client="Transient Client", policy="TRANSIENT-100")),
+        settings=Settings(message_process_max_auto_attempts=3),
+        mailbox_factory=lambda credential: (TransientMailbox(), False),
+    )
+
+    seeded_db.refresh(message)
+    seeded_db.refresh(connection)
+    assert result.processing_status is ProcessingStatus.FAILED
+    assert message.last_processing_error_code == "ATTACHMENT_DOWNLOAD_FAILED"
+    assert message.processing_next_retry_at is not None
+    assert connection.status is GmailConnectionStatus.CONNECTED
 
 
 def test_existing_case_client_mismatch_routes_to_one_review(seeded_db: Session) -> None:

@@ -22,6 +22,7 @@ from app.integrations.pdf import extract_pdf
 from app.models.enums import (
     AttachmentStatus,
     AuditSeverity,
+    GmailConnectionStatus,
     MessageClassification,
     PolicyStatus,
     ProcessingStatus,
@@ -235,6 +236,38 @@ def mark_failed(
             description="Automatic carrier message retries exhausted",
             metadata={"attempt": message.processing_attempt_count, "error_code": code},
         )
+    db.commit()
+    return ProcessingResult(message.id, ProcessingStatus.FAILED)
+
+
+def mark_gmail_reauth_required(db: Session, message_id: int) -> ProcessingResult:
+    db.rollback()
+    message = db.get(CarrierMessage, message_id)
+    if message is None:
+        raise LookupError("Carrier message not found")
+    message.processing_status = ProcessingStatus.FAILED
+    message.last_processing_error_code = "GMAIL_REAUTH_REQUIRED"
+    message.processing_started_at = None
+    message.processing_next_retry_at = None
+    connection = _connection(db, message)
+    if connection is not None:
+        connection.status = GmailConnectionStatus.NEEDS_REAUTH
+        connection.last_error_summary = (
+            "Google authorization is no longer valid. Reconnect this inbox."
+        )
+    enqueue_for_message(db, message)
+    record_audit_event(
+        db,
+        agency_id=message.agency_id,
+        carrier_message_id=message.id,
+        event_type="GMAIL_REAUTH_REQUIRED",
+        severity=AuditSeverity.WARNING,
+        description="Gmail authorization must be renewed before processing can continue",
+        metadata={
+            "connection_id": message.gmail_connection_id,
+            "error_code": "GMAIL_REAUTH_REQUIRED",
+        },
+    )
     db.commit()
     return ProcessingResult(message.id, ProcessingStatus.FAILED)
 
@@ -699,7 +732,9 @@ def process_claimed_message(
             settings=active,
             mailbox_factory=mailbox_factory,
         )
-    except GmailReauthorizationRequired, GmailTransientError:
+    except GmailReauthorizationRequired:
+        return mark_gmail_reauth_required(db, message_id)
+    except GmailTransientError:
         return mark_failed(db, message_id, "ATTACHMENT_DOWNLOAD_FAILED", settings=active)
     except Exception:
         return mark_failed(db, message_id, "PDF_EXTRACTION_FAILED", settings=active)

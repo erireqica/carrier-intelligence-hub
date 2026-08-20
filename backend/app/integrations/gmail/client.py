@@ -1,6 +1,7 @@
 import base64
 import binascii
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC
 from typing import Any, Protocol
 
@@ -26,6 +27,12 @@ from app.integrations.gmail.oauth import GMAIL_MODIFY_SCOPE, GOOGLE_TOKEN_URI
 from app.models.organization import GmailOAuthCredential
 
 
+@dataclass(frozen=True)
+class GmailThreadLabelState:
+    any_label_ids: frozenset[str]
+    all_label_ids: frozenset[str]
+
+
 class GmailMailbox(Protocol):
     def list_messages(self, query: str, page_token: str | None = None) -> Mapping[str, Any]: ...
 
@@ -39,7 +46,7 @@ class GmailMailbox(Protocol):
 
     def create_label(self, name: str) -> Mapping[str, Any]: ...
 
-    def get_thread_label_ids(self, thread_id: str) -> set[str]: ...
+    def get_thread_label_state(self, thread_id: str) -> GmailThreadLabelState: ...
 
     def modify_thread_labels(
         self, thread_id: str, *, add_label_ids: list[str], remove_label_ids: list[str]
@@ -166,18 +173,34 @@ class GoogleGmailMailbox:
             )
         )
 
-    def get_thread_label_ids(self, thread_id: str) -> set[str]:
+    def get_thread_label_state(self, thread_id: str) -> GmailThreadLabelState:
         self._require_modify()
         response = self._execute_label(
             self._service.users().threads().get(userId="me", id=thread_id, format="minimal"),
             missing_kind="thread",
         )
-        label_ids: set[str] = set()
-        for message in response.get("messages", []) or []:
-            if not isinstance(message, Mapping):
-                continue
-            label_ids.update(str(item) for item in message.get("labelIds", []) or [])
-        return label_ids
+        raw_messages = response.get("messages")
+        if not isinstance(raw_messages, list):
+            return GmailThreadLabelState(frozenset(), frozenset())
+
+        per_message: list[set[str]] = []
+        for message in raw_messages:
+            label_ids: set[str] = set()
+            if isinstance(message, Mapping):
+                raw_label_ids = message.get("labelIds")
+                if isinstance(raw_label_ids, list):
+                    label_ids = {
+                        label_id
+                        for label_id in raw_label_ids
+                        if isinstance(label_id, str) and label_id
+                    }
+            per_message.append(label_ids)
+
+        if not per_message:
+            return GmailThreadLabelState(frozenset(), frozenset())
+        any_label_ids = set().union(*per_message)
+        all_label_ids = set(per_message[0]).intersection(*per_message[1:])
+        return GmailThreadLabelState(frozenset(any_label_ids), frozenset(all_label_ids))
 
     def modify_thread_labels(
         self, thread_id: str, *, add_label_ids: list[str], remove_label_ids: list[str]

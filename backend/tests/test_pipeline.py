@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.integrations.ai.schemas import ActionItem, AnalysisResult, Deadline, Evidence
+from app.integrations.gmail.client import GmailThreadLabelState
 from app.integrations.gmail.errors import GmailTransientError
 from app.integrations.gmail.oauth import GMAIL_MODIFY_SCOPE
 from app.integrations.gmail.sync import sync_connection
@@ -81,8 +82,9 @@ class PipelineMailbox:
         self.labels[name] = label_id
         return {"id": label_id, "name": name, "type": "user"}
 
-    def get_thread_label_ids(self, thread_id: str) -> set[str]:
-        return set(self.thread_labels.get(thread_id, set()))
+    def get_thread_label_state(self, thread_id: str) -> GmailThreadLabelState:
+        labels = frozenset(self.thread_labels.get(thread_id, set()))
+        return GmailThreadLabelState(labels, labels)
 
     def modify_thread_labels(
         self, thread_id: str, *, add_label_ids: list[str], remove_label_ids: list[str]
