@@ -18,11 +18,13 @@ from app.models.enums import (
     AuditSeverity,
     GmailConnectionStatus,
     GmailHealth,
+    GmailLabelSyncStatus,
     ProcessingStatus,
     ReviewStatus,
     TaskStatus,
     UserRole,
 )
+from app.models.gmail_labels import GmailThreadLabelSync
 from app.models.operations import CarrierMessage, PolicyCase, ReviewItem, Task
 from app.models.organization import GmailConnection, User
 from app.services.auth import AuthContext
@@ -83,10 +85,14 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
             )
         )
     review_items = db.scalar(review_query) or 0
+    connection_scope = select(GmailConnection.id).where(*gmail_filters)
     message_filters = [CarrierMessage.agency_id == current.user.agency_id]
     if current.user.role is UserRole.AGENT:
         message_filters.append(
-            CarrierMessage.case_id.in_(case_scope.with_only_columns(PolicyCase.id))
+            or_(
+                CarrierMessage.gmail_connection_id.in_(connection_scope),
+                CarrierMessage.case_id.in_(case_scope.with_only_columns(PolicyCase.id)),
+            )
         )
     failures = (
         db.scalar(
@@ -101,6 +107,102 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
             select(func.count())
             .select_from(CarrierMessage)
             .where(*message_filters, CarrierMessage.processing_status == ProcessingStatus.PROCESSED)
+        )
+        or 0
+    )
+    received_backlog = (
+        db.scalar(
+            select(func.count())
+            .select_from(CarrierMessage)
+            .where(*message_filters, CarrierMessage.processing_status == ProcessingStatus.RECEIVED)
+        )
+        or 0
+    )
+    processing_messages = (
+        db.scalar(
+            select(func.count())
+            .select_from(CarrierMessage)
+            .where(
+                *message_filters, CarrierMessage.processing_status == ProcessingStatus.PROCESSING
+            )
+        )
+        or 0
+    )
+    retry_scheduled = (
+        db.scalar(
+            select(func.count())
+            .select_from(CarrierMessage)
+            .where(
+                *message_filters,
+                CarrierMessage.processing_status == ProcessingStatus.FAILED,
+                CarrierMessage.processing_next_retry_at.is_not(None),
+            )
+        )
+        or 0
+    )
+    failed_attention = (
+        db.scalar(
+            select(func.count())
+            .select_from(CarrierMessage)
+            .where(
+                *message_filters,
+                CarrierMessage.processing_status == ProcessingStatus.FAILED,
+                CarrierMessage.processing_next_retry_at.is_(None),
+            )
+        )
+        or 0
+    )
+    oldest_unprocessed = db.scalar(
+        select(func.min(CarrierMessage.received_at)).where(
+            *message_filters,
+            CarrierMessage.processing_status.in_(
+                [ProcessingStatus.RECEIVED, ProcessingStatus.PROCESSING, ProcessingStatus.FAILED]
+            ),
+        )
+    )
+    label_filters = [GmailThreadLabelSync.agency_id == current.user.agency_id]
+    if current.user.role is UserRole.AGENT:
+        label_filters.append(GmailThreadLabelSync.gmail_connection_id.in_(connection_scope))
+    labels_pending = (
+        db.scalar(
+            select(func.count())
+            .select_from(GmailThreadLabelSync)
+            .where(
+                *label_filters,
+                GmailThreadLabelSync.status.in_(
+                    [
+                        GmailLabelSyncStatus.PENDING,
+                        GmailLabelSyncStatus.PROCESSING,
+                        GmailLabelSyncStatus.RETRY_WAIT,
+                    ]
+                ),
+            )
+        )
+        or 0
+    )
+    labels_attention = (
+        db.scalar(
+            select(func.count())
+            .select_from(GmailThreadLabelSync)
+            .where(
+                *label_filters,
+                GmailThreadLabelSync.status.in_(
+                    [GmailLabelSyncStatus.FAILED, GmailLabelSyncStatus.NEEDS_PERMISSION]
+                ),
+            )
+        )
+        or 0
+    )
+    connections_attention = (
+        db.scalar(
+            select(func.count())
+            .select_from(GmailConnection)
+            .where(
+                *gmail_filters,
+                GmailConnection.status.in_(
+                    [GmailConnectionStatus.NEEDS_REAUTH, GmailConnectionStatus.ERROR]
+                ),
+            )
         )
         or 0
     )
@@ -156,6 +258,18 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
             review_items=review_items,
             processing_failures=failures,
             processed_messages=processed,
+            gmail_connections_needing_attention=connections_attention,
+            received_backlog=received_backlog,
+            processing_messages=processing_messages,
+            retry_scheduled=retry_scheduled,
+            failed_requiring_attention=failed_attention,
+            gmail_labels_pending=labels_pending,
+            gmail_labels_requiring_attention=labels_attention,
+            oldest_unprocessed_age_seconds=(
+                max(0, int((utc_now() - oldest_unprocessed).total_seconds()))
+                if oldest_unprocessed is not None
+                else None
+            ),
         ),
         recent_cases=[case_item(item) for item in recent_cases],
         recent_activity=[

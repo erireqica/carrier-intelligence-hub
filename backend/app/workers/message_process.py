@@ -15,6 +15,7 @@ from app.services.message_processing import (
     claim_message,
     mark_failed,
     process_claimed_message,
+    recover_stale_processing,
 )
 
 logger = logging.getLogger("carrier_hub.message_process")
@@ -38,6 +39,8 @@ def process_once(
     session_factory: sessionmaker[Session] | SessionFactory = SessionLocal,
     analyzer_factory: AnalyzerFactory = OpenAIAnalyzer,
 ) -> list[ProcessingResult]:
+    with session_factory() as db:
+        recover_stale_processing(db)
     analyzer = analyzer_factory()
     results: list[ProcessingResult] = []
     while True:

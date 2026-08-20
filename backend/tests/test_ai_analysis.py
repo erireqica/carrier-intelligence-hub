@@ -144,6 +144,53 @@ def test_validation_routes_competing_deadline_forms_to_review() -> None:
     assert "INVALID_DEADLINE" in validated.flags
 
 
+def test_policy_evidence_must_support_the_proposed_policy_value() -> None:
+    evidence = strong_result().evidence
+    evidence[1] = evidence[1].model_copy(update={"excerpt": "Policy: TEST-10001"})
+    validated = validate_analysis(
+        strong_result(policy_number="TEST-99999", evidence=evidence),
+        source_bundle(),
+        agency_timezone="UTC",
+        confidence_threshold=0.8,
+    )
+
+    assert "EVIDENCE_MISMATCH" in validated.flags
+    assert all(item.proposal.field_name != "policy_number" for item in validated.verified_evidence)
+
+
+def test_client_evidence_supports_comma_order_but_rejects_another_name() -> None:
+    content = (
+        source_bundle().documents[0].content.replace("Client: Test Client", "Client: Smith, Mary")
+    )
+    bundle = SourceBundle(
+        carrier_name="Americo",
+        subject="Pending requirements",
+        received_at=datetime(2026, 8, 20, 12, tzinfo=UTC),
+        documents=(SourceDocument("email", "EMAIL", content),),
+        rendered=content,
+        truncated=False,
+    )
+    evidence = strong_result().evidence
+    evidence[0] = evidence[0].model_copy(update={"excerpt": "Client: Smith, Mary"})
+    correct = validate_analysis(
+        strong_result(client_name="Mary Smith", evidence=evidence),
+        bundle,
+        agency_timezone="UTC",
+        confidence_threshold=0.8,
+        require_evidence=False,
+    )
+    wrong = validate_analysis(
+        strong_result(client_name="Robert Johnson", evidence=evidence),
+        bundle,
+        agency_timezone="UTC",
+        confidence_threshold=0.8,
+        require_evidence=False,
+    )
+
+    assert "EVIDENCE_MISMATCH" not in correct.flags
+    assert "EVIDENCE_MISMATCH" in wrong.flags
+
+
 def test_validation_normalizes_structured_action_evidence_index_alias() -> None:
     evidence = strong_result().evidence
     evidence[-1] = evidence[-1].model_copy(update={"field_name": "action_items[0]"})

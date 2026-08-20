@@ -163,6 +163,16 @@ export const syncGmailConnection = (connectionId: number) =>
   apiRequest<GmailSyncResult>(`/gmail-connections/${connectionId}/sync`, {
     method: 'POST',
   })
+export const retryGmailWorkflowLabels = (connectionId: number) =>
+  apiRequest<{ message: string }>(
+    `/gmail-connections/${connectionId}/workflow-labels/retry`,
+    { method: 'POST' },
+  )
+export const reconcileMessageGmailLabels = (messageId: number) =>
+  apiRequest<{ message: string }>(
+    `/carrier-messages/${messageId}/reconcile-gmail-labels`,
+    { method: 'POST' },
+  )
 export const disconnectGmailConnection = (connectionId: number) =>
   apiRequest<{ message: string }>(`/gmail-connections/${connectionId}`, {
     method: 'DELETE',

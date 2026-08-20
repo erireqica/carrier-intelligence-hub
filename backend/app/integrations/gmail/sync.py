@@ -188,6 +188,9 @@ def sync_connection(
                             "attachment_count": len(parsed.attachments),
                         },
                     )
+                    from app.services.gmail_labels import enqueue_for_message
+
+                    enqueue_for_message(db, message)
                     db.commit()
                 except IntegrityError as error:
                     db.rollback()

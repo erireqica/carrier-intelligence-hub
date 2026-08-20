@@ -166,16 +166,26 @@ def test_manager_carrier_whitelist_and_review_workflows(
 
     review = db.scalar(select(ReviewItem).where(ReviewItem.status == "OPEN"))
     assert review is not None
-    resolved = client.patch(
+    in_review = client.patch(
         f"/api/v1/reviews/{review.id}",
         json={
-            "status": "RESOLVED",
+            "status": "IN_REVIEW",
             "resolution_notes": "Reviewed against the source email.",
         },
         headers=headers,
     )
-    assert resolved.status_code == 200
-    assert resolved.json()["resolved_at"] is not None
+    assert in_review.status_code == 200
+    assert in_review.json()["status"] == "IN_REVIEW"
+    assert in_review.json()["resolved_at"] is None
+    for terminal in ("RESOLVED", "DISMISSED"):
+        rejected = client.patch(
+            f"/api/v1/reviews/{review.id}",
+            json={"status": terminal, "resolution_notes": "Bypass attempt."},
+            headers=headers,
+        )
+        assert rejected.status_code == 422
+    db.refresh(review)
+    assert review.status.value == "IN_REVIEW"
     logs = client.get("/api/v1/manager/audit-events?page_size=100")
     assert logs.status_code == 200
     event_types = {item["event_type"] for item in logs.json()["items"]}

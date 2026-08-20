@@ -175,7 +175,7 @@ export function Metric({
   attention = false,
 }: {
   label: string
-  value: number
+  value: ReactNode
   attention?: boolean
 }) {
   return (

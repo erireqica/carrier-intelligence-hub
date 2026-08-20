@@ -1,6 +1,6 @@
 # Carrier Intelligence Hub
 
-Carrier Intelligence Hub is an authenticated internal operations application for insurance agencies. It turns approved carrier communications into durable policy cases, assigned work, review items, verified evidence, and audit history. Stage 4 adds in-memory PDF extraction and structured OpenAI analysis behind deterministic validation and human review.
+Carrier Intelligence Hub is an authenticated internal operations application for insurance agencies. It automatically turns approved carrier communications into durable policy cases, assigned work, review items, verified evidence, audit history, and Gmail workflow labels. PDF extraction and structured OpenAI analysis remain behind deterministic validation and human review; bounded retries and independent workers make the full path recoverable.
 
 ## Stack
 
@@ -8,7 +8,7 @@ Carrier Intelligence Hub is an authenticated internal operations application for
 - FastAPI, Pydantic, SQLAlchemy 2, Alembic, and psycopg 3
 - PostgreSQL 17
 - Argon2id password hashing and database-backed browser sessions
-- Google OAuth 2.0, encrypted Gmail tokens, and a separate polling worker
+- Google OAuth 2.0, encrypted Gmail tokens, and separate polling/processing/label workers
 - PyMuPDF extraction and OpenAI Responses API Structured Outputs
 - Vitest/Testing Library, pytest, ESLint/Prettier, and Ruff
 
@@ -63,33 +63,44 @@ GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/api/v1/gmail/oauth/callback
 GMAIL_POLL_INTERVAL_SECONDS=60
 GMAIL_INITIAL_LOOKBACK_DAYS=7
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5.6
+OPENAI_MODEL=gpt-5.6-terra
 AI_AUTO_APPLY_CONFIDENCE_THRESHOLD=0.80
+MESSAGE_PROCESS_MAX_AUTO_ATTEMPTS=3
+MESSAGE_PROCESS_RETRY_BASE_SECONDS=30
+MESSAGE_PROCESS_RETRY_MAX_SECONDS=600
+MESSAGE_PROCESS_STALE_AFTER_SECONDS=600
+GMAIL_LABEL_MAX_ATTEMPTS=4
+GMAIL_LABEL_RETRY_BASE_SECONDS=30
+GMAIL_LABEL_RETRY_MAX_SECONDS=600
+GMAIL_LABEL_STALE_AFTER_SECONDS=300
 ```
 
-`GOOGLE_TOKEN_ENCRYPTION_KEY` must be a dedicated Fernet key. Start the API and frontend as above, sign in to Carrier Hub, open **Gmail Connections**, and choose **Connect Gmail**. Select the Google account manually and approve only the Gmail read permission. The application never receives or stores the Gmail password.
+`GOOGLE_TOKEN_ENCRYPTION_KEY` must be a dedicated Fernet key. Start the API and frontend as above, sign in to Carrier Hub, open **Gmail Connections**, and choose **Connect Gmail** or **Upgrade permissions**. Select the Google account manually and approve `gmail.modify`. This scope is broader than label-only access, but Carrier Hub's adapter exposes only message/attachment reads plus managed-label list, creation, thread inspection, and thread-label modification. It does not expose send, draft, delete, trash, archive, or read-state operations. The application never receives or stores the Gmail password.
 
-Run the polling process separately from FastAPI:
+## Normal development workflow
+
+Terminal 1 — FastAPI:
 
 ```powershell
 cd backend
-& .\.venv\Scripts\python.exe -m app.workers.gmail_poll
+& .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
-For one polling pass, or one specific connection:
+Terminal 2 — frontend:
 
 ```powershell
-& .\.venv\Scripts\python.exe -m app.workers.gmail_poll --once
-& .\.venv\Scripts\python.exe -m app.workers.gmail_poll --once --connection-id 1
+cd frontend
+npm run dev
 ```
 
-Run structured message processing separately from FastAPI and the Gmail poller:
+Terminal 3 — combined automated pipeline:
 
 ```powershell
-& .\.venv\Scripts\python.exe -m app.workers.message_process
-& .\.venv\Scripts\python.exe -m app.workers.message_process --once
-& .\.venv\Scripts\python.exe -m app.workers.message_process --once --message-id 1
+cd backend
+& .\.venv\Scripts\python.exe -m app.workers.pipeline
 ```
+
+Use `python -m app.workers.pipeline --once` for one complete poll → process → label pass. For focused debugging, the reusable components remain available as `app.workers.gmail_poll`, `app.workers.message_process`, and `app.workers.gmail_labels`; each supports `--once` and its documented ID filters. Do not run duplicate pollers or pipelines against the same development mailbox unknowingly.
 
 The API starts normally without `OPENAI_API_KEY`; manual analysis returns a safe unconfigured response and the processor exits clearly. To exercise the real provider without database writes, configure the key only in ignored `backend/.env`, then run `python scripts/evaluate_stage4_samples.py`.
 
@@ -121,6 +132,6 @@ Authentication uses an HttpOnly cookie containing an opaque random session token
 
 ## Current boundary
 
-Implemented now: login/logout, Agent/Manager authorization, database-backed sessions, CSRF defense, cases/tasks/reviews/evidence/audits, carrier configuration, Google OAuth, encrypted Gmail credentials, read-only polling, sender-whitelist filtering, MIME parsing, in-memory Gmail PDF download, PyMuPDF extraction, strict structured AI proposals, deterministic validation, automatic case/task materialization, and human correction or dismissal.
+Implemented now: login/logout, Agent/Manager authorization, database-backed sessions, CSRF defense, cases/tasks/reviews/evidence/audits, carrier configuration, Google OAuth, encrypted Gmail credentials, whitelist-first polling, MIME parsing, in-memory Gmail PDF download, PyMuPDF extraction, strict structured AI proposals, deterministic validation, automatic case/task materialization, human correction or dismissal, bounded message retries, stale-work recovery, and an outbox-based Gmail thread-label projection.
 
-Not implemented yet: OCR, Gmail labels or mailbox mutation, push notifications, CRM delivery, invitations, or production deployment. Confidence is a review signal, not a calibrated probability. The sender whitelist is not cryptographic SPF/DKIM/DMARC proof, and this development stage makes no production-compliance claim. See [AI processing](docs/ai-processing.md).
+Not implemented yet: OCR, Gmail push notifications, CRM delivery, invitations, or production deployment. Gmail uses polling. Confidence is a review signal, not a calibrated probability. The sender whitelist is not cryptographic SPF/DKIM/DMARC proof, and this development stage makes no production-compliance claim. See [AI processing](docs/ai-processing.md) and [pipeline reliability](docs/pipeline-reliability.md).

@@ -18,6 +18,7 @@ import {
   getGmailMessages,
   processMessage,
   redirectToOAuth,
+  retryGmailWorkflowLabels,
   startGmailOAuth,
   syncGmailConnection,
 } from '../lib/api'
@@ -38,12 +39,21 @@ const oauthMessages: Record<string, { tone: string; message: string }> = {
   },
   scope_missing: {
     tone: 'border-red-300 bg-red-50 text-red-950',
-    message: 'The required Gmail read permission was not granted.',
+    message: 'The required Gmail workflow-label permission was not granted.',
   },
   failed: {
     tone: 'border-red-300 bg-red-50 text-red-950',
     message: 'Gmail authorization could not be completed. Please try again.',
   },
+}
+
+const labelSyncText: Record<string, string> = {
+  APPLIED: 'Labels synced',
+  PENDING: 'Labels pending',
+  PROCESSING: 'Labels syncing',
+  RETRY_WAIT: 'Label retry scheduled',
+  NEEDS_PERMISSION: 'Permission upgrade required',
+  FAILED: 'Label sync failed',
 }
 
 function RecentMessages({ connectionId }: { connectionId: number }) {
@@ -84,7 +94,7 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
       <h3 className="mb-3 text-sm font-semibold">
         Recent ingested carrier messages
       </h3>
-      <table className="w-full min-w-[760px] text-left text-sm">
+      <table className="w-full min-w-[920px] text-left text-sm">
         <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
           <tr>
             <th className="px-3 py-2">Received</th>
@@ -92,6 +102,7 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
             <th className="px-3 py-2">Sender</th>
             <th className="px-3 py-2">Subject</th>
             <th className="px-3 py-2">State</th>
+            <th className="px-3 py-2">Gmail workflow</th>
             <th className="px-3 py-2">Attachments</th>
             <th className="px-3 py-2">Action</th>
           </tr>
@@ -105,6 +116,18 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
               <td className="px-3 py-3 font-medium">{message.subject}</td>
               <td className="px-3 py-3">
                 <StatusBadge status={message.processing_status} />
+                {message.processing_status === 'FAILED' && (
+                  <p className="mt-1 max-w-48 text-xs text-slate-500">
+                    {message.processing_next_retry_at
+                      ? `Automatic retry scheduled after attempt ${message.processing_attempt_count}`
+                      : 'Automatic retries exhausted. Manual attention required.'}
+                  </p>
+                )}
+              </td>
+              <td className="px-3 py-3 text-xs text-slate-600">
+                {message.label_sync_status
+                  ? labelSyncText[message.label_sync_status]
+                  : 'Not queued'}
               </td>
               <td className="px-3 py-3">{message.attachment_count}</td>
               <td className="px-3 py-3">
@@ -122,6 +145,9 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
                   >
                     Open case
                   </Link>
+                ) : message.processing_status === 'FAILED' &&
+                  message.processing_next_retry_at ? (
+                  <span className="text-slate-500">Retry scheduled</span>
                 ) : ['RECEIVED', 'FAILED'].includes(
                     message.processing_status,
                   ) ? (
@@ -174,7 +200,12 @@ function ConnectionCard({ connection }: { connection: GmailConnection }) {
     mutationFn: () => disconnectGmailConnection(connection.id),
     onSuccess: refresh,
   })
-  const actionError = sync.error ?? reconnect.error ?? disconnect.error
+  const retryLabels = useMutation({
+    mutationFn: () => retryGmailWorkflowLabels(connection.id),
+    onSuccess: refresh,
+  })
+  const actionError =
+    sync.error ?? reconnect.error ?? retryLabels.error ?? disconnect.error
   return (
     <article className="border border-slate-200 bg-white p-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -199,15 +230,34 @@ function ConnectionCard({ connection }: { connection: GmailConnection }) {
               {sync.isPending ? 'Syncing…' : 'Sync now'}
             </Button>
           )}
-          {connection.is_owner && connection.status !== 'CONNECTED' && (
-            <Button
-              variant="secondary"
-              onClick={() => reconnect.mutate()}
-              disabled={reconnect.isPending || disconnect.isPending}
-            >
-              {reconnect.isPending ? 'Opening Google…' : 'Reconnect'}
-            </Button>
-          )}
+          {connection.is_owner &&
+            (connection.status !== 'CONNECTED' ||
+              !connection.can_apply_workflow_labels) && (
+              <Button
+                variant="secondary"
+                onClick={() => reconnect.mutate()}
+                disabled={reconnect.isPending || disconnect.isPending}
+              >
+                {reconnect.isPending
+                  ? 'Opening Google…'
+                  : connection.can_apply_workflow_labels
+                    ? 'Reconnect'
+                    : 'Upgrade permissions'}
+              </Button>
+            )}
+          {connection.can_apply_workflow_labels &&
+            (connection.pending_label_sync_count > 0 ||
+              connection.failed_label_sync_count > 0) && (
+              <Button
+                variant="secondary"
+                onClick={() => retryLabels.mutate()}
+                disabled={retryLabels.isPending}
+              >
+                {retryLabels.isPending
+                  ? 'Queuing labels…'
+                  : 'Retry workflow labels'}
+              </Button>
+            )}
           {connection.is_owner && connection.status !== 'DISCONNECTED' && (
             <Button
               variant="danger"
@@ -233,6 +283,19 @@ function ConnectionCard({ connection }: { connection: GmailConnection }) {
           </dd>
         </div>
       </dl>
+      {connection.can_apply_workflow_labels ? (
+        <p className="mt-4 border border-green-200 bg-green-50 p-3 text-sm text-green-950">
+          Workflow labels ready · {connection.pending_label_sync_count} pending
+          · {connection.failed_label_sync_count} need attention
+        </p>
+      ) : (
+        <p className="mt-4 border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+          Connected for ingestion. Workflow labels require a permission upgrade.
+          {connection.is_owner
+            ? ' Use Upgrade permissions above.'
+            : ' The mailbox owner must reconnect.'}
+        </p>
+      )}
       {connection.status === 'NEEDS_REAUTH' && (
         <p className="mt-4 border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
           Google authorization is no longer valid. Reconnect this inbox.
@@ -291,7 +354,7 @@ export function GmailConnectionsPage() {
       <PageHeader
         eyebrow="Mailbox monitoring"
         title="Gmail Connections"
-        description="Google OAuth grants read-only access. The separate poller ingests only unread messages whose sender matches the agency whitelist."
+        description="Carrier Hub reads approved carrier communications and applies Carrier Hub workflow labels to Gmail threads. It does not send, delete, archive, or mark messages read."
         action={
           <Button
             onClick={() => connect.mutate()}
@@ -328,7 +391,7 @@ export function GmailConnectionsPage() {
           title="No Gmail inbox connected"
           description={
             connections.data.configured
-              ? 'Connect your Gmail inbox to begin read-only monitoring of approved carrier communications.'
+              ? 'Connect your Gmail inbox to monitor approved carrier communications and synchronize workflow labels.'
               : 'Google OAuth must be configured locally before an inbox can be connected.'
           }
         />
@@ -341,8 +404,9 @@ export function GmailConnectionsPage() {
       )}
       {auth.data!.user.role === 'MANAGER' && (
         <p className="text-xs text-slate-500">
-          Managers can view and sync agency connections. Reconnect and
-          disconnect remain restricted to the mailbox owner.
+          Managers can view, sync, and retry managed-label delivery for agency
+          connections. OAuth reconnect and disconnect remain restricted to the
+          mailbox owner.
         </p>
       )}
     </div>

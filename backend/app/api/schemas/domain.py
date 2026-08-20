@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import (
     AnyHttpUrl,
@@ -19,6 +20,7 @@ from app.models.enums import (
     AuditSeverity,
     GmailConnectionStatus,
     GmailHealth,
+    GmailLabelSyncStatus,
     MessageClassification,
     PolicyStatus,
     Priority,
@@ -195,7 +197,7 @@ class ReviewListResponse(BaseModel):
 
 
 class ReviewUpdate(BaseModel):
-    status: ReviewStatus
+    status: Literal[ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]
     resolution_notes: str | None = Field(default=None, max_length=2000)
 
 
@@ -209,6 +211,9 @@ class GmailConnectionItem(BaseModel):
     last_attempted_sync_at: datetime | None
     last_error_summary: str | None
     is_owner: bool
+    can_apply_workflow_labels: bool
+    pending_label_sync_count: int = 0
+    failed_label_sync_count: int = 0
 
 
 class GmailConnectionsResponse(BaseModel):
@@ -245,6 +250,9 @@ class GmailMessageListItem(BaseModel):
     case_id: int | None
     review_id: int | None
     last_processing_error_code: str | None
+    processing_attempt_count: int
+    processing_next_retry_at: datetime | None
+    label_sync_status: GmailLabelSyncStatus | None
 
 
 class MessageProcessingResult(BaseModel):
@@ -269,6 +277,14 @@ class DashboardMetrics(BaseModel):
     review_items: int
     processing_failures: int
     processed_messages: int
+    gmail_connections_needing_attention: int
+    received_backlog: int
+    processing_messages: int
+    retry_scheduled: int
+    failed_requiring_attention: int
+    gmail_labels_pending: int
+    gmail_labels_requiring_attention: int
+    oldest_unprocessed_age_seconds: int | None
 
 
 class WorkloadItem(BaseModel):

@@ -53,6 +53,18 @@ def normalize_excerpt(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
 
+def evidence_supports_proposed_value(result: AnalysisResult, evidence: Evidence) -> bool:
+    if evidence.field_name == "policy_number" and result.policy_number:
+        proposed = re.sub(r"\s+", "", result.policy_number).casefold()
+        excerpt = re.sub(r"\s+", "", evidence.excerpt).casefold()
+        return proposed in excerpt
+    if evidence.field_name == "client_name" and result.client_name:
+        proposed_tokens = set(re.findall(r"\w+", result.client_name.casefold()))
+        excerpt_tokens = set(re.findall(r"\w+", evidence.excerpt.casefold()))
+        return bool(proposed_tokens) and proposed_tokens.issubset(excerpt_tokens)
+    return True
+
+
 def add_business_days(start: date, count: int) -> date:
     result = start
     remaining = count
@@ -192,6 +204,9 @@ def validate_analysis(
             invalid_evidence = True
             continue
         if normalize_excerpt(proposal.excerpt) not in normalize_excerpt(source.content):
+            invalid_evidence = True
+            continue
+        if not evidence_supports_proposed_value(normalized, proposal):
             invalid_evidence = True
             continue
         verified.append(

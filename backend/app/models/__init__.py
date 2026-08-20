@@ -1,5 +1,6 @@
 from app.models.audit import AuditEvent
 from app.models.carriers import Carrier, CarrierDomain, CarrierSender
+from app.models.gmail_labels import GmailManagedLabel, GmailThreadLabelSync
 from app.models.operations import (
     Attachment,
     CarrierMessage,
@@ -29,8 +30,10 @@ __all__ = [
     "CarrierSender",
     "CaseEvidence",
     "GmailConnection",
+    "GmailManagedLabel",
     "GmailOAuthCredential",
     "GmailOAuthState",
+    "GmailThreadLabelSync",
     "MessageAnalysis",
     "PolicyCase",
     "ReviewItem",

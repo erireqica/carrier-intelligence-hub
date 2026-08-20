@@ -32,6 +32,7 @@ from app.models.operations import Attachment, CarrierMessage, PolicyCase, Review
 from app.models.organization import User
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
+from app.services.gmail_labels import enqueue_for_message
 
 
 def page_info(page: int, page_size: int, total: int) -> PageInfo:
@@ -339,6 +340,9 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
         )
     if not status_changed and not assignment_changed:
         return task_item(task)
+
+    if status_changed and task.source_message is not None:
+        enqueue_for_message(db, task.source_message)
 
     db.commit()
     db.refresh(task)

@@ -23,7 +23,11 @@ from app.integrations.gmail.errors import (
     GmailTokenExchangeError,
     GmailTransientError,
 )
-from app.integrations.gmail.oauth import GoogleOAuthClient
+from app.integrations.gmail.oauth import (
+    GMAIL_MODIFY_SCOPE,
+    GMAIL_READONLY_SCOPE,
+    GoogleOAuthClient,
+)
 from app.services import gmail as gmail_service
 from app.services.auth import resolve_session
 
@@ -81,6 +85,13 @@ def gmail_oauth_callback(request: Request, db: DbSession) -> RedirectResponse:
         return _frontend_redirect("failed")
     try:
         tokens = GoogleOAuthClient().exchange_code(code)
+        logger.info(
+            "Gmail OAuth token exchange succeeded modify_granted=%s "
+            "readonly_also_granted=%s refresh_token_returned=%s",
+            GMAIL_MODIFY_SCOPE in tokens.granted_scopes,
+            GMAIL_READONLY_SCOPE in tokens.granted_scopes,
+            tokens.refresh_token is not None,
+        )
         gmail_service.complete_oauth(db, current, state, tokens)
     except PermissionError:
         logger.warning("Gmail OAuth callback failed stage=scope_validation")
@@ -154,6 +165,17 @@ def get_recent_gmail_messages(
     connection_id: int, current: CurrentUser, db: DbSession
 ) -> list[GmailMessageListItem]:
     return gmail_service.recent_messages(db, current, connection_id)
+
+
+@router.post(
+    "/gmail-connections/{connection_id}/workflow-labels/retry",
+    response_model=MessageResponse,
+)
+def retry_gmail_workflow_labels(
+    connection_id: int, current: CsrfUser, db: DbSession
+) -> MessageResponse:
+    count = gmail_service.retry_connection_labels(db, current, connection_id)
+    return MessageResponse(message=f"Queued workflow labels for {count} Gmail threads")
 
 
 @router.delete(

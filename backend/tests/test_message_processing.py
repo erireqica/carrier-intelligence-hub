@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -20,6 +20,7 @@ from app.models.carriers import Carrier
 from app.models.enums import (
     AttachmentStatus,
     GmailConnectionStatus,
+    GmailLabelSyncStatus,
     MessageClassification,
     PolicyStatus,
     Priority,
@@ -27,6 +28,7 @@ from app.models.enums import (
     ReviewStatus,
     UserRole,
 )
+from app.models.gmail_labels import GmailThreadLabelSync
 from app.models.operations import (
     Attachment,
     CarrierMessage,
@@ -42,7 +44,10 @@ from app.services.message_processing import (
     ProcessingResult,
     apply_review,
     claim_message,
+    manual_process,
+    process_claimed_message,
     process_message,
+    recover_stale_processing,
 )
 from app.workers.message_process import (
     _configure_shutdown_signals,
@@ -144,6 +149,7 @@ def create_received_message(
         carrier_id=carrier.id,
         gmail_connection_id=connection.id,
         gmail_message_id=f"stage4-{subject_suffix}",
+        gmail_thread_id=f"thread-stage4-{subject_suffix}",
         sender="development-sender@example.test",
         subject=f"Pending requirements {subject_suffix}",
         received_at=datetime(2026, 8, 20, 12, tzinfo=UTC),
@@ -352,6 +358,14 @@ def test_low_confidence_review_can_be_corrected_and_applied(seeded_db: Session) 
     result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
     review = seeded_db.get(ReviewItem, result.review_id)
     assert review is not None
+    label_sync = seeded_db.scalar(
+        select(GmailThreadLabelSync).where(
+            GmailThreadLabelSync.gmail_connection_id == message.gmail_connection_id,
+            GmailThreadLabelSync.gmail_thread_id == message.gmail_thread_id,
+        )
+    )
+    assert label_sync is not None
+    review_generation = label_sync.generation
     original_json = dict(message.analysis.model_result_json)
     correction = HumanAnalysisInput(
         **proposed.model_dump(exclude={"evidence", "overall_confidence", "uncertainties"})
@@ -369,6 +383,61 @@ def test_low_confidence_review_can_be_corrected_and_applied(seeded_db: Session) 
     assert message.analysis.model_result_json == original_json
     assert message.analysis.final_result_json is not None
     assert message.analysis.finalized_by_user_id == context.user.id
+    seeded_db.refresh(label_sync)
+    assert label_sync.status is GmailLabelSyncStatus.PENDING
+    assert label_sync.generation == review_generation + 1
+    evidence_fields = set(
+        seeded_db.scalars(
+            select(CaseEvidence.field_name).where(CaseEvidence.carrier_message_id == message.id)
+        ).all()
+    )
+    assert {"client_name", "policy_number", "action_item:0"} <= evidence_fields
+
+
+def test_human_corrections_drop_stale_identity_and_action_evidence(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Original Client",
+        policy="ORIGINAL-100",
+        subject_suffix="corrected-evidence",
+    )
+    proposed = analysis_result(client="Original Client", policy="ORIGINAL-100", confidence=0.4)
+    processed = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+    review = seeded_db.get(ReviewItem, processed.review_id)
+    assert review is not None
+    changed_action = proposed.action_items[0].model_copy(
+        update={"title": "Call the corrected client"}
+    )
+    correction = HumanAnalysisInput(
+        **proposed.model_dump(
+            exclude={
+                "evidence",
+                "overall_confidence",
+                "uncertainties",
+                "action_items",
+                "client_name",
+                "policy_number",
+            }
+        ),
+        client_name="Corrected Client",
+        policy_number="CORRECTED-200",
+        action_items=[changed_action],
+    )
+    context = auth_context(seeded_db, review.assigned_reviewer_id)
+
+    finalized = apply_review(seeded_db, context, review.id, correction)
+
+    evidence_fields = set(
+        seeded_db.scalars(
+            select(CaseEvidence.field_name).where(CaseEvidence.carrier_message_id == message.id)
+        ).all()
+    )
+    assert finalized.processing_status is ProcessingStatus.PROCESSED
+    assert "client_name" not in evidence_fields
+    assert "policy_number" not in evidence_fields
+    assert "action_item:0" not in evidence_fields
 
 
 def test_provider_failure_is_failed_and_claim_is_single_use(seeded_db: Session) -> None:
@@ -400,6 +469,133 @@ def test_provider_failure_is_failed_and_claim_is_single_use(seeded_db: Session) 
     seeded_db.refresh(message)
     assert retried.processing_status is ProcessingStatus.PROCESSED
     assert message.processing_attempt_count == 3
+
+
+def test_transient_processing_failure_uses_due_time_backoff_and_then_succeeds(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db, client="Retry Client", policy="RETRY-100", subject_suffix="retry-due"
+    )
+    settings = Settings(
+        message_process_max_auto_attempts=3,
+        message_process_retry_base_seconds=30,
+        message_process_retry_max_seconds=60,
+    )
+    first = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(error="AI_RATE_LIMITED"),
+        settings=settings,
+    )
+    seeded_db.refresh(message)
+    assert first.processing_status is ProcessingStatus.FAILED
+    assert message.processing_attempt_count == 1
+    assert message.processing_next_retry_at is not None
+    assert claim_message(seeded_db, message_id=message.id) is None
+
+    message.processing_next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+    seeded_db.commit()
+    claimed = claim_message(seeded_db, message_id=message.id)
+    assert claimed == message.id
+    succeeded = process_claimed_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(analysis_result(client="Retry Client", policy="RETRY-100")),
+        settings=settings,
+    )
+    seeded_db.refresh(message)
+    assert succeeded.processing_status is ProcessingStatus.PROCESSED
+    assert message.processing_attempt_count == 2
+    assert message.processing_next_retry_at is None
+
+
+def test_retry_exhaustion_blocks_automatic_claim_but_manual_retry_overrides(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Exhausted Client",
+        policy="EXHAUSTED-100",
+        subject_suffix="retry-exhausted",
+    )
+    settings = Settings(
+        message_process_max_auto_attempts=2,
+        message_process_retry_base_seconds=1,
+        message_process_retry_max_seconds=1,
+    )
+    process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(error="AI_TIMEOUT"),
+        settings=settings,
+    )
+    message.processing_next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
+    seeded_db.commit()
+    assert claim_message(seeded_db, message_id=message.id) == message.id
+    process_claimed_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(error="AI_TIMEOUT"),
+        settings=settings,
+    )
+    seeded_db.refresh(message)
+    assert message.processing_attempt_count == 2
+    assert message.processing_next_retry_at is None
+    assert claim_message(seeded_db, message_id=message.id) is None
+
+    connection = seeded_db.get(GmailConnection, message.gmail_connection_id)
+    assert connection is not None
+    current = auth_context(seeded_db, connection.user_id)
+    manual = manual_process(
+        seeded_db,
+        current,
+        message.id,
+        analyzer=FakeAnalyzer(analysis_result(client="Exhausted Client", policy="EXHAUSTED-100")),
+    )
+    seeded_db.refresh(message)
+    assert manual.processing_status is ProcessingStatus.PROCESSED
+    assert message.processing_attempt_count == 3
+
+
+def test_nonretryable_failure_and_stale_processing_recovery(seeded_db: Session) -> None:
+    nonretryable = create_received_message(
+        seeded_db,
+        client="Auth Client",
+        policy="AUTH-100",
+        subject_suffix="auth-failure",
+    )
+    process_message(
+        seeded_db,
+        nonretryable.id,
+        analyzer=FakeAnalyzer(error="AI_AUTH_FAILED"),
+        settings=Settings(message_process_max_auto_attempts=3),
+    )
+    seeded_db.refresh(nonretryable)
+    assert nonretryable.processing_next_retry_at is None
+
+    stale = create_received_message(
+        seeded_db,
+        client="Stale Client",
+        policy="STALE-100",
+        subject_suffix="stale-processing",
+    )
+    stale.processing_status = ProcessingStatus.PROCESSING
+    stale.processing_attempt_count = 1
+    stale.processing_started_at = datetime.now(UTC) - timedelta(minutes=20)
+    seeded_db.commit()
+    recovered = recover_stale_processing(
+        seeded_db,
+        settings=Settings(
+            message_process_stale_after_seconds=60,
+            message_process_max_auto_attempts=3,
+        ),
+    )
+    seeded_db.refresh(stale)
+    assert recovered == 1
+    assert stale.processing_status is ProcessingStatus.FAILED
+    assert stale.last_processing_error_code == "STALE_PROCESSING_RECOVERED"
+    assert stale.processing_next_retry_at is not None
 
 
 def test_worker_isolates_one_unexpected_message_failure(test_engine, monkeypatch) -> None:
@@ -495,6 +691,20 @@ def test_review_analysis_api_enforces_scope_and_applies_human_correction(
     assert detail.status_code == 200
     assert detail.json()["analysis"]["validation_flags"] == ["LOW_CONFIDENCE"]
     assert detail.json()["analysis"]["source_content"].startswith("Client: API Review Client")
+    case_count = seeded_db.scalar(select(func.count()).select_from(PolicyCase))
+    task_count = seeded_db.scalar(select(func.count()).select_from(Task))
+    for terminal in ("RESOLVED", "DISMISSED"):
+        bypass = client.patch(
+            f"/api/v1/reviews/{result.review_id}",
+            json={"status": terminal},
+            headers={"X-CSRF-Token": owner_auth["csrf_token"]},
+        )
+        assert bypass.status_code == 422
+    seeded_db.refresh(message)
+    assert message.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert message.analysis.final_result_json is None
+    assert seeded_db.scalar(select(func.count()).select_from(PolicyCase)) == case_count
+    assert seeded_db.scalar(select(func.count()).select_from(Task)) == task_count
     correction = proposed.model_dump(
         mode="json", exclude={"evidence", "overall_confidence", "uncertainties"}
     )

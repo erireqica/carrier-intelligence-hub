@@ -20,9 +20,15 @@ from app.core.config import get_settings
 from app.core.security import normalize_email, token_hash
 from app.core.time import utc_now
 from app.integrations.gmail.crypto import TokenCipher
-from app.integrations.gmail.oauth import GMAIL_READONLY_SCOPE, GoogleOAuthClient, OAuthTokenSet
+from app.integrations.gmail.oauth import GMAIL_MODIFY_SCOPE, GoogleOAuthClient, OAuthTokenSet
 from app.integrations.gmail.sync import MailboxFactory, sync_connection
-from app.models.enums import GmailConnectionStatus, ReviewStatus, UserRole
+from app.models.enums import (
+    GmailConnectionStatus,
+    GmailLabelSyncStatus,
+    ReviewStatus,
+    UserRole,
+)
+from app.models.gmail_labels import GmailThreadLabelSync
 from app.models.operations import Attachment, CarrierMessage, ReviewItem
 from app.models.organization import (
     GmailConnection,
@@ -43,7 +49,41 @@ def _owner_brief(connection: GmailConnection) -> AgentBrief:
     )
 
 
-def connection_item(connection: GmailConnection, current: AuthContext) -> GmailConnectionItem:
+def connection_item(
+    db: Session, connection: GmailConnection, current: AuthContext
+) -> GmailConnectionItem:
+    credential = connection.oauth_credential
+    can_apply_labels = bool(credential and GMAIL_MODIFY_SCOPE in credential.granted_scopes)
+    pending = (
+        db.scalar(
+            select(func.count())
+            .select_from(GmailThreadLabelSync)
+            .where(
+                GmailThreadLabelSync.gmail_connection_id == connection.id,
+                GmailThreadLabelSync.status.in_(
+                    [
+                        GmailLabelSyncStatus.PENDING,
+                        GmailLabelSyncStatus.PROCESSING,
+                        GmailLabelSyncStatus.RETRY_WAIT,
+                    ]
+                ),
+            )
+        )
+        or 0
+    )
+    failed = (
+        db.scalar(
+            select(func.count())
+            .select_from(GmailThreadLabelSync)
+            .where(
+                GmailThreadLabelSync.gmail_connection_id == connection.id,
+                GmailThreadLabelSync.status.in_(
+                    [GmailLabelSyncStatus.FAILED, GmailLabelSyncStatus.NEEDS_PERMISSION]
+                ),
+            )
+        )
+        or 0
+    )
     return GmailConnectionItem(
         id=connection.id,
         gmail_address=connection.gmail_address,
@@ -54,13 +94,19 @@ def connection_item(connection: GmailConnection, current: AuthContext) -> GmailC
         last_attempted_sync_at=connection.last_attempted_sync_at,
         last_error_summary=connection.last_error_summary,
         is_owner=connection.user_id == current.user.id,
+        can_apply_workflow_labels=can_apply_labels,
+        pending_label_sync_count=pending,
+        failed_label_sync_count=failed,
     )
 
 
 def list_connections(db: Session, current: AuthContext) -> GmailConnectionsResponse:
     query = (
         select(GmailConnection)
-        .options(joinedload(GmailConnection.owner))
+        .options(
+            joinedload(GmailConnection.owner),
+            joinedload(GmailConnection.oauth_credential),
+        )
         .where(GmailConnection.agency_id == current.user.agency_id)
     )
     if current.user.role is UserRole.AGENT:
@@ -68,7 +114,7 @@ def list_connections(db: Session, current: AuthContext) -> GmailConnectionsRespo
     connections = db.scalars(query.order_by(GmailConnection.created_at.desc())).all()
     return GmailConnectionsResponse(
         configured=get_settings().gmail_oauth_configured,
-        connections=[connection_item(item, current) for item in connections],
+        connections=[connection_item(db, item, current) for item in connections],
     )
 
 
@@ -169,8 +215,8 @@ def complete_oauth(
     *,
     cipher: TokenCipher | None = None,
 ) -> GmailConnection:
-    if GMAIL_READONLY_SCOPE not in tokens.granted_scopes:
-        raise PermissionError("Required Gmail read scope was not granted")
+    if GMAIL_MODIFY_SCOPE not in tokens.granted_scopes:
+        raise PermissionError("Required Gmail workflow-label scope was not granted")
     gmail_address = normalize_email(tokens.gmail_address)
     existing = db.scalar(
         select(GmailConnection)
@@ -254,6 +300,9 @@ def complete_oauth(
     except IntegrityError as error:
         db.rollback()
         raise FileExistsError("This Gmail inbox is already connected") from error
+    from app.services.gmail_labels import reset_connection_label_syncs
+
+    reset_connection_label_syncs(db, connection.id)
     return connection
 
 
@@ -291,8 +340,17 @@ def recent_messages(
         .correlate(CarrierMessage)
         .scalar_subquery()
     )
+    label_sync_status = (
+        select(GmailThreadLabelSync.status)
+        .where(
+            GmailThreadLabelSync.gmail_connection_id == CarrierMessage.gmail_connection_id,
+            GmailThreadLabelSync.gmail_thread_id == CarrierMessage.gmail_thread_id,
+        )
+        .correlate(CarrierMessage)
+        .scalar_subquery()
+    )
     rows = db.execute(
-        select(CarrierMessage, func.count(Attachment.id), open_review_id)
+        select(CarrierMessage, func.count(Attachment.id), open_review_id, label_sync_status)
         .outerjoin(Attachment, Attachment.carrier_message_id == CarrierMessage.id)
         .where(CarrierMessage.gmail_connection_id == connection.id)
         .group_by(CarrierMessage.id)
@@ -315,9 +373,36 @@ def recent_messages(
             case_id=message.case_id,
             review_id=review_id,
             last_processing_error_code=message.last_processing_error_code,
+            processing_attempt_count=message.processing_attempt_count,
+            processing_next_retry_at=message.processing_next_retry_at,
+            label_sync_status=sync_status,
         )
-        for message, attachment_count, review_id in rows
+        for message, attachment_count, review_id, sync_status in rows
     ]
+
+
+def retry_connection_labels(db: Session, current: AuthContext, connection_id: int) -> int:
+    connection = get_connection(db, current, connection_id, manager_can_access=True)
+    from app.services.gmail_labels import enqueue_thread_label_sync
+
+    thread_ids = db.scalars(
+        select(CarrierMessage.gmail_thread_id)
+        .where(
+            CarrierMessage.gmail_connection_id == connection.id,
+            CarrierMessage.gmail_thread_id.is_not(None),
+            CarrierMessage.gmail_thread_id != "",
+        )
+        .distinct()
+    ).all()
+    for thread_id in thread_ids:
+        enqueue_thread_label_sync(
+            db,
+            agency_id=connection.agency_id,
+            gmail_connection_id=connection.id,
+            gmail_thread_id=thread_id,
+        )
+    db.commit()
+    return len(thread_ids)
 
 
 def disconnect(

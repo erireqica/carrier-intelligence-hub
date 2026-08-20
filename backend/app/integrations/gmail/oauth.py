@@ -29,6 +29,7 @@ from app.integrations.gmail.errors import (
 )
 
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 SAFE_TOKEN_EXCHANGE_REASONS = {
@@ -37,6 +38,7 @@ SAFE_TOKEN_EXCHANGE_REASONS = {
     "invalid_grant",
     "redirect_uri_mismatch",
     "state_mismatch",
+    "scope_change_invalid",
 }
 PROFILE_REASON_ALIASES = {
     "ACCESSNOTCONFIGURED": "SERVICE_DISABLED",
@@ -131,7 +133,7 @@ class GoogleOAuthClient:
                     "token_uri": GOOGLE_TOKEN_URI,
                 }
             },
-            scopes=[GMAIL_READONLY_SCOPE],
+            scopes=[GMAIL_MODIFY_SCOPE],
             state=state,
             autogenerate_code_verifier=False,
         )
@@ -146,10 +148,33 @@ class GoogleOAuthClient:
         )
         return url
 
+    @staticmethod
+    def _accept_incremental_scope_token(flow: Flow, warning: Warning) -> None:
+        """Recover OAuthlib's token when Google returns a valid scope superset."""
+        token = getattr(warning, "token", None)
+        returned_scope = getattr(warning, "new_scope", None)
+        if returned_scope is None and isinstance(token, Mapping):
+            returned_scope = token.get("scope")
+        if isinstance(returned_scope, str):
+            returned_scopes = set(returned_scope.split())
+        elif isinstance(returned_scope, list | tuple | set | frozenset):
+            returned_scopes = {item for item in returned_scope if isinstance(item, str)}
+        else:
+            returned_scopes = set()
+        if GMAIL_MODIFY_SCOPE not in returned_scopes:
+            raise PermissionError(
+                "Required Gmail workflow-label scope was not granted"
+            ) from warning
+        if not isinstance(token, Mapping) or not isinstance(token.get("access_token"), str):
+            raise GmailTokenExchangeError("scope_change_invalid") from warning
+        flow.oauth2session.token = dict(token)
+
     def exchange_code(self, code: str) -> OAuthTokenSet:
         flow = self._flow()
         try:
             flow.fetch_token(code=code)
+        except Warning as warning:
+            self._accept_incremental_scope_token(flow, warning)
         except Exception as error:
             provider_reason = getattr(error, "error", None)
             if provider_reason not in SAFE_TOKEN_EXCHANGE_REASONS:
@@ -170,8 +195,8 @@ class GoogleOAuthClient:
         scopes = sorted(
             set(granted_scopes if granted_scopes is not None else credentials.scopes or [])
         )
-        if GMAIL_READONLY_SCOPE not in scopes:
-            raise PermissionError("Required Gmail read scope was not granted")
+        if GMAIL_MODIFY_SCOPE not in scopes:
+            raise PermissionError("Required Gmail workflow-label scope was not granted")
         try:
             profile_request = (
                 build("gmail", "v1", credentials=credentials, cache_discovery=False)

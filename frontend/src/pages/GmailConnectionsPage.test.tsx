@@ -16,6 +16,7 @@ import {
   getGmailMessages,
   processMessage,
   redirectToOAuth,
+  retryGmailWorkflowLabels,
   startGmailOAuth,
   syncGmailConnection,
 } from '../lib/api'
@@ -30,6 +31,7 @@ vi.mock('../lib/api', () => ({
   getGmailMessages: vi.fn(),
   processMessage: vi.fn(),
   redirectToOAuth: vi.fn(),
+  retryGmailWorkflowLabels: vi.fn(),
   startGmailOAuth: vi.fn(),
   syncGmailConnection: vi.fn(),
 }))
@@ -44,6 +46,9 @@ const baseConnection: GmailConnection = {
   last_attempted_sync_at: null,
   last_error_summary: null,
   is_owner: true,
+  can_apply_workflow_labels: true,
+  pending_label_sync_count: 0,
+  failed_label_sync_count: 0,
 }
 
 function renderPage(
@@ -102,7 +107,7 @@ describe('GmailConnectionsPage', () => {
     ).toBeInTheDocument()
   })
 
-  it('starts a configured read-only OAuth connection', async () => {
+  it('starts a configured workflow-label OAuth connection', async () => {
     vi.mocked(getGmailConnections).mockResolvedValue({
       configured: true,
       connections: [],
@@ -217,6 +222,9 @@ describe('GmailConnectionsPage', () => {
         case_id: null,
         review_id: null,
         last_processing_error_code: null,
+        processing_attempt_count: 0,
+        processing_next_retry_at: null,
+        label_sync_status: 'PENDING',
       },
     ])
     renderPage()
@@ -240,7 +248,7 @@ describe('GmailConnectionsPage', () => {
 
     expect(
       await screen.findByText(
-        'The required Gmail read permission was not granted.',
+        'The required Gmail workflow-label permission was not granted.',
       ),
     ).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sync now' })).toBeInTheDocument()
@@ -251,8 +259,51 @@ describe('GmailConnectionsPage', () => {
       screen.queryByRole('button', { name: 'Disconnect' }),
     ).not.toBeInTheDocument()
     expect(
-      screen.getByText(/Managers can view and sync agency connections/),
+      screen.getByText(
+        /Managers can view, sync, and retry managed-label delivery/,
+      ),
     ).toBeInTheDocument()
     expect(disconnectGmailConnection).not.toHaveBeenCalled()
+  })
+
+  it('shows an owner permission upgrade action', async () => {
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: true,
+      connections: [
+        {
+          ...baseConnection,
+          can_apply_workflow_labels: false,
+          failed_label_sync_count: 1,
+        },
+      ],
+    })
+    vi.mocked(startGmailOAuth).mockResolvedValue({
+      authorization_url: 'https://accounts.google.test/upgrade',
+    })
+    renderPage()
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Upgrade permissions' }),
+    )
+    await waitFor(() => expect(startGmailOAuth).toHaveBeenCalledWith(11))
+    expect(
+      screen.getByText(/Connected for ingestion. Workflow labels require/),
+    ).toBeInTheDocument()
+  })
+
+  it('queues managed-label repair without accepting label IDs', async () => {
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: true,
+      connections: [{ ...baseConnection, pending_label_sync_count: 1 }],
+    })
+    vi.mocked(retryGmailWorkflowLabels).mockResolvedValue({ message: 'Queued' })
+    renderPage()
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Retry workflow labels' }),
+    )
+    await waitFor(() =>
+      expect(retryGmailWorkflowLabels).toHaveBeenCalledWith(11),
+    )
   })
 })

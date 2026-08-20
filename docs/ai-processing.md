@@ -33,17 +33,19 @@ Only the authoritative carrier name, subject, received time, cleaned email text,
 
 ## PDF and attachment lifecycle
 
-PDF bytes are downloaded with the existing `gmail.readonly` scope and held only in process memory. PyMuPDF extracts page text in stable page order, subject to configured byte and page limits. A normal PDF becomes `EXTRACTED`; an image-only document becomes `NEEDS_OCR`; malformed or over-limit input becomes `FAILED`; other MIME types become `UNSUPPORTED`. OCR is intentionally absent. Only extracted text, page count, state, and a safe error category are persisted.
+PDF bytes are downloaded using the read capability included in the granted Gmail scope and held only in process memory. PyMuPDF extracts page text in stable page order, subject to configured byte and page limits. A normal PDF becomes `EXTRACTED`; an image-only document becomes `NEEDS_OCR`; malformed or over-limit input becomes `FAILED`; other MIME types become `UNSUPPORTED`. OCR is intentionally absent. Only extracted text, page count, state, and a safe error category are persisted.
 
 ## Structured proposal and validation
 
 The strict schema covers classification, summary, priority, client, policy number/status, premium and currency, effective date, deadline, requirements, action items, evidence excerpts, confidence, and uncertainties. Pydantic rejects extra or malformed structure after the provider response.
 
-Backend checks include required policy identity, classification/status compatibility, ISO dates, bounded decimal money, ISO currency, deterministic calendar/business-day deadlines in the agency timezone, evidence source identity and exact normalized substring grounding, confidence threshold, model uncertainty, source completeness/truncation, policy/client conflicts, and action-to-case linkage. Confidence is only one review signal and is not a calibrated probability.
+Backend checks include required policy identity, classification/status compatibility, ISO dates, bounded decimal money, ISO currency, deterministic calendar/business-day deadlines in the agency timezone, evidence source identity and exact normalized substring grounding, value-level policy-number and client-name support, confidence threshold, model uncertainty, source completeness/truncation, policy/client conflicts, and action-to-case linkage. Confidence is only one review signal and is not a calibrated probability.
 
 Safe proposals match a Case by `(agency, authoritative carrier, normalized policy number)`. Existing assignment and known non-null values are preserved. New cases go to the mailbox owner. Action items become Tasks with a unique source-message/action-index key, preventing duplicates on retry. Only verified evidence excerpts become `CaseEvidence`.
 
-Validation ambiguity creates or reuses one open `ReviewItem` and marks the message `NEEDS_REVIEW`. A reviewer sees the source, proposal, evidence, flags, attachment previews, and editable final fields. Applying corrections stores them separately from the original model proposal, materializes through the same backend path, resolves the review, and marks the message `PROCESSED`. Dismissal marks the review `DISMISSED` and message `IGNORED`. Technical provider/download/materialization failures use safe codes and `FAILED`, which can be retried.
+Validation ambiguity creates or reuses one open `ReviewItem` and marks the message `NEEDS_REVIEW`. A reviewer sees the source, proposal, evidence, flags, attachment previews, and editable final fields. Applying corrections stores them separately from the original model proposal, revalidates or drops evidence for changed identity values, drops stale changed-action evidence, materializes through the same backend path, resolves the review, and marks the message `PROCESSED`. Only explicit Apply/Dismiss endpoints can make a review terminal; generic review PATCH accepts only `OPEN`/`IN_REVIEW`. Dismissal marks the review `DISMISSED` and message `IGNORED`.
+
+Only safely classified transient technical failures receive automatic retries. The initial attempt is included in the default maximum of three, with deterministic exponential backoff (30, then 60 seconds before the final attempt, capped at 600). Semantic ambiguity, review states, authentication/configuration failures, OCR needs, evidence mismatch, and exhausted failures are never hot-looped. A user-authorized manual retry may make one controlled attempt without erasing attempt history.
 
 ## Operation
 
@@ -51,7 +53,7 @@ Configure secrets only in ignored `backend/.env`:
 
 ```dotenv
 OPENAI_API_KEY=
-OPENAI_MODEL=gpt-5.6
+OPENAI_MODEL=gpt-5.6-terra
 AI_AUTO_APPLY_CONFIDENCE_THRESHOLD=0.80
 AI_MAX_SOURCE_CHARS=120000
 MESSAGE_PROCESS_POLL_INTERVAL_SECONDS=10
@@ -63,4 +65,4 @@ Run the worker with `python -m app.workers.message_process`, add `--once` for on
 
 Operational audit events record message IDs, safe state changes, model name, confidence, flags, task counts, and human actor IDs where appropriate. They never record provider secrets, model input/output, email bodies, extracted PDF text, tokens, or bytes.
 
-Known limitations: no OCR, Gmail labels, mailbox mutation, push delivery, CRM delivery, confidence calibration, sender-authentication verification, or production compliance assurance. This implementation is not a HIPAA, SOC 2, Google production-verification, or security-assessment claim.
+Known limitations: no OCR, push delivery, CRM delivery, confidence calibration, sender-authentication verification, or production compliance assurance. This implementation is not a HIPAA, SOC 2, Google production-verification, or security-assessment claim.

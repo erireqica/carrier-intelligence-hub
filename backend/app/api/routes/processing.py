@@ -1,8 +1,9 @@
 from dataclasses import asdict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.api.dependencies import CsrfUser, CurrentUser, DbSession
+from app.api.schemas.auth import MessageResponse
 from app.api.schemas.domain import (
     MessageAnalysisResponse,
     MessageProcessingResult,
@@ -11,6 +12,7 @@ from app.api.schemas.domain import (
 )
 from app.integrations.ai.schemas import HumanAnalysisInput
 from app.services import message_processing, operations
+from app.services.gmail_labels import enqueue_for_message
 
 router = APIRouter(tags=["processing"])
 
@@ -60,3 +62,17 @@ def dismiss_review_analysis(
     return response_from_result(
         message_processing.dismiss_review(db, current, review_id, data.resolution_notes)
     )
+
+
+@router.post(
+    "/carrier-messages/{message_id}/reconcile-gmail-labels",
+    response_model=MessageResponse,
+)
+def reconcile_message_gmail_labels(
+    message_id: int, current: CsrfUser, db: DbSession
+) -> MessageResponse:
+    message = message_processing.authorize_message(db, current, message_id)
+    if enqueue_for_message(db, message) is None:
+        raise HTTPException(status_code=409, detail="This message is not linked to Gmail")
+    db.commit()
+    return MessageResponse(message="Workflow label reconciliation queued")

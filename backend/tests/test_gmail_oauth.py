@@ -19,7 +19,12 @@ from app.integrations.gmail.errors import (
     GmailProfileValidationError,
     GmailTokenExchangeError,
 )
-from app.integrations.gmail.oauth import GMAIL_READONLY_SCOPE, GoogleOAuthClient, OAuthTokenSet
+from app.integrations.gmail.oauth import (
+    GMAIL_MODIFY_SCOPE,
+    GMAIL_READONLY_SCOPE,
+    GoogleOAuthClient,
+    OAuthTokenSet,
+)
 from app.models.enums import GmailConnectionStatus
 from app.models.organization import (
     GmailConnection,
@@ -36,7 +41,7 @@ class FakeOAuthClient:
             access_token="synthetic-access-token",
             refresh_token="synthetic-refresh-token",
             expires_at=utc_now() + timedelta(hours=1),
-            granted_scopes=[GMAIL_READONLY_SCOPE],
+            granted_scopes=[GMAIL_MODIFY_SCOPE],
             gmail_address=gmail_address,
         )
         self.revoked: list[str] = []
@@ -57,7 +62,7 @@ def patch_oauth(monkeypatch, fake: FakeOAuthClient) -> None:
     monkeypatch.setattr(gmail_routes, "GoogleOAuthClient", lambda: fake)
 
 
-def test_google_authorization_url_uses_web_offline_readonly_flow(configured_google) -> None:
+def test_google_authorization_url_uses_web_offline_modify_flow(configured_google) -> None:
     raw_state = "synthetic-strong-oauth-state"
     authorization_url = GoogleOAuthClient().authorization_url(raw_state)
     query = parse_qs(urlparse(authorization_url).query)
@@ -65,7 +70,7 @@ def test_google_authorization_url_uses_web_offline_readonly_flow(configured_goog
     assert query["access_type"] == ["offline"]
     assert query["include_granted_scopes"] == ["true"]
     assert query["state"] == [raw_state]
-    assert query["scope"] == [GMAIL_READONLY_SCOPE]
+    assert query["scope"] == [GMAIL_MODIFY_SCOPE]
     assert set(query["prompt"][0].split()) == {"consent", "select_account"}
     assert "code_challenge" not in query
     assert "code_challenge_method" not in query
@@ -104,7 +109,86 @@ def test_exchange_rejects_missing_actual_scope_even_when_it_was_requested(monkey
     client = object.__new__(GoogleOAuthClient)
     monkeypatch.setattr(GoogleOAuthClient, "_flow", lambda self: Flow())
     monkeypatch.setattr(oauth_module, "build", lambda *args, **kwargs: Service())
-    with pytest.raises(PermissionError, match="read scope"):
+    with pytest.raises(PermissionError, match="workflow-label scope"):
+        client.exchange_code("synthetic-code")
+
+
+def test_exchange_accepts_incremental_authorization_scope_superset(monkeypatch) -> None:
+    class Credentials:
+        token = "synthetic-access"
+        refresh_token = "synthetic-new-refresh"
+        expiry = None
+        scopes = [GMAIL_MODIFY_SCOPE]
+        granted_scopes = [GMAIL_READONLY_SCOPE, GMAIL_MODIFY_SCOPE]
+
+    class Session:
+        token = {}
+
+    class Flow:
+        credentials = Credentials()
+        oauth2session = Session()
+
+        @staticmethod
+        def fetch_token(*, code: str) -> None:
+            assert code == "synthetic-code"
+            scope_warning = Warning("synthetic scope-set expansion")
+            scope_warning.token = {
+                "access_token": "synthetic-access",
+                "refresh_token": "synthetic-new-refresh",
+                "scope": [GMAIL_READONLY_SCOPE, GMAIL_MODIFY_SCOPE],
+            }
+            scope_warning.old_scope = [GMAIL_MODIFY_SCOPE]
+            scope_warning.new_scope = [GMAIL_READONLY_SCOPE, GMAIL_MODIFY_SCOPE]
+            raise scope_warning
+
+    class ProfileRequest:
+        @staticmethod
+        def execute() -> dict[str, str]:
+            return {"emailAddress": "incremental@gmail.com"}
+
+    class Profile:
+        @staticmethod
+        def getProfile(*, userId: str) -> ProfileRequest:
+            assert userId == "me"
+            return ProfileRequest()
+
+    class Service:
+        @staticmethod
+        def users() -> Profile:
+            return Profile()
+
+    flow = Flow()
+    client = object.__new__(GoogleOAuthClient)
+    monkeypatch.setattr(GoogleOAuthClient, "_flow", lambda self: flow)
+    monkeypatch.setattr(oauth_module, "build", lambda *args, **kwargs: Service())
+
+    tokens = client.exchange_code("synthetic-code")
+
+    assert tokens.granted_scopes == [GMAIL_MODIFY_SCOPE, GMAIL_READONLY_SCOPE]
+    assert flow.oauth2session.token["access_token"] == "synthetic-access"
+    assert tokens.refresh_token == "synthetic-new-refresh"
+
+
+def test_incremental_scope_change_still_rejects_missing_modify(monkeypatch) -> None:
+    class Flow:
+        oauth2session = type("Session", (), {"token": {}})()
+
+        @staticmethod
+        def fetch_token(*, code: str) -> None:
+            assert code == "synthetic-code"
+            scope_warning = Warning("synthetic scope mismatch")
+            scope_warning.token = {
+                "access_token": "synthetic-access",
+                "scope": [GMAIL_READONLY_SCOPE],
+            }
+            scope_warning.old_scope = [GMAIL_MODIFY_SCOPE]
+            scope_warning.new_scope = [GMAIL_READONLY_SCOPE]
+            raise scope_warning
+
+    client = object.__new__(GoogleOAuthClient)
+    monkeypatch.setattr(GoogleOAuthClient, "_flow", lambda self: Flow())
+
+    with pytest.raises(PermissionError, match="workflow-label scope"):
         client.exchange_code("synthetic-code")
 
 
@@ -130,8 +214,8 @@ def test_exchange_classifies_profile_http_failure_without_exposing_provider_deta
         token = "synthetic-access"
         refresh_token = "synthetic-refresh"
         expiry = None
-        scopes = [GMAIL_READONLY_SCOPE]
-        granted_scopes = [GMAIL_READONLY_SCOPE]
+        scopes = [GMAIL_MODIFY_SCOPE]
+        granted_scopes = [GMAIL_MODIFY_SCOPE]
 
     class Flow:
         credentials = Credentials()
@@ -195,8 +279,8 @@ def test_exchange_reports_only_profile_validation_booleans(
         token = "synthetic-access"
         refresh_token = "synthetic-refresh"
         expiry = None
-        scopes = [GMAIL_READONLY_SCOPE]
-        granted_scopes = [GMAIL_READONLY_SCOPE]
+        scopes = [GMAIL_MODIFY_SCOPE]
+        granted_scopes = [GMAIL_MODIFY_SCOPE]
 
     class Flow:
         credentials = Credentials()
@@ -322,7 +406,7 @@ def test_expired_unknown_and_consumed_oauth_states_are_rejected(
 def test_successful_callback_uses_provider_identity_and_encrypts_tokens(
     client: TestClient, db: Session, login, configured_google, monkeypatch
 ) -> None:
-    fake = FakeOAuthClient(gmail_address="Real.Profile@Gmail.Test")
+    fake = FakeOAuthClient(gmail_address="Real.Profile@Gmail.com")
     patch_oauth(monkeypatch, fake)
     auth = login(client, "agent.one@demo.local")
     raw_state = start_oauth(client, auth, fake)
@@ -334,7 +418,7 @@ def test_successful_callback_uses_provider_identity_and_encrypts_tokens(
     assert callback.status_code == 303
     assert callback.headers["location"].endswith("oauth=success")
     connection = db.scalar(
-        select(GmailConnection).where(GmailConnection.gmail_address == "real.profile@gmail.test")
+        select(GmailConnection).where(GmailConnection.gmail_address == "real.profile@gmail.com")
     )
     assert connection is not None
     assert connection.status is GmailConnectionStatus.CONNECTED
@@ -350,6 +434,15 @@ def test_successful_callback_uses_provider_identity_and_encrypts_tokens(
     assert cipher.decrypt(credential.encrypted_access_token or "") == "synthetic-access-token"
     assert cipher.decrypt(credential.encrypted_refresh_token) == "synthetic-refresh-token"
     assert db.scalar(select(func.count()).where(GmailOAuthState.state_hash == raw_state)) == 0
+    capability = client.get("/api/v1/gmail-connections")
+    assert capability.status_code == 200
+    assert capability.json()["connections"][0]["can_apply_workflow_labels"] is True
+    credential.granted_scopes = [GMAIL_READONLY_SCOPE]
+    db.commit()
+    legacy = client.get("/api/v1/gmail-connections")
+    assert legacy.status_code == 200
+    assert legacy.json()["connections"][0]["status"] == "CONNECTED"
+    assert legacy.json()["connections"][0]["can_apply_workflow_labels"] is False
 
 
 def test_missing_scope_is_rejected_without_persisting_credentials(
@@ -395,7 +488,7 @@ def test_reconnect_preserves_refresh_token_and_duplicate_owner_conflicts(
         access_token="replacement-access-token",
         refresh_token=None,
         expires_at=utc_now() + timedelta(hours=2),
-        granted_scopes=[GMAIL_READONLY_SCOPE],
+        granted_scopes=[GMAIL_MODIFY_SCOPE],
         gmail_address="reconnect@gmail.test",
     )
     reconnect_state = start_oauth(client, auth, fake, connection.id)
@@ -430,7 +523,7 @@ def test_reconnect_preserves_refresh_token_and_duplicate_owner_conflicts(
         access_token="access",
         refresh_token="refresh",
         expires_at=utc_now() + timedelta(hours=1),
-        granted_scopes=[GMAIL_READONLY_SCOPE],
+        granted_scopes=[GMAIL_MODIFY_SCOPE],
         gmail_address="owned@gmail.test",
     )
     conflict_state = start_oauth(client, auth, fake)

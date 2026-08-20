@@ -11,6 +11,13 @@ export type ProcessingStatus =
 export type GmailHealth = 'CONNECTED' | 'NEEDS_ATTENTION' | 'NOT_CONNECTED'
 export type GmailConnectionStatus =
   'CONNECTED' | 'NEEDS_REAUTH' | 'ERROR' | 'DISCONNECTED'
+export type GmailLabelSyncStatus =
+  | 'PENDING'
+  | 'PROCESSING'
+  | 'RETRY_WAIT'
+  | 'APPLIED'
+  | 'NEEDS_PERMISSION'
+  | 'FAILED'
 export type MessageClassification =
   | 'POLICY_ISSUED'
   | 'PENDING_REQUIREMENTS'
@@ -225,6 +232,14 @@ export type Dashboard = {
     review_items: number
     processing_failures: number
     processed_messages: number
+    gmail_connections_needing_attention: number
+    received_backlog: number
+    processing_messages: number
+    retry_scheduled: number
+    failed_requiring_attention: number
+    gmail_labels_pending: number
+    gmail_labels_requiring_attention: number
+    oldest_unprocessed_age_seconds: number | null
   }
   recent_cases: CaseItem[]
   recent_activity: ActivityItem[]
@@ -243,6 +258,9 @@ export type GmailConnection = {
   last_attempted_sync_at: string | null
   last_error_summary: string | null
   is_owner: boolean
+  can_apply_workflow_labels: boolean
+  pending_label_sync_count: number
+  failed_label_sync_count: number
 }
 
 export type GmailConnectionsResponse = {
@@ -271,6 +289,9 @@ export type GmailMessage = {
   case_id: number | null
   review_id: number | null
   last_processing_error_code: string | null
+  processing_attempt_count: number
+  processing_next_retry_at: string | null
+  label_sync_status: GmailLabelSyncStatus | null
 }
 
 export type AgentItem = {

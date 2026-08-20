@@ -112,6 +112,11 @@ class CarrierMessage(TimestampMixin, Base):
             "gmail_connection_id", "gmail_message_id", name="uq_gmail_connection_message"
         ),
         Index("ix_carrier_messages_agency_processing", "agency_id", "processing_status"),
+        Index(
+            "ix_carrier_messages_processing_retry",
+            "processing_status",
+            "processing_next_retry_at",
+        ),
         Index("ix_carrier_messages_case_received", "case_id", "received_at"),
     )
 
@@ -141,6 +146,7 @@ class CarrierMessage(TimestampMixin, Base):
     processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_processing_error_code: Mapped[str | None] = mapped_column(String(100))
+    processing_next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     case: Mapped[PolicyCase | None] = relationship(back_populates="messages")
     carrier: Mapped[Carrier] = relationship()

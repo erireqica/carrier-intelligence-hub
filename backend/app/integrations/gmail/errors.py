@@ -10,6 +10,26 @@ class GmailTransientError(RuntimeError):
     """Raised for a safe-to-retry Gmail API or network failure."""
 
 
+class GmailModifyPermissionRequired(RuntimeError):
+    """Raised before or during a label operation without gmail.modify capability."""
+
+
+class GmailLabelBindingInvalid(RuntimeError):
+    """Raised when a managed Gmail user-label binding is stale or missing."""
+
+
+class GmailThreadNotFound(RuntimeError):
+    """Raised when a persisted Gmail thread no longer exists."""
+
+
+class GmailLabelConflict(RuntimeError):
+    """Raised when concurrent label creation reports an existing label."""
+
+
+class GmailLabelPermanentError(RuntimeError):
+    """Raised for a non-retryable, safely classified Gmail label request failure."""
+
+
 class GmailTokenExchangeError(GmailTransientError):
     """Raised when Google rejects or cannot complete the authorization-code exchange."""
 

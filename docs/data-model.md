@@ -10,6 +10,8 @@ The schema keeps identity, incoming communications, operational work, and audit 
 | `gmail_connections` | Non-secret mailbox identity, owner, health, and sync timestamps. |
 | `gmail_oauth_credentials` | One encrypted token set and granted-scope record per Gmail connection. |
 | `gmail_oauth_states` | Short-lived hashed, session-bound, one-time OAuth callback state. |
+| `gmail_managed_labels` | Mailbox-specific bindings from the eight logical app labels to Gmail user-label IDs. |
+| `gmail_thread_label_syncs` | One reconciliation/outbox row per Gmail connection and thread, with generation, claim, retry, and applied-state metadata. |
 | `carriers` | Agency-approved insurance carrier configuration. |
 | `carrier_domains` | Normalized approved sender domains for a carrier. |
 | `carrier_senders` | Normalized exact approved sender addresses for a carrier. |
@@ -24,7 +26,7 @@ The schema keeps identity, incoming communications, operational work, and audit 
 
 `cases` and `carrier_messages` are intentionally separate. A case represents the latest known state of an ongoing policy; several emails can update it over time. Keeping each communication preserves its sender, source text, received time, attachments, and processing status. Tasks, evidence, reviews, and audit events can then trace back to the exact communication that caused them without overwriting case history.
 
-A carrier message is persisted before semantic analysis begins. Its `processing_status` records the ingestion/analysis lifecycle (`RECEIVED`, `PROCESSING`, `PROCESSED`, `NEEDS_REVIEW`, `FAILED`, or `IGNORED`), while `classification`, `summary`, and `priority` are semantic results that may initially be null. The database does not invent placeholder AI results: a conditional constraint instead requires all three semantic fields only when a message is marked `PROCESSED`. Other lifecycle states can truthfully represent incomplete or failed analysis.
+A carrier message is persisted before semantic analysis begins. Its `processing_status` records the ingestion/analysis lifecycle (`RECEIVED`, `PROCESSING`, `PROCESSED`, `NEEDS_REVIEW`, `FAILED`, or `IGNORED`), while `classification`, `summary`, and `priority` are semantic results that may initially be null. `processing_next_retry_at` makes automatic retry eligibility explicit. The initial processing attempt counts toward the configured maximum; exhausted and permanent failures have no next retry time. The database does not invent placeholder AI results: a conditional constraint instead requires all three semantic fields only when a message is marked `PROCESSED`.
 
 ```mermaid
 erDiagram
@@ -40,6 +42,8 @@ erDiagram
     USER ||--o{ POLICY_CASE : assigned
     POLICY_CASE o|--o{ CARRIER_MESSAGE : may_receive
     GMAIL_CONNECTION ||--o{ CARRIER_MESSAGE : ingests
+    GMAIL_CONNECTION ||--o{ GMAIL_MANAGED_LABEL : binds
+    GMAIL_CONNECTION ||--o{ GMAIL_THREAD_LABEL_SYNC : reconciles
     CARRIER_MESSAGE ||--o{ ATTACHMENT : supplies
     CARRIER_MESSAGE ||--o| MESSAGE_ANALYSIS : proposes
     POLICY_CASE ||--o{ TASK : requires
@@ -52,5 +56,7 @@ erDiagram
 ```
 
 Important database rules include globally unique user emails; unique carrier configuration; a partial unique case identity on agency/carrier/policy number; one OAuth credential per connection; unique Gmail message and attachment identities; one analysis per message; one task per `(source message, action index)`; and complete semantic fields for every `PROCESSED` message. Model proposals remain preserved when a human supplies corrected final values, retaining accountability without hidden reasoning.
+
+Label state contains no message body, PDF text, AI output, client name, or policy number. A unique `(gmail_connection_id, gmail_thread_id)` row represents delivery state, while `generation` prevents a provider response for an old desired state from marking newer work applied. The migration backfills one pending row for each existing real Gmail-backed thread without calling Google or fabricating label IDs.
 
 Credential columns contain Fernet ciphertext, not plaintext Google tokens. The encryption key is deliberately outside PostgreSQL and Git. OAuth state stores a SHA-256 lookup hash rather than the browser value, expires after ten minutes, is bound to the initiating agency/user/session, and records consumption so callbacks cannot be replayed.

@@ -14,10 +14,15 @@ from app.core.config import Settings, get_settings
 from app.integrations.gmail.crypto import TokenCipher
 from app.integrations.gmail.errors import (
     GmailIntegrationNotConfigured,
+    GmailLabelBindingInvalid,
+    GmailLabelConflict,
+    GmailLabelPermanentError,
+    GmailModifyPermissionRequired,
     GmailReauthorizationRequired,
+    GmailThreadNotFound,
     GmailTransientError,
 )
-from app.integrations.gmail.oauth import GOOGLE_TOKEN_URI
+from app.integrations.gmail.oauth import GMAIL_MODIFY_SCOPE, GOOGLE_TOKEN_URI
 from app.models.organization import GmailOAuthCredential
 
 
@@ -30,9 +35,20 @@ class GmailMailbox(Protocol):
 
     def get_attachment(self, message_id: str, attachment_id: str) -> bytes: ...
 
+    def list_labels(self) -> Mapping[str, Any]: ...
+
+    def create_label(self, name: str) -> Mapping[str, Any]: ...
+
+    def get_thread_label_ids(self, thread_id: str) -> set[str]: ...
+
+    def modify_thread_labels(
+        self, thread_id: str, *, add_label_ids: list[str], remove_label_ids: list[str]
+    ) -> None: ...
+
 
 class GoogleGmailMailbox:
     def __init__(self, credentials: Credentials):
+        self._can_modify = GMAIL_MODIFY_SCOPE in set(credentials.scopes or [])
         self._service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
 
     @staticmethod
@@ -86,6 +102,97 @@ class GoogleGmailMailbox:
             )
         except (binascii.Error, ValueError) as error:
             raise GmailTransientError("Gmail attachment data was unavailable.") from error
+
+    def _require_modify(self) -> None:
+        if not self._can_modify:
+            raise GmailModifyPermissionRequired(
+                "Reconnect Gmail to enable Carrier Hub workflow labels."
+            )
+
+    @staticmethod
+    def _execute_label(request, *, missing_kind: str | None = None) -> Mapping[str, Any]:
+        try:
+            return request.execute()
+        except HttpError as error:
+            status = getattr(error.resp, "status", None)
+            if status == 401:
+                raise GmailReauthorizationRequired(
+                    "Google authorization is no longer valid. Reconnect this inbox."
+                ) from error
+            if status == 403:
+                raise GmailModifyPermissionRequired(
+                    "Reconnect Gmail to enable Carrier Hub workflow labels."
+                ) from error
+            if status == 404 and missing_kind == "label":
+                raise GmailLabelBindingInvalid("A managed Gmail label binding is stale.") from error
+            if status == 404 and missing_kind == "thread":
+                raise GmailThreadNotFound("The Gmail thread is no longer available.") from error
+            if status == 409:
+                raise GmailLabelConflict("The managed Gmail label already exists.") from error
+            if status == 429 or (isinstance(status, int) and status >= 500):
+                raise GmailTransientError(
+                    "Gmail label delivery is temporarily unavailable."
+                ) from error
+            raise GmailLabelPermanentError("Gmail rejected the workflow label request.") from error
+        except (
+            GmailReauthorizationRequired,
+            GmailModifyPermissionRequired,
+            GmailLabelBindingInvalid,
+            GmailThreadNotFound,
+            GmailLabelConflict,
+            GmailTransientError,
+            GmailLabelPermanentError,
+        ):
+            raise
+        except Exception as error:
+            raise GmailTransientError("Gmail label delivery is temporarily unavailable.") from error
+
+    def list_labels(self) -> Mapping[str, Any]:
+        self._require_modify()
+        return self._execute_label(self._service.users().labels().list(userId="me"))
+
+    def create_label(self, name: str) -> Mapping[str, Any]:
+        self._require_modify()
+        return self._execute_label(
+            self._service.users()
+            .labels()
+            .create(
+                userId="me",
+                body={
+                    "name": name,
+                    "labelListVisibility": "labelShow",
+                    "messageListVisibility": "show",
+                },
+            )
+        )
+
+    def get_thread_label_ids(self, thread_id: str) -> set[str]:
+        self._require_modify()
+        response = self._execute_label(
+            self._service.users().threads().get(userId="me", id=thread_id, format="minimal"),
+            missing_kind="thread",
+        )
+        label_ids: set[str] = set()
+        for message in response.get("messages", []) or []:
+            if not isinstance(message, Mapping):
+                continue
+            label_ids.update(str(item) for item in message.get("labelIds", []) or [])
+        return label_ids
+
+    def modify_thread_labels(
+        self, thread_id: str, *, add_label_ids: list[str], remove_label_ids: list[str]
+    ) -> None:
+        self._require_modify()
+        self._execute_label(
+            self._service.users()
+            .threads()
+            .modify(
+                userId="me",
+                id=thread_id,
+                body={"addLabelIds": add_label_ids, "removeLabelIds": remove_label_ids},
+            ),
+            missing_kind="thread",
+        )
 
 
 def mailbox_from_credential(

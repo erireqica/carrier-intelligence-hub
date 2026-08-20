@@ -3,12 +3,12 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.config import Settings, get_settings
@@ -40,9 +40,15 @@ from app.models.operations import (
 )
 from app.models.organization import Agency, GmailConnection, GmailOAuthCredential
 from app.processing.source import SourceBundle, build_source_bundle
-from app.processing.validation import POLICY_CLASSIFICATIONS, ValidatedAnalysis, validate_analysis
+from app.processing.validation import (
+    POLICY_CLASSIFICATIONS,
+    ValidatedAnalysis,
+    evidence_supports_proposed_value,
+    validate_analysis,
+)
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
+from app.services.gmail_labels import enqueue_for_message
 
 MailboxFactory = Callable[[GmailOAuthCredential], tuple[GmailMailbox, bool]]
 
@@ -80,6 +86,15 @@ REVIEW_REASONS = {
     "AI_REFUSAL": "The model did not return a usable structured analysis.",
 }
 
+RETRYABLE_PROCESSING_CODES = {
+    "AI_RATE_LIMITED",
+    "AI_TIMEOUT",
+    "AI_TRANSIENT_FAILURE",
+    "AI_SERVICE_UNAVAILABLE",
+    "ATTACHMENT_DOWNLOAD_FAILED",
+    "STALE_PROCESSING_RECOVERED",
+}
+
 
 def _load_message(db: Session, message_id: int) -> CarrierMessage | None:
     return db.scalar(
@@ -110,12 +125,22 @@ def claim_message(
     message_id: int | None = None,
     allow_failed: bool = False,
 ) -> int | None:
-    statuses = [ProcessingStatus.RECEIVED]
-    if allow_failed:
-        statuses.append(ProcessingStatus.FAILED)
+    now = utc_now()
+    eligibility = (
+        CarrierMessage.processing_status.in_([ProcessingStatus.RECEIVED, ProcessingStatus.FAILED])
+        if allow_failed
+        else or_(
+            CarrierMessage.processing_status == ProcessingStatus.RECEIVED,
+            and_(
+                CarrierMessage.processing_status == ProcessingStatus.FAILED,
+                CarrierMessage.processing_next_retry_at.is_not(None),
+                CarrierMessage.processing_next_retry_at <= now,
+            ),
+        )
+    )
     query = (
         select(CarrierMessage)
-        .where(CarrierMessage.processing_status.in_(statuses))
+        .where(eligibility)
         .order_by(CarrierMessage.received_at, CarrierMessage.id)
         .with_for_update(skip_locked=True)
         .limit(1)
@@ -128,7 +153,8 @@ def claim_message(
         return None
     message.processing_status = ProcessingStatus.PROCESSING
     message.processing_attempt_count += 1
-    message.processing_started_at = utc_now()
+    message.processing_started_at = now
+    message.processing_next_retry_at = None
     message.processed_at = None
     message.last_processing_error_code = None
     record_audit_event(
@@ -143,7 +169,22 @@ def claim_message(
     return message.id
 
 
-def mark_failed(db: Session, message_id: int, code: str) -> ProcessingResult:
+def _processing_backoff(settings: Settings, attempt: int) -> timedelta:
+    seconds = min(
+        settings.message_process_retry_base_seconds * (2 ** max(attempt - 1, 0)),
+        settings.message_process_retry_max_seconds,
+    )
+    return timedelta(seconds=seconds)
+
+
+def mark_failed(
+    db: Session,
+    message_id: int,
+    code: str,
+    *,
+    settings: Settings | None = None,
+) -> ProcessingResult:
+    active = settings or get_settings()
     db.rollback()
     message = db.get(CarrierMessage, message_id)
     if message is None:
@@ -151,6 +192,16 @@ def mark_failed(db: Session, message_id: int, code: str) -> ProcessingResult:
     message.processing_status = ProcessingStatus.FAILED
     message.last_processing_error_code = code
     message.processing_started_at = None
+    retryable = code in RETRYABLE_PROCESSING_CODES
+    retry_scheduled = retryable and (
+        message.processing_attempt_count < active.message_process_max_auto_attempts
+    )
+    message.processing_next_retry_at = (
+        utc_now() + _processing_backoff(active, message.processing_attempt_count)
+        if retry_scheduled
+        else None
+    )
+    enqueue_for_message(db, message)
     record_audit_event(
         db,
         agency_id=message.agency_id,
@@ -160,8 +211,87 @@ def mark_failed(db: Session, message_id: int, code: str) -> ProcessingResult:
         description="Carrier message processing failed",
         metadata={"error_code": code},
     )
+    if retry_scheduled:
+        record_audit_event(
+            db,
+            agency_id=message.agency_id,
+            carrier_message_id=message.id,
+            event_type="PROCESSING_RETRY_SCHEDULED",
+            severity=AuditSeverity.WARNING,
+            description="Automatic carrier message retry scheduled",
+            metadata={
+                "attempt": message.processing_attempt_count,
+                "error_code": code,
+                "next_retry_at": message.processing_next_retry_at.isoformat(),
+            },
+        )
+    elif retryable:
+        record_audit_event(
+            db,
+            agency_id=message.agency_id,
+            carrier_message_id=message.id,
+            event_type="PROCESSING_RETRY_EXHAUSTED",
+            severity=AuditSeverity.ERROR,
+            description="Automatic carrier message retries exhausted",
+            metadata={"attempt": message.processing_attempt_count, "error_code": code},
+        )
     db.commit()
     return ProcessingResult(message.id, ProcessingStatus.FAILED)
+
+
+def recover_stale_processing(db: Session, *, settings: Settings | None = None) -> int:
+    active = settings or get_settings()
+    now = utc_now()
+    cutoff = now - timedelta(seconds=active.message_process_stale_after_seconds)
+    messages = db.scalars(
+        select(CarrierMessage)
+        .where(
+            CarrierMessage.processing_status == ProcessingStatus.PROCESSING,
+            CarrierMessage.processing_started_at < cutoff,
+        )
+        .with_for_update(skip_locked=True)
+    ).all()
+    for message in messages:
+        message.processing_status = ProcessingStatus.FAILED
+        message.processing_started_at = None
+        message.last_processing_error_code = "STALE_PROCESSING_RECOVERED"
+        message.processing_next_retry_at = (
+            now
+            if message.processing_attempt_count < active.message_process_max_auto_attempts
+            else None
+        )
+        enqueue_for_message(db, message)
+        record_audit_event(
+            db,
+            agency_id=message.agency_id,
+            carrier_message_id=message.id,
+            event_type="STALE_PROCESSING_RECOVERED",
+            severity=AuditSeverity.WARNING,
+            description="Stale carrier message processing lease recovered",
+            metadata={"attempt": message.processing_attempt_count},
+        )
+        record_audit_event(
+            db,
+            agency_id=message.agency_id,
+            carrier_message_id=message.id,
+            event_type=(
+                "PROCESSING_RETRY_SCHEDULED"
+                if message.processing_next_retry_at is not None
+                else "PROCESSING_RETRY_EXHAUSTED"
+            ),
+            severity=AuditSeverity.WARNING,
+            description=(
+                "Automatic carrier message retry scheduled"
+                if message.processing_next_retry_at is not None
+                else "Automatic carrier message retries exhausted"
+            ),
+            metadata={
+                "attempt": message.processing_attempt_count,
+                "error_code": "STALE_PROCESSING_RECOVERED",
+            },
+        )
+    db.commit()
+    return len(messages)
 
 
 def _persist_attachment_result(
@@ -347,7 +477,9 @@ def _review_for_flags(
         review.reason = REVIEW_REASONS.get(primary, "The analysis requires human review.")
     message.processing_status = ProcessingStatus.NEEDS_REVIEW
     message.processing_started_at = None
+    message.processing_next_retry_at = None
     message.last_processing_error_code = None
+    enqueue_for_message(db, message)
     record_audit_event(
         db,
         agency_id=message.agency_id,
@@ -499,12 +631,14 @@ def _finalize(
     analysis.validation_flags = []
     message.processing_status = ProcessingStatus.PROCESSED
     message.processing_started_at = None
+    message.processing_next_retry_at = None
     message.processed_at = utc_now()
     message.last_processing_error_code = None
     if review is not None:
         review.case_id = case.id if case else None
         review.status = ReviewStatus.RESOLVED
         review.resolved_at = utc_now()
+    enqueue_for_message(db, message)
     record_audit_event(
         db,
         agency_id=message.agency_id,
@@ -566,9 +700,9 @@ def process_claimed_message(
             mailbox_factory=mailbox_factory,
         )
     except GmailReauthorizationRequired, GmailTransientError:
-        return mark_failed(db, message_id, "ATTACHMENT_DOWNLOAD_FAILED")
+        return mark_failed(db, message_id, "ATTACHMENT_DOWNLOAD_FAILED", settings=active)
     except Exception:
-        return mark_failed(db, message_id, "PDF_EXTRACTION_FAILED")
+        return mark_failed(db, message_id, "PDF_EXTRACTION_FAILED", settings=active)
 
     message = _load_message(db, message_id)
     if message is None:
@@ -585,7 +719,7 @@ def process_claimed_message(
         result = analyzer.analyze(bundle.rendered)
     except AnalysisProviderError as error:
         if not error.reviewable:
-            return mark_failed(db, message_id, error.code)
+            return mark_failed(db, message_id, error.code, settings=active)
         message = _load_message(db, message_id)
         assert message is not None
         review = _review_for_flags(
@@ -673,7 +807,7 @@ def process_claimed_message(
     try:
         finalized = _finalize(db, message, analysis, validated, bundle, actor_user_id=None)
     except Exception:
-        return mark_failed(db, message_id, "MATERIALIZATION_FAILED")
+        return mark_failed(db, message_id, "MATERIALIZATION_FAILED", settings=active)
     return ProcessingResult(
         **{
             **finalized.__dict__,
@@ -745,7 +879,72 @@ def manual_process(
         raise HTTPException(status_code=409, detail="This message was dismissed")
     if analyzer is None and not get_settings().openai_configured:
         raise HTTPException(status_code=503, detail="AI analysis is not configured")
+    if message.processing_status is ProcessingStatus.FAILED:
+        message.processing_next_retry_at = None
+        record_audit_event(
+            db,
+            agency_id=message.agency_id,
+            actor_user_id=current.user.id,
+            carrier_message_id=message.id,
+            event_type="PROCESSING_MANUAL_RETRY",
+            description="Manual carrier message retry requested",
+            metadata={"previous_attempts": message.processing_attempt_count},
+        )
+        db.commit()
     return process_message(db, message_id, analyzer=analyzer)
+
+
+def _evidence_for_human_correction(
+    proposed: AnalysisResult,
+    correction: HumanAnalysisInput,
+    corrected_result: AnalysisResult,
+):
+    retained = []
+    scalar_fields = {
+        "classification",
+        "summary",
+        "priority",
+        "client_name",
+        "policy_number",
+        "policy_status",
+        "premium_amount",
+        "currency",
+        "effective_date",
+        "deadline",
+    }
+    for evidence in proposed.evidence:
+        field_name = evidence.field_name
+        if field_name in {"client_name", "policy_number"}:
+            unchanged = getattr(proposed, field_name) == getattr(correction, field_name)
+            if unchanged or evidence_supports_proposed_value(corrected_result, evidence):
+                retained.append(evidence)
+            continue
+        if field_name in scalar_fields:
+            if getattr(proposed, field_name) == getattr(correction, field_name):
+                retained.append(evidence)
+            continue
+        action_match = re.fullmatch(r"action_(?:item:|items\[)(\d+)\]?", field_name)
+        if action_match:
+            index = int(action_match.group(1))
+            if (
+                index < len(proposed.action_items)
+                and index < len(correction.action_items)
+                and proposed.action_items[index] == correction.action_items[index]
+            ):
+                retained.append(evidence)
+            continue
+        requirement_match = re.fullmatch(r"requirement:(\d+)", field_name)
+        if requirement_match:
+            index = int(requirement_match.group(1))
+            if (
+                index < len(proposed.requirements)
+                and index < len(correction.requirements)
+                and proposed.requirements[index] == correction.requirements[index]
+            ):
+                retained.append(evidence)
+            continue
+        retained.append(evidence)
+    return retained
 
 
 def apply_review(
@@ -772,7 +971,16 @@ def apply_review(
         confidence = float(original.overall_confidence)
         model_name = original.model_name
         try:
-            evidence = AnalysisResult.model_validate(original.model_result_json).evidence
+            proposed = AnalysisResult.model_validate(original.model_result_json)
+            corrected_without_evidence = AnalysisResult(
+                **correction.model_dump(),
+                evidence=[],
+                overall_confidence=confidence,
+                uncertainties=[],
+            )
+            evidence = _evidence_for_human_correction(
+                proposed, correction, corrected_without_evidence
+            )
         except ValueError:
             evidence = []
     result = AnalysisResult(
@@ -842,6 +1050,8 @@ def dismiss_review(
     review.resolved_at = utc_now()
     message.processing_status = ProcessingStatus.IGNORED
     message.processing_started_at = None
+    message.processing_next_retry_at = None
+    enqueue_for_message(db, message)
     record_audit_event(
         db,
         agency_id=message.agency_id,

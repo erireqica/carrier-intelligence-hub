@@ -74,6 +74,57 @@ export function DashboardPage() {
         />
         <Metric label="Processed" value={data.metrics.processed_messages} />
       </section>
+      {auth.data!.user.role === 'MANAGER' && (
+        <section className="border border-slate-200 bg-white">
+          <div className="border-b border-slate-200 px-5 py-4">
+            <h2 className="font-semibold">Pipeline health</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Agency-wide processing and Gmail workflow-label delivery.
+            </p>
+          </div>
+          <div className="grid gap-px bg-slate-200 sm:grid-cols-2 xl:grid-cols-4">
+            <Metric
+              label="Received backlog"
+              value={data.metrics.received_backlog}
+            />
+            <Metric
+              label="Processing"
+              value={data.metrics.processing_messages}
+            />
+            <Metric
+              label="Retries scheduled"
+              value={data.metrics.retry_scheduled}
+            />
+            <Metric
+              label="Failed attention"
+              value={data.metrics.failed_requiring_attention}
+              attention
+            />
+            <Metric
+              label="Labels pending"
+              value={data.metrics.gmail_labels_pending}
+            />
+            <Metric
+              label="Label attention"
+              value={data.metrics.gmail_labels_requiring_attention}
+              attention
+            />
+            <Metric
+              label="Gmail attention"
+              value={data.metrics.gmail_connections_needing_attention}
+              attention
+            />
+            <Metric
+              label="Oldest work"
+              value={
+                data.metrics.oldest_unprocessed_age_seconds === null
+                  ? '—'
+                  : `${Math.floor(data.metrics.oldest_unprocessed_age_seconds / 60)}m`
+              }
+            />
+          </div>
+        </section>
+      )}
       <section className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <div className="border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
