@@ -1,8 +1,12 @@
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from google.auth.exceptions import RefreshError
+from googleapiclient.errors import HttpError
+from httplib2 import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -14,6 +18,7 @@ from app.integrations.gmail.errors import (
     GmailLabelConflict,
     GmailLabelPermanentError,
     GmailModifyPermissionRequired,
+    GmailReauthorizationRequired,
     GmailTransientError,
 )
 from app.integrations.gmail.oauth import GMAIL_MODIFY_SCOPE, GMAIL_READONLY_SCOPE
@@ -50,13 +55,19 @@ from app.services.operations import update_task
 
 
 class FakeLabelMailbox:
-    def __init__(self, *, fail_modify: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_modify: bool = False,
+        modify_error: Exception | None = None,
+    ) -> None:
         self.labels: dict[str, str] = {"Family": "user-family", "INBOX": "INBOX"}
         self.label_types: dict[str, str] = {"Family": "user", "INBOX": "system"}
         self.thread_labels: set[str] = {"user-family"}
         self.created: list[str] = []
         self.modifications: list[tuple[str, list[str], list[str]]] = []
         self.fail_modify = fail_modify
+        self.modify_error = modify_error
         self.on_modify = None
         self.thread_message_labels: list[set[str]] | None = None
 
@@ -90,6 +101,8 @@ class FakeLabelMailbox:
     ) -> None:
         if self.fail_modify:
             raise GmailTransientError("synthetic transient")
+        if self.modify_error is not None:
+            raise self.modify_error
         if self.on_modify is not None:
             self.on_modify()
         self.modifications.append((thread_id, add_label_ids, remove_label_ids))
@@ -98,6 +111,37 @@ class FakeLabelMailbox:
         for labels in self.thread_message_labels or []:
             labels.update(add_label_ids)
             labels.difference_update(remove_label_ids)
+
+
+class RaisingRequest:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def execute(self) -> dict:
+        raise self.error
+
+
+def gmail_http_error(status: int, reason: str) -> HttpError:
+    content = json.dumps(
+        {
+            "error": {
+                "code": status,
+                "status": "PERMISSION_DENIED" if status == 403 else "UNKNOWN",
+                "errors": [
+                    {
+                        "reason": reason,
+                        "message": "synthetic-sensitive-provider-detail",
+                    }
+                ],
+                "message": "synthetic-sensitive-provider-detail",
+            }
+        }
+    ).encode()
+    return HttpError(
+        Response({"status": str(status)}),
+        content,
+        uri="https://synthetic.invalid/provider-secret",
+    )
 
 
 def create_connection(
@@ -510,6 +554,32 @@ def test_reconciliation_adds_desired_labels_missing_from_a_new_thread_message(
     assert all("user-family" in labels for labels in mailbox.thread_message_labels)
 
 
+def test_all_draft_thread_does_not_trigger_an_impossible_label_update(
+    seeded_db: Session,
+) -> None:
+    class AllDraftMailbox(FakeLabelMailbox):
+        def get_thread_label_state(self, thread_id: str) -> GmailThreadLabelState:
+            return GmailThreadLabelState(frozenset(), frozenset(), 0)
+
+    connection = create_connection(seeded_db, address="all-draft@gmail.test")
+    message = create_message(seeded_db, connection, thread_id="thread-all-draft")
+    sync = enqueue_for_message(seeded_db, message)
+    seeded_db.commit()
+    assert sync is not None
+    claim = claim_label_sync(seeded_db, sync_id=sync.id)
+    assert claim is not None
+    mailbox = AllDraftMailbox()
+
+    result = process_claimed_label_sync(
+        seeded_db,
+        claim,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+
+    assert result.status is GmailLabelSyncStatus.APPLIED
+    assert mailbox.modifications == []
+
+
 def test_label_failure_retries_without_changing_processed_message(
     seeded_db: Session,
 ) -> None:
@@ -595,7 +665,7 @@ def test_exhausted_label_failure_does_not_block_another_connection(
     assert healthy_message.processing_status is ProcessingStatus.PROCESSED
 
 
-def test_generation_change_during_provider_call_remains_pending(
+def test_stale_success_cannot_mutate_a_newer_claimed_generation(
     seeded_db: Session,
 ) -> None:
     connection = create_connection(seeded_db, address="generation@gmail.test")
@@ -606,24 +676,57 @@ def test_generation_change_during_provider_call_remains_pending(
     mailbox = FakeLabelMailbox()
     claim = claim_label_sync(seeded_db, sync_id=sync.id)
     assert claim is not None
+    newer_claims = []
 
-    def dirty_generation() -> None:
-        current = seeded_db.get(GmailThreadLabelSync, sync.id)
-        assert current is not None
-        current.generation += 1
-        current.status = GmailLabelSyncStatus.PENDING
+    def claim_newer_generation() -> None:
+        enqueue_for_message(seeded_db, message)
         seeded_db.commit()
+        newer_claim = claim_label_sync(seeded_db, sync_id=sync.id)
+        assert newer_claim is not None
+        newer_claims.append(newer_claim)
 
-    mailbox.on_modify = dirty_generation
+    mailbox.on_modify = claim_newer_generation
     result = process_claimed_label_sync(
         seeded_db,
         claim,
         mailbox_factory=lambda credential: (mailbox, False),
     )
 
-    assert result.status is GmailLabelSyncStatus.PENDING
+    assert len(newer_claims) == 1
+    newer_claim = newer_claims[0]
+    assert result.status is GmailLabelSyncStatus.PROCESSING
     current = seeded_db.get(GmailThreadLabelSync, sync.id)
-    assert current is not None and current.generation == claim.generation + 1
+    assert current is not None
+    assert current.generation == newer_claim.generation == claim.generation + 1
+    assert current.status is GmailLabelSyncStatus.PROCESSING
+    assert current.claimed_generation == newer_claim.generation
+    assert current.processing_started_at is not None
+    assert current.attempt_count == 1
+    assert current.applied_label_keys == []
+    assert current.last_applied_at is None
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(
+                AuditEvent.agency_id == connection.agency_id,
+                AuditEvent.event_type == "GMAIL_WORKFLOW_LABELS_APPLIED",
+            )
+        )
+        == 0
+    )
+
+    mailbox.on_modify = None
+    applied = process_claimed_label_sync(
+        seeded_db,
+        newer_claim,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+    seeded_db.refresh(current)
+    assert applied.status is GmailLabelSyncStatus.APPLIED
+    assert current.status is GmailLabelSyncStatus.APPLIED
+    assert current.claimed_generation is None
+    assert current.last_applied_at is not None
 
 
 @pytest.mark.parametrize(
@@ -682,6 +785,107 @@ def test_stale_label_failure_cannot_overwrite_a_newer_generation(
         )
     ).all()
     assert failure_events == []
+
+
+def test_stale_recovery_fences_old_success_and_new_claim_converges(
+    seeded_db: Session,
+) -> None:
+    connection = create_connection(seeded_db, address="stale-recovery-success@test")
+    message = create_message(seeded_db, connection, thread_id="thread-stale-recovery-success")
+    sync = enqueue_for_message(seeded_db, message)
+    seeded_db.commit()
+    assert sync is not None
+    old_claim = claim_label_sync(seeded_db, sync_id=sync.id)
+    assert old_claim is not None
+    sync.processing_started_at = utc_now() - timedelta(minutes=10)
+    seeded_db.commit()
+
+    recovered = recover_stale_label_syncs(
+        seeded_db,
+        settings=Settings(gmail_label_stale_after_seconds=60),
+    )
+    seeded_db.refresh(sync)
+    assert recovered == 1
+    assert sync.generation == old_claim.generation + 1
+    assert sync.status is GmailLabelSyncStatus.PENDING
+    assert sync.attempt_count == 1
+    assert sync.last_error_code == "GMAIL_LABEL_STALE_RECOVERED"
+
+    mailbox = FakeLabelMailbox()
+    old_result = process_claimed_label_sync(
+        seeded_db,
+        old_claim,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+    seeded_db.refresh(sync)
+    assert old_result.status is GmailLabelSyncStatus.PENDING
+    assert sync.status is GmailLabelSyncStatus.PENDING
+    assert sync.attempt_count == 1
+    assert sync.last_error_code == "GMAIL_LABEL_STALE_RECOVERED"
+
+    recovered_claim = claim_label_sync(seeded_db, sync_id=sync.id)
+    assert recovered_claim is not None
+    assert recovered_claim.generation == old_claim.generation + 1
+    applied = process_claimed_label_sync(
+        seeded_db,
+        recovered_claim,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+    seeded_db.refresh(sync)
+    assert applied.status is GmailLabelSyncStatus.APPLIED
+    assert sync.status is GmailLabelSyncStatus.APPLIED
+    assert sync.attempt_count == 2
+    assert sync.last_error_code is None
+
+
+@pytest.mark.parametrize(
+    "provider_error",
+    [
+        GmailTransientError("synthetic transient"),
+        GmailLabelPermanentError("synthetic permanent"),
+        GmailModifyPermissionRequired("synthetic permission"),
+    ],
+)
+def test_stale_recovery_fences_every_old_failure_class(
+    seeded_db: Session,
+    provider_error: Exception,
+) -> None:
+    connection = create_connection(
+        seeded_db,
+        address=f"recovered-{type(provider_error).__name__}@test",
+    )
+    message = create_message(seeded_db, connection, thread_id="thread-recovered-failure")
+    sync = enqueue_for_message(seeded_db, message)
+    seeded_db.commit()
+    assert sync is not None
+    old_claim = claim_label_sync(seeded_db, sync_id=sync.id)
+    assert old_claim is not None
+    sync.processing_started_at = utc_now() - timedelta(minutes=10)
+    seeded_db.commit()
+    recover_stale_label_syncs(
+        seeded_db,
+        settings=Settings(gmail_label_stale_after_seconds=60),
+    )
+
+    old_result = process_claimed_label_sync(
+        seeded_db,
+        old_claim,
+        settings=Settings(gmail_label_max_attempts=1),
+        mailbox_factory=lambda credential: (
+            FakeLabelMailbox(modify_error=provider_error),
+            False,
+        ),
+    )
+
+    current = seeded_db.get(GmailThreadLabelSync, sync.id)
+    assert current is not None
+    assert old_result.status is GmailLabelSyncStatus.PENDING
+    assert current.generation == old_claim.generation + 1
+    assert current.status is GmailLabelSyncStatus.PENDING
+    assert current.attempt_count == 1
+    assert current.claimed_generation is None
+    assert current.next_retry_at is None
+    assert current.last_error_code == "GMAIL_LABEL_STALE_RECOVERED"
 
 
 def test_readonly_connection_blocks_label_provider_call_until_scope_upgrade(
@@ -761,6 +965,105 @@ def test_google_mailbox_rejects_modify_without_scope_before_service_access() -> 
         mailbox.list_labels()
 
 
+@pytest.mark.parametrize(
+    ("status", "reason", "expected_error"),
+    [
+        (403, "rateLimitExceeded", GmailTransientError),
+        (403, "userRateLimitExceeded", GmailTransientError),
+        (403, "insufficientPermissions", GmailModifyPermissionRequired),
+        (403, "domainPolicy", GmailLabelPermanentError),
+        (403, "dailyLimitExceeded", GmailLabelPermanentError),
+        (403, "unknownProviderRestriction", GmailLabelPermanentError),
+        (429, "rateLimitExceeded", GmailTransientError),
+        (500, "backendError", GmailTransientError),
+        (503, "backendError", GmailTransientError),
+        (401, "authError", GmailReauthorizationRequired),
+    ],
+)
+def test_google_mailbox_classifies_label_http_errors_by_status_and_safe_reason(
+    status: int,
+    reason: str,
+    expected_error: type[Exception],
+) -> None:
+    from app.integrations.gmail.client import GoogleGmailMailbox
+
+    with pytest.raises(expected_error) as raised:
+        GoogleGmailMailbox._execute_label(RaisingRequest(gmail_http_error(status, reason)))
+
+    assert "sensitive" not in str(raised.value).lower()
+    assert "provider-secret" not in str(raised.value).lower()
+
+
+@pytest.mark.parametrize("reason", ["rateLimitExceeded", "userRateLimitExceeded"])
+def test_label_rate_limit_uses_safe_bounded_retry_without_provider_detail(
+    seeded_db: Session,
+    reason: str,
+) -> None:
+    from app.integrations.gmail.client import GoogleGmailMailbox
+
+    class RateLimitedMailbox(FakeLabelMailbox):
+        def modify_thread_labels(
+            self,
+            thread_id: str,
+            *,
+            add_label_ids: list[str],
+            remove_label_ids: list[str],
+        ) -> None:
+            GoogleGmailMailbox._execute_label(RaisingRequest(gmail_http_error(403, reason)))
+
+    connection = create_connection(seeded_db, address=f"{reason.lower()}@test")
+    message = create_message(seeded_db, connection, thread_id=f"thread-{reason}")
+    sync = enqueue_for_message(seeded_db, message)
+    seeded_db.commit()
+    assert sync is not None
+    claim = claim_label_sync(seeded_db, sync_id=sync.id)
+    assert claim is not None
+
+    result = process_claimed_label_sync(
+        seeded_db,
+        claim,
+        settings=Settings(
+            gmail_label_max_attempts=3,
+            gmail_label_retry_base_seconds=1,
+        ),
+        mailbox_factory=lambda credential: (RateLimitedMailbox(), False),
+    )
+
+    current = seeded_db.get(GmailThreadLabelSync, sync.id)
+    assert current is not None
+    assert result.status is GmailLabelSyncStatus.RETRY_WAIT
+    assert current.status is GmailLabelSyncStatus.RETRY_WAIT
+    assert current.next_retry_at is not None
+    assert current.last_error_code == "GMAIL_THREAD_LABEL_FAILED"
+    event = seeded_db.scalar(
+        select(AuditEvent)
+        .where(
+            AuditEvent.agency_id == connection.agency_id,
+            AuditEvent.event_type == "GMAIL_LABEL_RETRY_SCHEDULED",
+        )
+        .order_by(AuditEvent.id.desc())
+    )
+    assert event is not None
+    persisted = f"{event.description} {event.event_metadata} {current.last_error_code}"
+    assert "sensitive" not in persisted.lower()
+    assert "provider-secret" not in persisted.lower()
+
+
+@pytest.mark.parametrize("execute_label", [False, True])
+def test_refresh_error_during_request_execution_requires_reauthorization(
+    execute_label: bool,
+) -> None:
+    from app.integrations.gmail.client import GoogleGmailMailbox
+
+    request = RaisingRequest(RefreshError("synthetic-sensitive-refresh-detail"))
+    executor = GoogleGmailMailbox._execute_label if execute_label else GoogleGmailMailbox._execute
+
+    with pytest.raises(GmailReauthorizationRequired) as raised:
+        executor(request)
+
+    assert "sensitive" not in str(raised.value).lower()
+
+
 def test_google_mailbox_exposes_only_expected_label_and_thread_operations() -> None:
     from app.integrations.gmail.client import GoogleGmailMailbox
 
@@ -809,6 +1112,7 @@ def test_google_mailbox_exposes_only_expected_label_and_thread_operations() -> N
     thread_state = mailbox.get_thread_label_state("thread-1")
     assert thread_state.any_label_ids == {"managed-1", "INBOX"}
     assert thread_state.all_label_ids == {"INBOX"}
+    assert thread_state.labelable_message_count == 2
     mailbox.modify_thread_labels("thread-1", add_label_ids=["managed-1"], remove_label_ids=[])
 
     assert calls[0] == ("labels.list", {"userId": "me"})
@@ -828,16 +1132,66 @@ def test_google_mailbox_exposes_only_expected_label_and_thread_operations() -> N
     )
 
 
+def test_google_mailbox_excludes_drafts_from_thread_label_completeness() -> None:
+    from app.integrations.gmail.client import GoogleGmailMailbox
+
+    class Request:
+        def execute(self) -> dict:
+            return {
+                "messages": [
+                    {"labelIds": ["managed-1", "INBOX"]},
+                    {"labelIds": ["DRAFT"]},
+                ]
+            }
+
+    mailbox = GoogleGmailMailbox.__new__(GoogleGmailMailbox)
+    mailbox._can_modify = True
+    mailbox._service = SimpleNamespace(
+        users=lambda: SimpleNamespace(
+            threads=lambda: SimpleNamespace(get=lambda **kwargs: Request())
+        )
+    )
+
+    state = mailbox.get_thread_label_state("thread-with-draft")
+
+    assert state.any_label_ids == {"managed-1", "INBOX"}
+    assert state.all_label_ids == {"managed-1", "INBOX"}
+    assert state.labelable_message_count == 1
+
+
+def test_google_mailbox_reports_an_all_draft_thread_without_labelable_messages() -> None:
+    from app.integrations.gmail.client import GoogleGmailMailbox
+
+    class Request:
+        def execute(self) -> dict:
+            return {"messages": [{"labelIds": ["DRAFT"]}]}
+
+    mailbox = GoogleGmailMailbox.__new__(GoogleGmailMailbox)
+    mailbox._can_modify = True
+    mailbox._service = SimpleNamespace(
+        users=lambda: SimpleNamespace(
+            threads=lambda: SimpleNamespace(get=lambda **kwargs: Request())
+        )
+    )
+
+    state = mailbox.get_thread_label_state("all-draft-thread")
+
+    assert state.any_label_ids == set()
+    assert state.all_label_ids == set()
+    assert state.labelable_message_count == 0
+
+
 @pytest.mark.parametrize(
     "response",
     [
         {},
         {"messages": None},
         {"messages": "malformed"},
+        {"messages": []},
         {"messages": [None, {"labelIds": "malformed"}]},
     ],
 )
-def test_google_mailbox_handles_empty_or_malformed_thread_labels_safely(response: dict) -> None:
+def test_google_mailbox_rejects_empty_or_malformed_thread_labels(response: dict) -> None:
     from app.integrations.gmail.client import GoogleGmailMailbox
 
     class Request:
@@ -852,10 +1206,8 @@ def test_google_mailbox_handles_empty_or_malformed_thread_labels_safely(response
         )
     )
 
-    state = mailbox.get_thread_label_state("thread-malformed")
-
-    assert state.any_label_ids == set()
-    assert state.all_label_ids == set()
+    with pytest.raises(GmailTransientError):
+        mailbox.get_thread_label_state("thread-malformed")
 
 
 def test_manual_label_retry_api_is_semantic_csrf_protected_and_scoped(

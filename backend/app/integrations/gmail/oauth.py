@@ -40,7 +40,7 @@ SAFE_TOKEN_EXCHANGE_REASONS = {
     "state_mismatch",
     "scope_change_invalid",
 }
-PROFILE_REASON_ALIASES = {
+GOOGLE_HTTP_REASON_ALIASES = {
     "ACCESSNOTCONFIGURED": "SERVICE_DISABLED",
     "API_DISABLED": "SERVICE_DISABLED",
     "SERVICEDISABLED": "SERVICE_DISABLED",
@@ -53,6 +53,14 @@ PROFILE_REASON_ALIASES = {
     "UNAUTHENTICATED": "UNAUTHENTICATED",
     "RATELIMITEXCEEDED": "RATE_LIMITED",
     "RATE_LIMIT_EXCEEDED": "RATE_LIMITED",
+    "USERRATELIMITEXCEEDED": "RATE_LIMITED",
+    "USER_RATE_LIMIT_EXCEEDED": "RATE_LIMITED",
+    "QUOTAEXCEEDED": "RATE_LIMITED",
+    "RESOURCE_EXHAUSTED": "RATE_LIMITED",
+    "DAILYLIMITEXCEEDED": "DAILY_LIMIT_EXCEEDED",
+    "DAILY_LIMIT_EXCEEDED": "DAILY_LIMIT_EXCEEDED",
+    "DOMAINPOLICY": "DOMAIN_POLICY",
+    "DOMAIN_POLICY": "DOMAIN_POLICY",
     "SERVICE_UNAVAILABLE": "SERVICE_UNAVAILABLE",
 }
 
@@ -61,8 +69,13 @@ def _normalized_reason(value: str) -> str:
     return re.sub(r"[^A-Z0-9_]", "", value.upper())
 
 
-def _safe_profile_http_reason(error: HttpError, status_code: int | None) -> str:
-    candidates: list[str] = []
+def safe_google_http_reason(
+    error: HttpError,
+    *,
+    include_status: bool = True,
+) -> str | None:
+    reasons: list[str] = []
+    statuses: list[str] = []
     try:
         payload = json.loads(error.content.decode("utf-8"))
     except AttributeError, UnicodeDecodeError, json.JSONDecodeError:
@@ -72,22 +85,30 @@ def _safe_profile_http_reason(error: HttpError, status_code: int | None) -> str:
         if isinstance(value, dict):
             reason = value.get("reason")
             if isinstance(reason, str):
-                candidates.append(reason)
+                reasons.append(reason)
             for key in ("error", "errors", "details"):
                 if key in value:
                     collect(value[key])
             status = value.get("status")
             if isinstance(status, str):
-                candidates.append(status)
+                statuses.append(status)
         elif isinstance(value, list):
             for item in value:
                 collect(item)
 
     collect(payload)
+    candidates = reasons + (statuses if include_status else [])
     for candidate in candidates:
-        mapped = PROFILE_REASON_ALIASES.get(_normalized_reason(candidate))
+        mapped = GOOGLE_HTTP_REASON_ALIASES.get(_normalized_reason(candidate))
         if mapped:
             return mapped
+    return None
+
+
+def _safe_profile_http_reason(error: HttpError, status_code: int | None) -> str:
+    provider_reason = safe_google_http_reason(error)
+    if provider_reason:
+        return provider_reason
     if status_code == 401:
         return "UNAUTHENTICATED"
     if status_code == 403:

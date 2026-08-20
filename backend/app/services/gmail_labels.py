@@ -452,7 +452,9 @@ def process_claimed_label_sync(
         actual = mailbox.get_thread_label_state(sync.gmail_thread_id)
         managed_ids = set(bindings.values())
         desired_ids = {bindings[key] for key in desired}
-        add_ids = sorted(desired_ids - actual.all_label_ids)
+        add_ids = (
+            sorted(desired_ids - actual.all_label_ids) if actual.labelable_message_count else []
+        )
         remove_ids = sorted((actual.any_label_ids & managed_ids) - desired_ids)
         if add_ids or remove_ids:
             mailbox.modify_thread_labels(
@@ -506,17 +508,15 @@ def process_claimed_label_sync(
     current = db.get(GmailThreadLabelSync, claim.sync_id)
     if current is None:
         raise LookupError("Gmail label synchronization state not found")
+    if current.generation != claim.generation:
+        return LabelResult(current.id, current.status, current.generation)
     current.processing_started_at = None
     current.claimed_generation = None
     current.applied_label_keys = sorted(key.value for key in desired)
     current.last_applied_at = utc_now()
     current.last_error_code = None
     current.next_retry_at = None
-    if current.generation == claim.generation:
-        current.status = GmailLabelSyncStatus.APPLIED
-    else:
-        current.status = GmailLabelSyncStatus.PENDING
-        current.attempt_count = 0
+    current.status = GmailLabelSyncStatus.APPLIED
     record_audit_event(
         db,
         agency_id=current.agency_id,
@@ -550,6 +550,7 @@ def recover_stale_label_syncs(db: Session, *, settings: Settings | None = None) 
         .with_for_update(skip_locked=True)
     ).all()
     for sync in rows:
+        sync.generation += 1
         sync.status = GmailLabelSyncStatus.PENDING
         sync.processing_started_at = None
         sync.claimed_generation = None

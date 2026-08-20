@@ -23,7 +23,11 @@ from app.integrations.gmail.errors import (
     GmailThreadNotFound,
     GmailTransientError,
 )
-from app.integrations.gmail.oauth import GMAIL_MODIFY_SCOPE, GOOGLE_TOKEN_URI
+from app.integrations.gmail.oauth import (
+    GMAIL_MODIFY_SCOPE,
+    GOOGLE_TOKEN_URI,
+    safe_google_http_reason,
+)
 from app.models.organization import GmailOAuthCredential
 
 
@@ -31,6 +35,7 @@ from app.models.organization import GmailOAuthCredential
 class GmailThreadLabelState:
     any_label_ids: frozenset[str]
     all_label_ids: frozenset[str]
+    labelable_message_count: int = 1
 
 
 class GmailMailbox(Protocol):
@@ -62,6 +67,10 @@ class GoogleGmailMailbox:
     def _execute(request) -> Mapping[str, Any]:
         try:
             return request.execute()
+        except RefreshError as error:
+            raise GmailReauthorizationRequired(
+                "Google authorization is no longer valid. Reconnect this inbox."
+            ) from error
         except HttpError as error:
             if error.resp.status == 401:
                 raise GmailReauthorizationRequired(
@@ -120,6 +129,10 @@ class GoogleGmailMailbox:
     def _execute_label(request, *, missing_kind: str | None = None) -> Mapping[str, Any]:
         try:
             return request.execute()
+        except RefreshError as error:
+            raise GmailReauthorizationRequired(
+                "Google authorization is no longer valid. Reconnect this inbox."
+            ) from error
         except HttpError as error:
             status = getattr(error.resp, "status", None)
             if status == 401:
@@ -127,8 +140,21 @@ class GoogleGmailMailbox:
                     "Google authorization is no longer valid. Reconnect this inbox."
                 ) from error
             if status == 403:
-                raise GmailModifyPermissionRequired(
-                    "Reconnect Gmail to enable Carrier Hub workflow labels."
+                reason = safe_google_http_reason(error, include_status=False)
+                if reason in {"RATE_LIMITED", "SERVICE_UNAVAILABLE"}:
+                    raise GmailTransientError(
+                        "Gmail label delivery is temporarily unavailable."
+                    ) from error
+                if reason == "UNAUTHENTICATED":
+                    raise GmailReauthorizationRequired(
+                        "Google authorization is no longer valid. Reconnect this inbox."
+                    ) from error
+                if reason in {"ACCESS_TOKEN_SCOPE_INSUFFICIENT", "PERMISSION_DENIED"}:
+                    raise GmailModifyPermissionRequired(
+                        "Reconnect Gmail to enable Carrier Hub workflow labels."
+                    ) from error
+                raise GmailLabelPermanentError(
+                    "Gmail rejected the workflow label request."
                 ) from error
             if status == 404 and missing_kind == "label":
                 raise GmailLabelBindingInvalid("A managed Gmail label binding is stale.") from error
@@ -179,28 +205,35 @@ class GoogleGmailMailbox:
             self._service.users().threads().get(userId="me", id=thread_id, format="minimal"),
             missing_kind="thread",
         )
+        if not isinstance(response, Mapping):
+            raise GmailTransientError("Gmail returned an invalid thread response.")
         raw_messages = response.get("messages")
-        if not isinstance(raw_messages, list):
-            return GmailThreadLabelState(frozenset(), frozenset())
+        if not isinstance(raw_messages, list) or not raw_messages:
+            raise GmailTransientError("Gmail returned an invalid thread response.")
 
         per_message: list[set[str]] = []
         for message in raw_messages:
-            label_ids: set[str] = set()
-            if isinstance(message, Mapping):
-                raw_label_ids = message.get("labelIds")
-                if isinstance(raw_label_ids, list):
-                    label_ids = {
-                        label_id
-                        for label_id in raw_label_ids
-                        if isinstance(label_id, str) and label_id
-                    }
+            if not isinstance(message, Mapping):
+                raise GmailTransientError("Gmail returned an invalid thread response.")
+            raw_label_ids = message.get("labelIds", [])
+            if not isinstance(raw_label_ids, list) or any(
+                not isinstance(label_id, str) or not label_id for label_id in raw_label_ids
+            ):
+                raise GmailTransientError("Gmail returned an invalid thread response.")
+            label_ids = set(raw_label_ids)
+            if "DRAFT" in label_ids:
+                continue
             per_message.append(label_ids)
 
         if not per_message:
-            return GmailThreadLabelState(frozenset(), frozenset())
+            return GmailThreadLabelState(frozenset(), frozenset(), 0)
         any_label_ids = set().union(*per_message)
         all_label_ids = set(per_message[0]).intersection(*per_message[1:])
-        return GmailThreadLabelState(frozenset(any_label_ids), frozenset(all_label_ids))
+        return GmailThreadLabelState(
+            frozenset(any_label_ids),
+            frozenset(all_label_ids),
+            len(per_message),
+        )
 
     def modify_thread_labels(
         self, thread_id: str, *, add_label_ids: list[str], remove_label_ids: list[str]
