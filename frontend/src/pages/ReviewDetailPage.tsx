@@ -103,25 +103,25 @@ export function ReviewDetailPage() {
       />
     )
   const proposal = detail.data.analysis.proposed_result
-  if (!proposal)
-    return (
-      <ErrorState message="This review does not contain a valid structured proposal." />
-    )
-
   const review = detail.data
   const analysis = review.analysis
-  const form = editedForm ?? toHumanInput(proposal)
+  const form = editedForm ?? (proposal ? toHumanInput(proposal) : null)
+  const isFinalized = ['RESOLVED', 'DISMISSED'].includes(review.status)
   const update = <K extends keyof HumanAnalysisInput>(
     key: K,
     value: HumanAnalysisInput[K],
-  ) => setEditedForm({ ...form, [key]: value })
-  const updateAction = (index: number, action: ActionItem) =>
+  ) => {
+    if (form) setEditedForm({ ...form, [key]: value })
+  }
+  const updateAction = (index: number, action: ActionItem) => {
+    if (!form) return
     update(
       'action_items',
       form.action_items.map((item, position) =>
         position === index ? action : item,
       ),
     )
+  }
   const error = apply.error ?? dismiss.error
 
   return (
@@ -176,198 +176,83 @@ export function ReviewDetailPage() {
           ))}
         </div>
 
-        <form
-          className="space-y-5 border border-slate-200 bg-white p-5"
-          onSubmit={(event) => {
-            event.preventDefault()
-            apply.mutate()
-          }}
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-semibold">Correct structured analysis</h2>
-            <span className="text-sm text-slate-600">
-              Confidence:{' '}
-              {analysis.overall_confidence === null
-                ? '—'
-                : `${Math.round(analysis.overall_confidence * 100)}%`}
-            </span>
-          </div>
-          {analysis.validation_flags.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {analysis.validation_flags.map((flag) => (
-                <StatusBadge key={flag} status={flag} />
-              ))}
-            </div>
-          )}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="text-sm font-medium">
-              Classification
-              <select
-                className={`${fieldClass} mt-1`}
-                value={form.classification}
-                onChange={(event) =>
-                  update(
-                    'classification',
-                    event.target.value as MessageClassification,
-                  )
-                }
-              >
-                {classifications.map((value) => (
-                  <option key={value}>{value}</option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm font-medium">
-              Policy status
-              <select
-                className={`${fieldClass} mt-1`}
-                value={form.policy_status}
-                onChange={(event) =>
-                  update('policy_status', event.target.value as PolicyStatus)
-                }
-              >
-                {policyStatuses.map((value) => (
-                  <option key={value}>{value}</option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm font-medium">
-              Client name
-              <Input
-                className="mt-1"
-                value={form.client_name ?? ''}
-                onChange={(event) =>
-                  update('client_name', event.target.value || null)
-                }
-              />
-            </label>
-            <label className="text-sm font-medium">
-              Policy number
-              <Input
-                className="mt-1"
-                value={form.policy_number ?? ''}
-                onChange={(event) =>
-                  update('policy_number', event.target.value || null)
-                }
-              />
-            </label>
-            <label className="text-sm font-medium">
-              Priority
-              <select
-                className={`${fieldClass} mt-1`}
-                value={form.priority}
-                onChange={(event) =>
-                  update('priority', event.target.value as Priority)
-                }
-              >
-                {priorities.map((value) => (
-                  <option key={value}>{value}</option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm font-medium">
-              Effective date
-              <Input
-                className="mt-1"
-                type="date"
-                value={form.effective_date ?? ''}
-                onChange={(event) =>
-                  update('effective_date', event.target.value || null)
-                }
-              />
-            </label>
-            <label className="text-sm font-medium">
-              Premium amount
-              <Input
-                className="mt-1"
-                inputMode="decimal"
-                value={form.premium_amount ?? ''}
-                onChange={(event) =>
-                  update('premium_amount', event.target.value || null)
-                }
-              />
-            </label>
-            <label className="text-sm font-medium">
-              Currency
-              <Input
-                className="mt-1"
-                maxLength={3}
-                value={form.currency ?? ''}
-                onChange={(event) =>
-                  update('currency', event.target.value || null)
-                }
-              />
-            </label>
-            <label className="text-sm font-medium">
-              Deadline date
-              <Input
-                className="mt-1"
-                type="date"
-                value={form.deadline.explicit_date ?? ''}
-                onChange={(event) =>
-                  update('deadline', {
-                    ...form.deadline,
-                    explicit_date: event.target.value || null,
-                    relative_count: null,
-                    relative_unit: null,
-                  })
-                }
-              />
-            </label>
-            <label className="text-sm font-medium">
-              Deadline source wording
-              <Input
-                className="mt-1"
-                value={form.deadline.raw_text ?? ''}
-                onChange={(event) =>
-                  update('deadline', {
-                    ...form.deadline,
-                    raw_text: event.target.value || null,
-                  })
-                }
-              />
-            </label>
-          </div>
-          <label className="block text-sm font-medium">
-            Summary
-            <textarea
-              className={`${fieldClass} mt-1 min-h-24`}
-              required
-              value={form.summary}
-              onChange={(event) => update('summary', event.target.value)}
-            />
-          </label>
-          <label className="block text-sm font-medium">
-            Requirements (one per line)
-            <textarea
-              className={`${fieldClass} mt-1 min-h-24`}
-              value={form.requirements.join('\n')}
-              onChange={(event) =>
-                update(
-                  'requirements',
-                  event.target.value.split('\n').filter(Boolean),
-                )
-              }
-            />
-          </label>
-          <div className="space-y-3">
-            <h3 className="text-sm font-semibold">Action items</h3>
-            {form.action_items.map((action, index) => (
-              <div
-                key={index}
-                className="grid gap-3 border border-slate-200 p-3 sm:grid-cols-2"
-              >
-                <label className="text-sm font-medium sm:col-span-2">
-                  Title
+        {proposal && form ? (
+          <form
+            className="space-y-5 border border-slate-200 bg-white p-5"
+            onSubmit={(event) => {
+              event.preventDefault()
+              apply.mutate()
+            }}
+          >
+            <fieldset className="space-y-5" disabled={isFinalized}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="font-semibold">Correct structured analysis</h2>
+                <span className="text-sm text-slate-600">
+                  Confidence:{' '}
+                  {analysis.overall_confidence === null
+                    ? '—'
+                    : `${Math.round(analysis.overall_confidence * 100)}%`}
+                </span>
+              </div>
+              {analysis.validation_flags.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {analysis.validation_flags.map((flag) => (
+                    <StatusBadge key={flag} status={flag} />
+                  ))}
+                </div>
+              )}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="text-sm font-medium">
+                  Classification
+                  <select
+                    className={`${fieldClass} mt-1`}
+                    value={form.classification}
+                    onChange={(event) =>
+                      update(
+                        'classification',
+                        event.target.value as MessageClassification,
+                      )
+                    }
+                  >
+                    {classifications.map((value) => (
+                      <option key={value}>{value}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm font-medium">
+                  Policy status
+                  <select
+                    className={`${fieldClass} mt-1`}
+                    value={form.policy_status}
+                    onChange={(event) =>
+                      update(
+                        'policy_status',
+                        event.target.value as PolicyStatus,
+                      )
+                    }
+                  >
+                    {policyStatuses.map((value) => (
+                      <option key={value}>{value}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm font-medium">
+                  Client name
                   <Input
                     className="mt-1"
-                    required
-                    value={action.title}
+                    value={form.client_name ?? ''}
                     onChange={(event) =>
-                      updateAction(index, {
-                        ...action,
-                        title: event.target.value,
-                      })
+                      update('client_name', event.target.value || null)
+                    }
+                  />
+                </label>
+                <label className="text-sm font-medium">
+                  Policy number
+                  <Input
+                    className="mt-1"
+                    value={form.policy_number ?? ''}
+                    onChange={(event) =>
+                      update('policy_number', event.target.value || null)
                     }
                   />
                 </label>
@@ -375,12 +260,9 @@ export function ReviewDetailPage() {
                   Priority
                   <select
                     className={`${fieldClass} mt-1`}
-                    value={action.priority}
+                    value={form.priority}
                     onChange={(event) =>
-                      updateAction(index, {
-                        ...action,
-                        priority: event.target.value as Priority,
-                      })
+                      update('priority', event.target.value as Priority)
                     }
                   >
                     {priorities.map((value) => (
@@ -389,67 +271,254 @@ export function ReviewDetailPage() {
                   </select>
                 </label>
                 <label className="text-sm font-medium">
-                  Due date
+                  Effective date
                   <Input
                     className="mt-1"
                     type="date"
-                    value={action.explicit_due_date ?? ''}
+                    value={form.effective_date ?? ''}
                     onChange={(event) =>
-                      updateAction(index, {
-                        ...action,
-                        explicit_due_date: event.target.value || null,
+                      update('effective_date', event.target.value || null)
+                    }
+                  />
+                </label>
+                <label className="text-sm font-medium">
+                  Premium amount
+                  <Input
+                    className="mt-1"
+                    inputMode="decimal"
+                    value={form.premium_amount ?? ''}
+                    onChange={(event) =>
+                      update('premium_amount', event.target.value || null)
+                    }
+                  />
+                </label>
+                <label className="text-sm font-medium">
+                  Currency
+                  <Input
+                    className="mt-1"
+                    maxLength={3}
+                    value={form.currency ?? ''}
+                    onChange={(event) =>
+                      update('currency', event.target.value || null)
+                    }
+                  />
+                </label>
+                <label className="text-sm font-medium">
+                  Deadline date
+                  <Input
+                    className="mt-1"
+                    type="date"
+                    value={form.deadline.explicit_date ?? ''}
+                    onChange={(event) =>
+                      update('deadline', {
+                        ...form.deadline,
+                        explicit_date: event.target.value || null,
+                        relative_count: null,
+                        relative_unit: null,
                       })
                     }
                   />
                 </label>
-                <label className="text-sm font-medium sm:col-span-2">
-                  Description
+                <label className="text-sm font-medium">
+                  Deadline source wording
                   <Input
                     className="mt-1"
-                    value={action.description ?? ''}
+                    value={form.deadline.raw_text ?? ''}
                     onChange={(event) =>
-                      updateAction(index, {
-                        ...action,
-                        description: event.target.value || null,
+                      update('deadline', {
+                        ...form.deadline,
+                        raw_text: event.target.value || null,
                       })
                     }
                   />
                 </label>
               </div>
-            ))}
-          </div>
-          <div className="border-t border-slate-200 pt-5">
-            <label className="block text-sm font-medium">
-              Dismissal notes
-              <Input
-                className="mt-1"
-                value={notes}
-                onChange={(event) => setNotes(event.target.value)}
-              />
-            </label>
-            {error && (
-              <p className="mt-3 text-sm text-red-700" role="alert">
-                {error.message}
+              <label className="block text-sm font-medium">
+                Summary
+                <textarea
+                  className={`${fieldClass} mt-1 min-h-24`}
+                  required
+                  value={form.summary}
+                  onChange={(event) => update('summary', event.target.value)}
+                />
+              </label>
+              <label className="block text-sm font-medium">
+                Requirements (one per line)
+                <textarea
+                  className={`${fieldClass} mt-1 min-h-24`}
+                  value={form.requirements.join('\n')}
+                  onChange={(event) =>
+                    update(
+                      'requirements',
+                      event.target.value.split('\n').filter(Boolean),
+                    )
+                  }
+                />
+              </label>
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold">Action items</h3>
+                {form.action_items.map((action, index) => (
+                  <div
+                    key={index}
+                    className="grid gap-3 border border-slate-200 p-3 sm:grid-cols-2"
+                  >
+                    <label className="text-sm font-medium sm:col-span-2">
+                      Title
+                      <Input
+                        className="mt-1"
+                        required
+                        value={action.title}
+                        onChange={(event) =>
+                          updateAction(index, {
+                            ...action,
+                            title: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="text-sm font-medium">
+                      Priority
+                      <select
+                        className={`${fieldClass} mt-1`}
+                        value={action.priority}
+                        onChange={(event) =>
+                          updateAction(index, {
+                            ...action,
+                            priority: event.target.value as Priority,
+                          })
+                        }
+                      >
+                        {priorities.map((value) => (
+                          <option key={value}>{value}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-sm font-medium">
+                      Due date
+                      <Input
+                        className="mt-1"
+                        type="date"
+                        value={action.explicit_due_date ?? ''}
+                        onChange={(event) =>
+                          updateAction(index, {
+                            ...action,
+                            explicit_due_date: event.target.value || null,
+                          })
+                        }
+                      />
+                    </label>
+                    <label className="text-sm font-medium sm:col-span-2">
+                      Description
+                      <Input
+                        className="mt-1"
+                        value={action.description ?? ''}
+                        onChange={(event) =>
+                          updateAction(index, {
+                            ...action,
+                            description: event.target.value || null,
+                          })
+                        }
+                      />
+                    </label>
+                  </div>
+                ))}
+              </div>
+              <div className="border-t border-slate-200 pt-5">
+                <label className="block text-sm font-medium">
+                  Dismissal notes
+                  <Input
+                    className="mt-1"
+                    value={notes}
+                    onChange={(event) => setNotes(event.target.value)}
+                  />
+                </label>
+                {error && (
+                  <p className="mt-3 text-sm text-red-700" role="alert">
+                    {error.message}
+                  </p>
+                )}
+                {!isFinalized && (
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <Button
+                      type="submit"
+                      disabled={apply.isPending || dismiss.isPending}
+                    >
+                      Approve &amp; Apply
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="danger"
+                      disabled={apply.isPending || dismiss.isPending}
+                      onClick={() => dismiss.mutate()}
+                    >
+                      Dismiss message
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </fieldset>
+          </form>
+        ) : (
+          <section className="space-y-5 border border-slate-200 bg-white p-5">
+            <div>
+              <h2 className="font-semibold">No structured proposal</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Analysis did not produce a valid structured record, so there is
+                nothing safe to approve and apply. Review the source and any
+                attachment previews before dismissing this non-operational
+                message.
               </p>
-            )}
-            <div className="mt-4 flex flex-wrap gap-3">
-              <Button
-                type="submit"
-                disabled={apply.isPending || dismiss.isPending}
-              >
-                Approve &amp; Apply
-              </Button>
-              <Button
-                type="button"
-                variant="danger"
-                disabled={apply.isPending || dismiss.isPending}
-                onClick={() => dismiss.mutate()}
-              >
-                Dismiss message
-              </Button>
             </div>
-          </div>
-        </form>
+            <dl className="grid gap-4 border border-slate-200 bg-slate-50 p-4 text-sm sm:grid-cols-2">
+              <div>
+                <dt className="font-semibold text-slate-500">Carrier</dt>
+                <dd className="mt-1">{review.carrier_name}</dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-slate-500">Status</dt>
+                <dd className="mt-1">{review.status.replaceAll('_', ' ')}</dd>
+              </div>
+              <div className="sm:col-span-2">
+                <dt className="font-semibold text-slate-500">Review reason</dt>
+                <dd className="mt-1">{review.reason}</dd>
+              </div>
+            </dl>
+            {isFinalized ? (
+              <div className="border-t border-slate-200 pt-5 text-sm text-slate-600">
+                <p className="font-semibold text-slate-900">Finalized review</p>
+                <p className="mt-1">
+                  {review.resolution_notes ??
+                    'This review is read-only because it has already been finalized.'}
+                </p>
+              </div>
+            ) : (
+              <div className="border-t border-slate-200 pt-5">
+                <label className="block text-sm font-medium">
+                  Dismissal notes
+                  <Input
+                    className="mt-1"
+                    value={notes}
+                    onChange={(event) => setNotes(event.target.value)}
+                  />
+                </label>
+                {dismiss.error && (
+                  <p className="mt-3 text-sm text-red-700" role="alert">
+                    {dismiss.error.message}
+                  </p>
+                )}
+                <Button
+                  className="mt-4"
+                  type="button"
+                  variant="danger"
+                  disabled={dismiss.isPending}
+                  onClick={() => dismiss.mutate()}
+                >
+                  Dismiss review
+                </Button>
+              </div>
+            )}
+          </section>
+        )}
       </section>
     </div>
   )

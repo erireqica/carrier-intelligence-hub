@@ -271,7 +271,7 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
                 else None
             ),
         ),
-        recent_cases=[case_item(item) for item in recent_cases],
+        recent_cases=[case_item(item, current.agency.timezone) for item in recent_cases],
         recent_activity=[
             ActivityItem(
                 id=event.id,

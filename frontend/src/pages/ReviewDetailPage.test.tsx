@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   applyReviewAnalysis,
@@ -53,7 +53,54 @@ const proposal = {
   uncertainties: ['Client name formatting'],
 }
 
+const noProposalReview = {
+  id: 8,
+  message_id: 13,
+  case_id: null,
+  client_name: null,
+  policy_number: null,
+  carrier_name: 'Americo',
+  message_subject: 'Unreadable attachment',
+  reason_code: 'ATTACHMENT_NEEDS_OCR',
+  reason: 'A PDF attachment could not be read safely.',
+  status: 'OPEN' as const,
+  resolution_notes: null,
+  assigned_reviewer: null,
+  created_at: '2026-08-20T12:00:00Z',
+  resolved_at: null,
+  analysis_confidence: null,
+  analysis: {
+    message_id: 13,
+    carrier_name: 'Americo',
+    processing_status: 'NEEDS_REVIEW' as const,
+    case_id: null,
+    review_id: 8,
+    model_name: null,
+    schema_version: null,
+    prompt_version: null,
+    overall_confidence: null,
+    validation_flags: ['ATTACHMENT_NEEDS_OCR'],
+    proposed_result: null,
+    final_result: null,
+    source_content: 'The attached document requires human inspection.',
+    attachments: [
+      {
+        id: 4,
+        filename: 'scanned-notice.pdf',
+        mime_type: 'application/pdf',
+        size_bytes: 42,
+        processing_status: 'NEEDS_OCR',
+        page_count: 1,
+        extraction_error_code: 'PDF_NO_TEXT',
+        extracted_text_preview: null,
+      },
+    ],
+  },
+}
+
 describe('ReviewDetailPage', () => {
+  beforeEach(() => vi.clearAllMocks())
+
   it('shows grounded proposal fields and submits human corrections', async () => {
     vi.mocked(getReviewAnalysis).mockResolvedValue({
       id: 7,
@@ -131,5 +178,91 @@ describe('ReviewDetailPage', () => {
       ),
     )
     expect(await screen.findByText('Case opened')).toBeInTheDocument()
+  })
+
+  it('keeps source context visible and dismisses a review without a proposal', async () => {
+    vi.mocked(getReviewAnalysis).mockResolvedValue(noProposalReview)
+    vi.mocked(dismissReviewAnalysis).mockResolvedValue({
+      message_id: 13,
+      processing_status: 'IGNORED',
+      case_id: null,
+      review_id: null,
+      tasks_created: 0,
+      attachments_extracted: 0,
+      analysis_confidence: null,
+      validation_flags: [],
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/reviews/8']}>
+          <Routes>
+            <Route path="/reviews/:reviewId" element={<ReviewDetailPage />} />
+            <Route path="/reviews" element={<p>Review queue opened</p>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(
+      await screen.findByText('No structured proposal'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('The attached document requires human inspection.'),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/scanned-notice\.pdf/)).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Approve & Apply' }),
+    ).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Dismissal notes'), {
+      target: { value: 'Not an actionable carrier notice.' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss review' }))
+
+    await waitFor(() =>
+      expect(dismissReviewAnalysis).toHaveBeenCalledWith(
+        8,
+        'Not an actionable carrier notice.',
+      ),
+    )
+    expect(await screen.findByText('Review queue opened')).toBeInTheDocument()
+    expect(applyReviewAnalysis).not.toHaveBeenCalled()
+  })
+
+  it('renders a finalized no-proposal review as read-only', async () => {
+    vi.mocked(getReviewAnalysis).mockResolvedValue({
+      ...noProposalReview,
+      status: 'DISMISSED',
+      resolution_notes: 'Confirmed as non-operational.',
+      resolved_at: '2026-08-20T13:00:00Z',
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/reviews/8']}>
+          <Routes>
+            <Route path="/reviews/:reviewId" element={<ReviewDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('Finalized review')).toBeInTheDocument()
+    expect(
+      screen.getByText('Confirmed as non-operational.'),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Dismiss review' }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Dismissal notes')).not.toBeInTheDocument()
   })
 })

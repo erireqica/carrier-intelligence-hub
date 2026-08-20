@@ -17,7 +17,7 @@ describe('CaseDetailPage carrier messages', () => {
       policy_status: 'UNKNOWN',
       priority: 'NORMAL',
       summary: 'Source message received.',
-      deadline: null,
+      deadline: '2026-08-28',
       updated_at: '2026-08-20T10:00:00Z',
       carrier: { id: 1, name: 'Americo', code: 'AMR' },
       assigned_agent: null,
@@ -35,15 +35,33 @@ describe('CaseDetailPage carrier messages', () => {
           summary: null,
           priority: null,
           processing_status: 'PROCESSING',
-          cleaned_content: 'Clean source content.',
-          original_deadline_text: null,
+          cleaned_content: 'Submit the form by August 28, 2026.',
+          original_deadline_text: 'by August 28, 2026',
           analysis_confidence: null,
           validation_flags: [],
           review_id: null,
         },
       ],
       attachments: [],
-      tasks: [],
+      tasks: [
+        {
+          id: 5,
+          case_id: 1,
+          client_name: 'Synthetic Client',
+          policy_number: null,
+          title: 'Submit authorization',
+          description: 'Send the signed form.',
+          priority: 'HIGH',
+          due_at: '2026-08-28',
+          status: 'OPEN',
+          completed_at: null,
+          assigned_agent: {
+            id: 2,
+            full_name: 'Elena Torres',
+            email: 'agent.one@demo.local',
+          },
+        },
+      ],
       evidence: [],
       activity: [],
     })
@@ -65,6 +83,11 @@ describe('CaseDetailPage carrier messages', () => {
     expect(screen.getAllByText('Processing').length).toBeGreaterThan(0)
     expect(
       screen.getByText('Semantic analysis is currently in progress.'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Aug 28, 2026')).toBeInTheDocument()
+    expect(screen.getByText('Due Aug 28, 2026')).toBeInTheDocument()
+    expect(
+      screen.getByText('Submit the form by August 28, 2026.'),
     ).toBeInTheDocument()
     expect(screen.queryByText('OTHER')).not.toBeInTheDocument()
   })

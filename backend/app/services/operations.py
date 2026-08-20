@@ -1,4 +1,6 @@
 import math
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, status
 from sqlalchemy import Select, func, or_, select
@@ -48,7 +50,19 @@ def agent_brief(user: User) -> AgentBrief:
     return AgentBrief(id=user.id, full_name=user.full_name, email=user.email)
 
 
-def task_item(task: Task) -> TaskItem:
+def business_date(value: datetime | None, timezone_name: str) -> date | None:
+    if value is None:
+        return None
+    try:
+        timezone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        timezone = UTC
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(timezone).date()
+
+
+def task_item(task: Task, agency_timezone: str) -> TaskItem:
     return TaskItem(
         id=task.id,
         case_id=task.case_id,
@@ -57,14 +71,14 @@ def task_item(task: Task) -> TaskItem:
         title=task.title,
         description=task.description,
         priority=task.priority,
-        due_at=task.due_at,
+        due_at=business_date(task.due_at, agency_timezone),
         status=task.status,
         completed_at=task.completed_at,
         assigned_agent=agent_brief(task.assigned_agent),
     )
 
 
-def case_item(case: PolicyCase) -> CaseListItem:
+def case_item(case: PolicyCase, agency_timezone: str) -> CaseListItem:
     return CaseListItem(
         id=case.id,
         client_name=case.client_name,
@@ -72,7 +86,7 @@ def case_item(case: PolicyCase) -> CaseListItem:
         policy_status=case.current_policy_status,
         priority=case.priority,
         summary=case.summary,
-        deadline=case.current_deadline,
+        deadline=business_date(case.current_deadline, agency_timezone),
         updated_at=case.updated_at,
         carrier=CarrierBrief(id=case.carrier.id, name=case.carrier.name, code=case.carrier.code),
         assigned_agent=agent_brief(case.assigned_agent) if case.assigned_agent else None,
@@ -144,7 +158,8 @@ def list_cases(
         .limit(page_size)
     ).all()
     return CaseListResponse(
-        items=[case_item(case) for case in cases], page=page_info(page, page_size, total)
+        items=[case_item(case, current.agency.timezone) for case in cases],
+        page=page_info(page, page_size, total),
     )
 
 
@@ -171,7 +186,7 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
         .order_by(AuditEvent.created_at.desc())
         .limit(30)
     ).all()
-    base = case_item(case).model_dump()
+    base = case_item(case, current.agency.timezone).model_dump()
     return CaseDetail(
         **base,
         premium_amount=case.premium_amount,
@@ -212,7 +227,7 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
             for message in case.messages
             for attachment in message.attachments
         ],
-        tasks=[task_item(task) for task in case.tasks],
+        tasks=[task_item(task, current.agency.timezone) for task in case.tasks],
         evidence=[
             EvidenceItem(
                 id=evidence.id,
@@ -267,7 +282,8 @@ def list_tasks(
         .limit(page_size)
     ).all()
     return TaskListResponse(
-        items=[task_item(task) for task in tasks], page=page_info(page, page_size, total)
+        items=[task_item(task, current.agency.timezone) for task in tasks],
+        page=page_info(page, page_size, total),
     )
 
 
@@ -339,14 +355,14 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
             },
         )
     if not status_changed and not assignment_changed:
-        return task_item(task)
+        return task_item(task, current.agency.timezone)
 
     if status_changed and task.source_message is not None:
         enqueue_for_message(db, task.source_message)
 
     db.commit()
     db.refresh(task)
-    return task_item(task)
+    return task_item(task, current.agency.timezone)
 
 
 def list_reviews(

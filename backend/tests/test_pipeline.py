@@ -1,6 +1,7 @@
 import base64
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -246,6 +247,18 @@ def test_offline_pipeline_is_automatic_idempotent_and_whitelist_first(
     assert stored is not None
     assert first.messages_ingested == first.messages_processed == 1
     assert stored.processing_status is ProcessingStatus.PROCESSED
+    assert stored.case is not None
+    assert stored.case.current_deadline is not None
+    assert (
+        stored.case.current_deadline.astimezone(ZoneInfo("America/Chicago")).date().isoformat()
+        == "2026-08-28"
+    )
+    created_task = seeded_db.scalar(select(Task).where(Task.source_carrier_message_id == stored.id))
+    assert created_task is not None and created_task.due_at is not None
+    assert (
+        created_task.due_at.astimezone(ZoneInfo("America/Chicago")).date().isoformat()
+        == "2026-08-28"
+    )
     assert analyzer.calls == 1
     assert mailbox.full_fetches == ["approved-5001"]
     assert not seeded_db.scalars(

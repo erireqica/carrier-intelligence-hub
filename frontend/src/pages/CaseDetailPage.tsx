@@ -8,7 +8,7 @@ import {
   PriorityBadge,
   StatusBadge,
 } from '../components/ui'
-import { formatDate } from '../lib/format'
+import { formatBusinessDate, formatDate } from '../lib/format'
 import { getCase, updateTask } from '../lib/api'
 import type { TaskStatus } from '../lib/types'
 
@@ -83,17 +83,14 @@ export function CaseDetailPage() {
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[
           ['Assigned agent', item.assigned_agent?.full_name ?? 'Unassigned'],
-          ['Key deadline', formatDate(item.deadline)],
+          ['Key deadline', formatBusinessDate(item.deadline)],
           [
             'Premium',
             item.premium_amount
               ? `${item.currency ?? 'USD'} ${item.premium_amount}`
               : '—',
           ],
-          [
-            'Effective date',
-            item.effective_date ? formatDate(item.effective_date) : '—',
-          ],
+          ['Effective date', formatBusinessDate(item.effective_date)],
         ].map(([label, value]) => (
           <div key={label} className="border border-slate-200 bg-white p-4">
             <p className="text-xs font-semibold text-slate-500 uppercase">
@@ -121,7 +118,7 @@ export function CaseDetailPage() {
                       {task.description}
                     </p>
                     <p className="mt-2 text-xs text-slate-500">
-                      Due {formatDate(task.due_at)}
+                      Due {formatBusinessDate(task.due_at)}
                     </p>
                   </div>
                   <div className="shrink-0 text-right">

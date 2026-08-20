@@ -57,7 +57,7 @@ class CaseListItem(BaseModel):
     policy_status: PolicyStatus
     priority: Priority
     summary: str
-    deadline: datetime | None
+    deadline: date | None
     updated_at: datetime
     carrier: CarrierBrief
     assigned_agent: AgentBrief | None
@@ -77,7 +77,7 @@ class TaskItem(BaseModel):
     title: str
     description: str | None
     priority: Priority
-    due_at: datetime | None
+    due_at: date | None
     status: TaskStatus
     completed_at: datetime | None
     assigned_agent: AgentBrief

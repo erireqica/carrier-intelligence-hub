@@ -34,7 +34,7 @@ describe('TasksPage mutations', () => {
           title: 'Contact client',
           description: null,
           priority: 'HIGH',
-          due_at: '2026-09-15T17:00:00Z',
+          due_at: '2026-08-28',
           status: 'OPEN',
           completed_at: null,
           assigned_agent: {
@@ -59,6 +59,7 @@ describe('TasksPage mutations', () => {
         <TasksPage />
       </QueryClientProvider>,
     )
+    expect(await screen.findByText('Aug 28, 2026')).toBeInTheDocument()
     const status = await screen.findByLabelText('Update Contact client')
     fireEvent.change(status, { target: { value: 'COMPLETED' } })
     await waitFor(() =>

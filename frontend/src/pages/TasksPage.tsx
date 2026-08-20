@@ -10,13 +10,18 @@ import {
   PriorityBadge,
   StatusBadge,
 } from '../components/ui'
-import { formatDate } from '../lib/format'
+import { businessDaysFromToday, formatBusinessDate } from '../lib/format'
 import { getAgents, getTasks, updateTask } from '../lib/api'
 import type { TaskStatus } from '../lib/types'
 
-function dueState(dueAt: string | null, status: TaskStatus) {
+function dueState(
+  dueAt: string | null,
+  status: TaskStatus,
+  agencyTimezone: string,
+) {
   if (!dueAt || ['COMPLETED', 'DISMISSED'].includes(status)) return null
-  const days = (new Date(dueAt).getTime() - Date.now()) / 86_400_000
+  const days = businessDaysFromToday(dueAt, agencyTimezone)
+  if (days === null) return null
   if (days < 0)
     return <span className="text-xs font-semibold text-red-700">Overdue</span>
   if (days <= 7)
@@ -162,9 +167,13 @@ export function TasksPage() {
                     <PriorityBadge priority={task.priority} />
                   </td>
                   <td className="px-4 py-4">
-                    {formatDate(task.due_at)}
+                    {formatBusinessDate(task.due_at)}
                     <div className="mt-1">
-                      {dueState(task.due_at, task.status)}
+                      {dueState(
+                        task.due_at,
+                        task.status,
+                        auth.data?.user.agency.timezone ?? 'UTC',
+                      )}
                     </div>
                   </td>
                   <td className="px-4 py-4">

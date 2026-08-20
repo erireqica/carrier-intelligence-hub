@@ -16,6 +16,7 @@ from app.integrations.ai.schemas import (
     Evidence,
     HumanAnalysisInput,
 )
+from app.models.audit import AuditEvent
 from app.models.carriers import Carrier
 from app.models.enums import (
     AttachmentStatus,
@@ -719,6 +720,57 @@ def test_review_analysis_api_enforces_scope_and_applies_human_correction(
     seeded_db.refresh(message)
     assert message.analysis.final_result_json["summary"].startswith("Human-confirmed")
     assert message.analysis.model_result_json["summary"] == proposed.summary
+
+
+def test_review_without_structured_proposal_can_be_dismissed(
+    client: TestClient, seeded_db: Session, login
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Unreadable Attachment",
+        policy="NO-PROPOSAL-1",
+        subject_suffix="no-proposal",
+    )
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(
+            analysis_result(
+                client="Unreadable Attachment",
+                policy="NO-PROPOSAL-1",
+                confidence=0.4,
+            )
+        ),
+    )
+    assert result.review_id is not None and message.analysis is not None
+    message.analysis.model_result_json = {"malformed": "synthetic regression fixture"}
+    seeded_db.commit()
+
+    auth = login(client, "agent.one@demo.local")
+    detail = client.get(f"/api/v1/reviews/{result.review_id}/analysis")
+    assert detail.status_code == 200
+    assert detail.json()["analysis"]["proposed_result"] is None
+
+    dismissed = client.post(
+        f"/api/v1/reviews/{result.review_id}/dismiss-analysis",
+        json={"resolution_notes": "Unreadable attachment; no operational record to apply."},
+        headers={"X-CSRF-Token": auth["csrf_token"]},
+    )
+    assert dismissed.status_code == 200
+    assert dismissed.json()["processing_status"] == "IGNORED"
+    seeded_db.refresh(message)
+    review = seeded_db.get(ReviewItem, result.review_id)
+    assert message.processing_status is ProcessingStatus.IGNORED
+    assert review is not None and review.status is ReviewStatus.DISMISSED
+    assert (
+        seeded_db.scalar(
+            select(AuditEvent).where(
+                AuditEvent.carrier_message_id == message.id,
+                AuditEvent.event_type == "AI_REVIEW_DISMISSED",
+            )
+        )
+        is not None
+    )
 
 
 def test_manual_processing_api_requires_csrf_and_reports_unconfigured_ai(

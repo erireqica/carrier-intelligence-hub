@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -92,6 +94,36 @@ def test_role_authorization_case_and_task_scoping(client: TestClient, db: Sessio
         headers={"X-CSRF-Token": manager_auth["csrf_token"]},
     )
     assert reassigned.status_code == 200
+
+
+def test_business_deadlines_serialize_as_agency_local_dates(
+    client: TestClient, db: Session, login
+) -> None:
+    agency = db.scalar(select(Agency))
+    case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "John Doe"))
+    task = db.scalar(select(Task).where(Task.case_id == case.id)) if case else None
+    assert agency is not None and case is not None and task is not None
+    agency.timezone = "America/Chicago"
+    case.current_deadline = datetime(2026, 8, 28, 22, tzinfo=UTC)
+    task.due_at = datetime(2026, 8, 28, 22, tzinfo=UTC)
+    db.commit()
+
+    login(client, "manager@demo.local")
+    case_list = client.get("/api/v1/cases?page_size=100")
+    case_detail = client.get(f"/api/v1/cases/{case.id}")
+    task_list = client.get("/api/v1/tasks?page_size=100")
+
+    assert case_list.status_code == case_detail.status_code == task_list.status_code == 200
+    listed_case = next(item for item in case_list.json()["items"] if item["id"] == case.id)
+    listed_task = next(item for item in task_list.json()["items"] if item["id"] == task.id)
+    assert listed_case["deadline"] == "2026-08-28"
+    assert case_detail.json()["deadline"] == "2026-08-28"
+    assert (
+        next(item for item in case_detail.json()["tasks"] if item["id"] == task.id)["due_at"]
+        == "2026-08-28"
+    )
+    assert listed_task["due_at"] == "2026-08-28"
+    assert "T" in listed_case["updated_at"]
 
 
 def test_manager_carrier_whitelist_and_review_workflows(
