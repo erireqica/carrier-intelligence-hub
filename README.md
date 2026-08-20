@@ -1,6 +1,6 @@
 # Carrier Intelligence Hub
 
-Carrier Intelligence Hub is an authenticated internal operations application for insurance agencies. It turns carrier communications into durable policy cases, assigned work, review items, evidence, and audit history. Stage 2 provides a real PostgreSQL-backed Agent and Manager workflow; Gmail OAuth, live ingestion, and AI extraction remain future work.
+Carrier Intelligence Hub is an authenticated internal operations application for insurance agencies. It turns carrier communications into durable policy cases, assigned work, review items, evidence, and audit history. Stage 3 adds Google OAuth and read-only Gmail ingestion to the PostgreSQL-backed Agent and Manager workflow. AI analysis and case generation remain future work.
 
 ## Stack
 
@@ -8,6 +8,7 @@ Carrier Intelligence Hub is an authenticated internal operations application for
 - FastAPI, Pydantic, SQLAlchemy 2, Alembic, and psycopg 3
 - PostgreSQL 17
 - Argon2id password hashing and database-backed browser sessions
+- Google OAuth 2.0, encrypted Gmail tokens, and a separate polling worker
 - Vitest/Testing Library, pytest, ESLint/Prettier, and Ruff
 
 ## Local setup
@@ -43,6 +44,43 @@ npm run dev
 
 Open `http://localhost:5173`. The API is at `http://localhost:8000`, with OpenAPI documentation at `http://localhost:8000/docs`.
 
+## Gmail development setup
+
+This project uses a Google OAuth app in development/testing mode. In Google Cloud, enable the Gmail API, configure the Google Auth Platform as **External** with testing status, add the intended Google account as a test user, and create an OAuth 2.0 **Web application** client. Register this exact redirect URI:
+
+```text
+http://localhost:8000/api/v1/gmail/oauth/callback
+```
+
+Add these values only to the ignored `backend/.env`; never commit them:
+
+```dotenv
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+GOOGLE_TOKEN_ENCRYPTION_KEY=
+GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/api/v1/gmail/oauth/callback
+GMAIL_POLL_INTERVAL_SECONDS=60
+GMAIL_INITIAL_LOOKBACK_DAYS=7
+```
+
+`GOOGLE_TOKEN_ENCRYPTION_KEY` must be a dedicated Fernet key. Start the API and frontend as above, sign in to Carrier Hub, open **Gmail Connections**, and choose **Connect Gmail**. Select the Google account manually and approve only the Gmail read permission. The application never receives or stores the Gmail password.
+
+Run the polling process separately from FastAPI:
+
+```powershell
+cd backend
+& .\.venv\Scripts\python.exe -m app.workers.gmail_poll
+```
+
+For one polling pass, or one specific connection:
+
+```powershell
+& .\.venv\Scripts\python.exe -m app.workers.gmail_poll --once
+& .\.venv\Scripts\python.exe -m app.workers.gmail_poll --once --connection-id 1
+```
+
+Google testing-mode refresh-token policies may require reconnection. The application reports that condition as `NEEDS_REAUTH`; it does not bypass Google's policies. This stage is development-tested and must not be described as Google production verification, a security assessment, HIPAA compliance, SOC 2 compliance, or production authorization approval. Production deployment requires review of Google's applicable OAuth verification, user-data, and security requirements. See [Gmail integration](docs/gmail-integration.md).
+
 ## Verification
 
 ```powershell
@@ -69,6 +107,6 @@ Authentication uses an HttpOnly cookie containing an opaque random session token
 
 ## Current boundary
 
-Implemented now: login/logout, Agent/Manager authorization, database-backed sessions, CSRF defense, seeded operational records, cases, tasks, reviews, carrier configuration, analytics, and audit history.
+Implemented now: login/logout, Agent/Manager authorization, database-backed sessions, CSRF defense, seeded operational records, cases, tasks, reviews, carrier configuration, analytics, audit history, Google OAuth, encrypted Gmail credentials, read-only polling, sender-whitelist filtering, MIME body parsing, and attachment metadata discovery.
 
-Not implemented yet: Gmail OAuth, credential encryption, mailbox polling/webhooks, attachment download, PDF extraction, live AI classification/extraction, CRM integrations, invitations, or production deployment. Seeded carrier messages are development fixtures delivered through the same database and API paths the future ingestion pipeline will use.
+Not implemented yet: Gmail labels or mailbox mutation, push notifications, attachment download, PDF extraction, live AI classification/extraction, automatic Case/Task/Review generation, CRM integrations, invitations, or production deployment. A Gmail message enters as a source-only `CarrierMessage` in `RECEIVED` state with its case and semantic fields unset.

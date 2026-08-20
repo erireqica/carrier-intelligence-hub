@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AnyHttpUrl, PostgresDsn, SecretStr
+from pydantic import AnyHttpUrl, Field, PostgresDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -18,12 +18,29 @@ class Settings(BaseSettings):
     session_cookie_name: str = "carrier_hub_session"
     session_lifetime_hours: int = 12
     session_cookie_secure: bool = False
+    google_oauth_client_id: SecretStr | None = None
+    google_oauth_client_secret: SecretStr | None = None
+    google_token_encryption_key: SecretStr | None = None
+    google_oauth_redirect_uri: AnyHttpUrl = "http://localhost:8000/api/v1/gmail/oauth/callback"
+    gmail_poll_interval_seconds: int = Field(default=60, ge=5)
+    gmail_initial_lookback_days: int = Field(default=7, ge=1, le=365)
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def gmail_oauth_configured(self) -> bool:
+        secrets = (
+            self.google_oauth_client_id,
+            self.google_oauth_client_secret,
+            self.google_token_encryption_key,
+        )
+        return all(
+            value is not None and bool(value.get_secret_value().strip()) for value in secrets
+        )
 
 
 @lru_cache

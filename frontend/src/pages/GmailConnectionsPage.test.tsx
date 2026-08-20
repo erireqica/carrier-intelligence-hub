@@ -1,30 +1,241 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getGmailConnections } from '../lib/api'
+import { useCurrentUser } from '../app/auth'
+import {
+  disconnectGmailConnection,
+  getGmailConnections,
+  getGmailMessages,
+  redirectToOAuth,
+  startGmailOAuth,
+  syncGmailConnection,
+} from '../lib/api'
+import type { GmailConnection } from '../lib/types'
+import { authFixture } from '../test/fixtures'
 import { GmailConnectionsPage } from './GmailConnectionsPage'
 
-vi.mock('../lib/api', () => ({ getGmailConnections: vi.fn() }))
+vi.mock('../app/auth', () => ({ useCurrentUser: vi.fn() }))
+vi.mock('../lib/api', () => ({
+  disconnectGmailConnection: vi.fn(),
+  getGmailConnections: vi.fn(),
+  getGmailMessages: vi.fn(),
+  redirectToOAuth: vi.fn(),
+  startGmailOAuth: vi.fn(),
+  syncGmailConnection: vi.fn(),
+}))
+
+const baseConnection: GmailConnection = {
+  id: 11,
+  gmail_address: 'agent@gmail.com',
+  owner: { id: 2, full_name: 'Avery Agent', email: 'agent@example.com' },
+  status: 'CONNECTED',
+  connected_at: '2026-08-20T08:00:00Z',
+  last_successful_sync_at: null,
+  last_attempted_sync_at: null,
+  last_error_summary: null,
+  is_owner: true,
+}
+
+function renderPage(
+  path = '/gmail-connections',
+  role: 'AGENT' | 'MANAGER' = 'AGENT',
+) {
+  vi.mocked(useCurrentUser).mockReturnValue({
+    data: authFixture(role),
+  } as ReturnType<typeof useCurrentUser>)
+  const client = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  })
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[path]}>
+        <GmailConnectionsPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  vi.mocked(getGmailMessages).mockResolvedValue([])
+})
+
+afterEach(cleanup)
 
 describe('GmailConnectionsPage', () => {
   it('honestly explains the unconfigured OAuth state', async () => {
-    vi.mocked(getGmailConnections).mockResolvedValue([])
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: false,
+      connections: [],
     })
-    render(
-      <QueryClientProvider client={client}>
-        <GmailConnectionsPage />
-      </QueryClientProvider>,
-    )
+    renderPage()
+
     expect(
       await screen.findByText('No Gmail inbox connected'),
     ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect Gmail' })).toBeDisabled()
     expect(
-      screen.getByRole('button', {
-        name: 'Connect Gmail — integration not configured',
-      }),
+      screen.getByText('Gmail integration is not configured.'),
+    ).toBeInTheDocument()
+  })
+
+  it('starts a configured read-only OAuth connection', async () => {
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: true,
+      connections: [],
+    })
+    vi.mocked(startGmailOAuth).mockResolvedValue({
+      authorization_url: 'https://accounts.google.test/authorize',
+    })
+    renderPage()
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Connect Gmail' }),
+    )
+    await waitFor(() => expect(startGmailOAuth).toHaveBeenCalledWith())
+    expect(redirectToOAuth).toHaveBeenCalledWith(
+      'https://accounts.google.test/authorize',
+    )
+  })
+
+  it('renders every connection health state and owner actions', async () => {
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: true,
+      connections: [
+        baseConnection,
+        {
+          ...baseConnection,
+          id: 12,
+          gmail_address: 'reauth@gmail.com',
+          status: 'NEEDS_REAUTH',
+        },
+        {
+          ...baseConnection,
+          id: 13,
+          gmail_address: 'error@gmail.com',
+          status: 'ERROR',
+          last_error_summary: 'Temporary provider failure.',
+        },
+        {
+          ...baseConnection,
+          id: 14,
+          gmail_address: 'disconnected@gmail.com',
+          status: 'DISCONNECTED',
+        },
+      ],
+    })
+    renderPage()
+
+    expect(await screen.findByText('agent@gmail.com')).toBeInTheDocument()
+    expect(screen.getByText('reauth@gmail.com')).toBeInTheDocument()
+    expect(screen.getByText('error@gmail.com')).toBeInTheDocument()
+    expect(screen.getByText('disconnected@gmail.com')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Reconnect' })).toHaveLength(3)
+    expect(screen.getAllByRole('button', { name: 'Disconnect' })).toHaveLength(
+      3,
+    )
+    expect(screen.getAllByRole('button', { name: 'Sync now' })).toHaveLength(2)
+    expect(screen.getByText(/Temporary provider failure/)).toBeInTheDocument()
+  })
+
+  it('shows sync progress and a successful ingestion summary', async () => {
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: true,
+      connections: [baseConnection],
+    })
+    let completeSync:
+      | ((value: Awaited<ReturnType<typeof syncGmailConnection>>) => void)
+      | undefined
+    vi.mocked(syncGmailConnection).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          completeSync = resolve
+        }),
+    )
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Sync now' }))
+    expect(
+      await screen.findByRole('button', { name: 'Syncing…' }),
     ).toBeDisabled()
+    completeSync?.({
+      connection_id: 11,
+      messages_seen: 4,
+      already_ingested: 1,
+      approved: 2,
+      ingested: 2,
+      skipped_unapproved: 1,
+      attachments_discovered: 3,
+    })
+    expect(
+      await screen.findByText(
+        'Sync complete: 2 ingested, 1 already present, 1 unapproved skipped.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('shows safe sync errors and recent received messages', async () => {
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: true,
+      connections: [baseConnection],
+    })
+    vi.mocked(syncGmailConnection).mockRejectedValue(
+      new Error('Gmail could not be reached.'),
+    )
+    vi.mocked(getGmailMessages).mockResolvedValue([
+      {
+        id: 21,
+        carrier: { id: 4, name: 'Acme Carrier', code: 'ACME' },
+        sender: 'notices@acme.example',
+        subject: 'Renewal notice',
+        received_at: '2026-08-20T09:00:00Z',
+        processing_status: 'RECEIVED',
+        attachment_count: 2,
+      },
+    ])
+    renderPage()
+
+    expect(await screen.findByText('Renewal notice')).toBeInTheDocument()
+    expect(screen.getByText('RECEIVED')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Gmail could not be reached.',
+    )
+  })
+
+  it('shows OAuth callback feedback and keeps manager actions read-only', async () => {
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: true,
+      connections: [{ ...baseConnection, is_owner: false }],
+    })
+    renderPage('/gmail-connections?oauth=scope_missing', 'MANAGER')
+
+    expect(
+      await screen.findByText(
+        'The required Gmail read permission was not granted.',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Reconnect' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Disconnect' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/Managers can view and sync agency connections/),
+    ).toBeInTheDocument()
+    expect(disconnectGmailConnection).not.toHaveBeenCalled()
   })
 })

@@ -9,6 +9,8 @@ export type ProcessingStatus =
   | 'FAILED'
   | 'IGNORED'
 export type GmailHealth = 'CONNECTED' | 'NEEDS_ATTENTION' | 'NOT_CONNECTED'
+export type GmailConnectionStatus =
+  'CONNECTED' | 'NEEDS_REAUTH' | 'ERROR' | 'DISCONNECTED'
 
 export type AgentBrief = { id: number; full_name: string; email: string }
 export type CarrierBrief = { id: number; name: string; code: string | null }
@@ -133,6 +135,43 @@ export type Dashboard = {
   workload: Array<{ agent: AgentBrief; open_tasks: number }>
   gmail_connected: boolean
   gmail_health: GmailHealth
+}
+
+export type GmailConnection = {
+  id: number
+  gmail_address: string
+  owner: AgentBrief
+  status: GmailConnectionStatus
+  connected_at: string | null
+  last_successful_sync_at: string | null
+  last_attempted_sync_at: string | null
+  last_error_summary: string | null
+  is_owner: boolean
+}
+
+export type GmailConnectionsResponse = {
+  configured: boolean
+  connections: GmailConnection[]
+}
+
+export type GmailSyncResult = {
+  connection_id: number
+  messages_seen: number
+  already_ingested: number
+  approved: number
+  ingested: number
+  skipped_unapproved: number
+  attachments_discovered: number
+}
+
+export type GmailMessage = {
+  id: number
+  carrier: CarrierBrief
+  sender: string
+  subject: string
+  received_at: string
+  processing_status: ProcessingStatus
+  attachment_count: number
 }
 
 export type AgentItem = {

@@ -7,7 +7,6 @@ from app.api.schemas.domain import (
     CaseDetail,
     CaseListResponse,
     DashboardResponse,
-    GmailConnectionItem,
     ReviewItemResponse,
     ReviewListResponse,
     ReviewUpdate,
@@ -112,8 +111,3 @@ def patch_review(
     review_id: int, data: ReviewUpdate, current: CsrfUser, db: DbSession
 ) -> ReviewItemResponse:
     return operations_service.update_review(db, current, review_id, data)
-
-
-@router.get("/gmail-connections", response_model=list[GmailConnectionItem])
-def get_gmail_connections(current: CurrentUser, db: DbSession) -> list[GmailConnectionItem]:
-    return reporting.gmail_connections(db, current)

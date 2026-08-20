@@ -7,6 +7,9 @@ import type {
   CaseDetail,
   CaseItem,
   Dashboard,
+  GmailConnectionsResponse,
+  GmailMessage,
+  GmailSyncResult,
   PageInfo,
   ReviewItem,
   TaskItem,
@@ -126,7 +129,27 @@ export const updateReview = (
     body: JSON.stringify({ status, resolution_notes: resolutionNotes ?? null }),
   })
 export const getGmailConnections = () =>
-  apiRequest<unknown[]>('/gmail-connections')
+  apiRequest<GmailConnectionsResponse>('/gmail-connections')
+export const startGmailOAuth = (reconnectConnectionId?: number) =>
+  apiRequest<{ authorization_url: string }>('/gmail/oauth/start', {
+    method: 'POST',
+    body: JSON.stringify({
+      reconnect_connection_id: reconnectConnectionId ?? null,
+    }),
+  })
+export const syncGmailConnection = (connectionId: number) =>
+  apiRequest<GmailSyncResult>(`/gmail-connections/${connectionId}/sync`, {
+    method: 'POST',
+  })
+export const disconnectGmailConnection = (connectionId: number) =>
+  apiRequest<{ message: string }>(`/gmail-connections/${connectionId}`, {
+    method: 'DELETE',
+  })
+export const getGmailMessages = (connectionId: number) =>
+  apiRequest<GmailMessage[]>(`/gmail-connections/${connectionId}/messages`)
+export function redirectToOAuth(authorizationUrl: string) {
+  window.location.assign(authorizationUrl)
+}
 export const getAgents = () => apiRequest<AgentItem[]>('/manager/agents')
 export const getCarriers = () => apiRequest<CarrierItem[]>('/manager/carriers')
 export const getAnalytics = () => apiRequest<Analytics>('/manager/analytics')

@@ -1,0 +1,442 @@
+from datetime import timedelta
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+from fastapi.testclient import TestClient
+from googleapiclient.errors import HttpError
+from httplib2 import Response
+from oauthlib.oauth2 import InvalidClientError
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.api.routes import gmail as gmail_routes
+from app.core.security import token_hash
+from app.core.time import utc_now
+from app.integrations.gmail import oauth as oauth_module
+from app.integrations.gmail.crypto import TokenCipher
+from app.integrations.gmail.errors import (
+    GmailProfileRequestError,
+    GmailProfileValidationError,
+    GmailTokenExchangeError,
+)
+from app.integrations.gmail.oauth import GMAIL_READONLY_SCOPE, GoogleOAuthClient, OAuthTokenSet
+from app.models.enums import GmailConnectionStatus
+from app.models.organization import (
+    GmailConnection,
+    GmailOAuthCredential,
+    GmailOAuthState,
+    User,
+)
+
+
+class FakeOAuthClient:
+    def __init__(self, *, gmail_address: str = "authorized@gmail.test") -> None:
+        self.states: list[str] = []
+        self.tokens = OAuthTokenSet(
+            access_token="synthetic-access-token",
+            refresh_token="synthetic-refresh-token",
+            expires_at=utc_now() + timedelta(hours=1),
+            granted_scopes=[GMAIL_READONLY_SCOPE],
+            gmail_address=gmail_address,
+        )
+        self.revoked: list[str] = []
+
+    def authorization_url(self, state: str) -> str:
+        self.states.append(state)
+        return f"https://accounts.google.test/consent?state={state}"
+
+    def exchange_code(self, code: str) -> OAuthTokenSet:
+        assert code == "synthetic-code"
+        return self.tokens
+
+    def revoke_token(self, token: str) -> None:
+        self.revoked.append(token)
+
+
+def patch_oauth(monkeypatch, fake: FakeOAuthClient) -> None:
+    monkeypatch.setattr(gmail_routes, "GoogleOAuthClient", lambda: fake)
+
+
+def test_google_authorization_url_uses_web_offline_readonly_flow(configured_google) -> None:
+    raw_state = "synthetic-strong-oauth-state"
+    authorization_url = GoogleOAuthClient().authorization_url(raw_state)
+    query = parse_qs(urlparse(authorization_url).query)
+    assert query["response_type"] == ["code"]
+    assert query["access_type"] == ["offline"]
+    assert query["include_granted_scopes"] == ["true"]
+    assert query["state"] == [raw_state]
+    assert query["scope"] == [GMAIL_READONLY_SCOPE]
+    assert set(query["prompt"][0].split()) == {"consent", "select_account"}
+    assert "code_challenge" not in query
+    assert "code_challenge_method" not in query
+
+
+def test_exchange_rejects_missing_actual_scope_even_when_it_was_requested(monkeypatch) -> None:
+    class Credentials:
+        token = "synthetic-access"
+        refresh_token = "synthetic-refresh"
+        expiry = None
+        scopes = [GMAIL_READONLY_SCOPE]
+        granted_scopes = []
+
+    class Flow:
+        credentials = Credentials()
+
+        def fetch_token(self, *, code: str) -> None:
+            assert code == "synthetic-code"
+
+    class ProfileRequest:
+        @staticmethod
+        def execute() -> dict[str, str]:
+            return {"emailAddress": "provider-profile@gmail.com"}
+
+    class Profile:
+        @staticmethod
+        def getProfile(*, userId: str) -> ProfileRequest:
+            assert userId == "me"
+            return ProfileRequest()
+
+    class Service:
+        @staticmethod
+        def users() -> Profile:
+            return Profile()
+
+    client = object.__new__(GoogleOAuthClient)
+    monkeypatch.setattr(GoogleOAuthClient, "_flow", lambda self: Flow())
+    monkeypatch.setattr(oauth_module, "build", lambda *args, **kwargs: Service())
+    with pytest.raises(PermissionError, match="read scope"):
+        client.exchange_code("synthetic-code")
+
+
+def test_exchange_classifies_token_failure_without_exposing_provider_detail(monkeypatch) -> None:
+    class Flow:
+        @staticmethod
+        def fetch_token(*, code: str) -> None:
+            assert code == "synthetic-code"
+            raise InvalidClientError(description="synthetic-sensitive-provider-detail")
+
+    client = object.__new__(GoogleOAuthClient)
+    monkeypatch.setattr(GoogleOAuthClient, "_flow", lambda self: Flow())
+    with pytest.raises(GmailTokenExchangeError) as captured:
+        client.exchange_code("synthetic-code")
+    assert captured.value.reason == "invalid_client"
+    assert "synthetic-sensitive" not in str(captured.value)
+
+
+def test_exchange_classifies_profile_http_failure_without_exposing_provider_detail(
+    monkeypatch,
+) -> None:
+    class Credentials:
+        token = "synthetic-access"
+        refresh_token = "synthetic-refresh"
+        expiry = None
+        scopes = [GMAIL_READONLY_SCOPE]
+        granted_scopes = [GMAIL_READONLY_SCOPE]
+
+    class Flow:
+        credentials = Credentials()
+
+        @staticmethod
+        def fetch_token(*, code: str) -> None:
+            assert code == "synthetic-code"
+
+    class ProfileRequest:
+        @staticmethod
+        def execute() -> dict[str, str]:
+            raise HttpError(
+                Response({"status": "403"}),
+                b'{"error":{"status":"PERMISSION_DENIED",'
+                b'"errors":[{"reason":"accessNotConfigured"}],'
+                b'"message":"synthetic-sensitive-profile-detail"}}',
+                uri="https://synthetic.invalid/profile",
+            )
+
+    class Profile:
+        @staticmethod
+        def getProfile(*, userId: str) -> ProfileRequest:
+            assert userId == "me"
+            return ProfileRequest()
+
+    class Service:
+        @staticmethod
+        def users() -> Profile:
+            return Profile()
+
+    client = object.__new__(GoogleOAuthClient)
+    captured_credentials = []
+    monkeypatch.setattr(GoogleOAuthClient, "_flow", lambda self: Flow())
+    monkeypatch.setattr(
+        oauth_module,
+        "build",
+        lambda *args, **kwargs: captured_credentials.append(kwargs["credentials"]) or Service(),
+    )
+    with pytest.raises(GmailProfileRequestError) as captured:
+        client.exchange_code("synthetic-code")
+    assert captured_credentials == [Flow.credentials]
+    assert captured.value.status_code == 403
+    assert captured.value.reason == "SERVICE_DISABLED"
+    assert captured.value.during_execute is True
+    assert "synthetic-sensitive" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("profile", "mapping", "present", "nonempty", "valid"),
+    [
+        ([], False, False, False, False),
+        ({}, True, False, False, False),
+        ({"emailAddress": ""}, True, True, False, False),
+        ({"emailAddress": "not-an-email"}, True, True, True, False),
+    ],
+)
+def test_exchange_reports_only_profile_validation_booleans(
+    monkeypatch, profile, mapping, present, nonempty, valid
+) -> None:
+    class Credentials:
+        token = "synthetic-access"
+        refresh_token = "synthetic-refresh"
+        expiry = None
+        scopes = [GMAIL_READONLY_SCOPE]
+        granted_scopes = [GMAIL_READONLY_SCOPE]
+
+    class Flow:
+        credentials = Credentials()
+
+        @staticmethod
+        def fetch_token(*, code: str) -> None:
+            assert code == "synthetic-code"
+
+    class ProfileRequest:
+        @staticmethod
+        def execute():
+            return profile
+
+    class Profile:
+        @staticmethod
+        def getProfile(*, userId: str) -> ProfileRequest:
+            assert userId == "me"
+            return ProfileRequest()
+
+    class Service:
+        @staticmethod
+        def users() -> Profile:
+            return Profile()
+
+    client = object.__new__(GoogleOAuthClient)
+    monkeypatch.setattr(GoogleOAuthClient, "_flow", lambda self: Flow())
+    monkeypatch.setattr(oauth_module, "build", lambda *args, **kwargs: Service())
+    with pytest.raises(GmailProfileValidationError) as captured:
+        client.exchange_code("synthetic-code")
+    assert captured.value.response_is_mapping is mapping
+    assert captured.value.email_present is present
+    assert captured.value.email_is_nonempty_string is nonempty
+    assert captured.value.normalized_email_valid is valid
+
+
+def start_oauth(client: TestClient, auth: dict, fake: FakeOAuthClient, reconnect_id=None) -> str:
+    response = client.post(
+        "/api/v1/gmail/oauth/start",
+        json={"reconnect_connection_id": reconnect_id},
+        headers={"X-CSRF-Token": auth["csrf_token"]},
+    )
+    assert response.status_code == 200
+    raw_state = parse_qs(urlparse(response.json()["authorization_url"]).query)["state"][0]
+    assert raw_state == fake.states[-1]
+    return raw_state
+
+
+def test_oauth_start_requires_authentication_and_csrf(
+    client: TestClient, login, configured_google, monkeypatch
+) -> None:
+    fake = FakeOAuthClient()
+    patch_oauth(monkeypatch, fake)
+    assert client.post("/api/v1/gmail/oauth/start", json={}).status_code == 401
+    login(client, "agent.one@demo.local")
+    assert client.post("/api/v1/gmail/oauth/start", json={}).status_code == 403
+
+
+def test_oauth_state_is_strong_unique_hashed_and_session_bound(
+    client: TestClient, db: Session, login, configured_google, monkeypatch
+) -> None:
+    fake = FakeOAuthClient()
+    patch_oauth(monkeypatch, fake)
+    auth = login(client, "agent.one@demo.local")
+    first = start_oauth(client, auth, fake)
+    second = start_oauth(client, auth, fake)
+    assert first != second
+    assert len(first) >= 64
+    states = db.scalars(select(GmailOAuthState).order_by(GmailOAuthState.id)).all()
+    assert {item.state_hash for item in states[-2:]} == {token_hash(first), token_hash(second)}
+    assert all(first != item.state_hash and second != item.state_hash for item in states)
+
+    login(client, "agent.two@demo.local")
+    wrong_session = client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": first, "code": "synthetic-code"},
+        follow_redirects=False,
+    )
+    assert wrong_session.status_code == 303
+    assert wrong_session.headers["location"].endswith("oauth=invalid_state")
+
+
+def test_expired_unknown_and_consumed_oauth_states_are_rejected(
+    client: TestClient, db: Session, login, configured_google, monkeypatch
+) -> None:
+    fake = FakeOAuthClient()
+    patch_oauth(monkeypatch, fake)
+    auth = login(client, "agent.one@demo.local")
+    expired_raw = start_oauth(client, auth, fake)
+    expired = db.scalar(
+        select(GmailOAuthState).where(GmailOAuthState.state_hash == token_hash(expired_raw))
+    )
+    assert expired is not None
+    expired.expires_at = utc_now() - timedelta(seconds=1)
+    db.commit()
+    expired_response = client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": expired_raw, "code": "synthetic-code"},
+        follow_redirects=False,
+    )
+    assert expired_response.headers["location"].endswith("oauth=invalid_state")
+    unknown = client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": "unknown-state", "code": "synthetic-code"},
+        follow_redirects=False,
+    )
+    assert unknown.headers["location"].endswith("oauth=invalid_state")
+
+    denied_raw = start_oauth(client, auth, fake)
+    denied = client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": denied_raw, "error": "access_denied"},
+        follow_redirects=False,
+    )
+    assert denied.headers["location"].endswith("oauth=denied")
+    reused = client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": denied_raw, "code": "synthetic-code"},
+        follow_redirects=False,
+    )
+    assert reused.headers["location"].endswith("oauth=invalid_state")
+
+
+def test_successful_callback_uses_provider_identity_and_encrypts_tokens(
+    client: TestClient, db: Session, login, configured_google, monkeypatch
+) -> None:
+    fake = FakeOAuthClient(gmail_address="Real.Profile@Gmail.Test")
+    patch_oauth(monkeypatch, fake)
+    auth = login(client, "agent.one@demo.local")
+    raw_state = start_oauth(client, auth, fake)
+    callback = client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": raw_state, "code": "synthetic-code"},
+        follow_redirects=False,
+    )
+    assert callback.status_code == 303
+    assert callback.headers["location"].endswith("oauth=success")
+    connection = db.scalar(
+        select(GmailConnection).where(GmailConnection.gmail_address == "real.profile@gmail.test")
+    )
+    assert connection is not None
+    assert connection.status is GmailConnectionStatus.CONNECTED
+    credential = db.scalar(
+        select(GmailOAuthCredential).where(
+            GmailOAuthCredential.gmail_connection_id == connection.id
+        )
+    )
+    assert credential is not None
+    assert "synthetic-access-token" not in (credential.encrypted_access_token or "")
+    assert "synthetic-refresh-token" not in credential.encrypted_refresh_token
+    cipher = TokenCipher.from_settings()
+    assert cipher.decrypt(credential.encrypted_access_token or "") == "synthetic-access-token"
+    assert cipher.decrypt(credential.encrypted_refresh_token) == "synthetic-refresh-token"
+    assert db.scalar(select(func.count()).where(GmailOAuthState.state_hash == raw_state)) == 0
+
+
+def test_missing_scope_is_rejected_without_persisting_credentials(
+    client: TestClient, db: Session, login, configured_google, monkeypatch
+) -> None:
+    fake = FakeOAuthClient()
+    fake.tokens = OAuthTokenSet(
+        access_token="access",
+        refresh_token="refresh",
+        expires_at=utc_now() + timedelta(hours=1),
+        granted_scopes=[],
+        gmail_address="missing.scope@gmail.test",
+    )
+    patch_oauth(monkeypatch, fake)
+    auth = login(client, "agent.one@demo.local")
+    raw_state = start_oauth(client, auth, fake)
+    callback = client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": raw_state, "code": "synthetic-code"},
+        follow_redirects=False,
+    )
+    assert callback.headers["location"].endswith("oauth=scope_missing")
+    assert db.scalar(select(func.count()).select_from(GmailOAuthCredential)) == 0
+
+
+def test_reconnect_preserves_refresh_token_and_duplicate_owner_conflicts(
+    client: TestClient, db: Session, login, configured_google, monkeypatch
+) -> None:
+    fake = FakeOAuthClient(gmail_address="reconnect@gmail.test")
+    patch_oauth(monkeypatch, fake)
+    auth = login(client, "agent.one@demo.local")
+    raw_state = start_oauth(client, auth, fake)
+    client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": raw_state, "code": "synthetic-code"},
+        follow_redirects=False,
+    )
+    connection = db.scalar(
+        select(GmailConnection).where(GmailConnection.gmail_address == "reconnect@gmail.test")
+    )
+    assert connection is not None
+    fake.tokens = OAuthTokenSet(
+        access_token="replacement-access-token",
+        refresh_token=None,
+        expires_at=utc_now() + timedelta(hours=2),
+        granted_scopes=[GMAIL_READONLY_SCOPE],
+        gmail_address="reconnect@gmail.test",
+    )
+    reconnect_state = start_oauth(client, auth, fake, connection.id)
+    reconnect = client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": reconnect_state, "code": "synthetic-code"},
+        follow_redirects=False,
+    )
+    assert reconnect.headers["location"].endswith("oauth=success")
+    credential = db.scalar(
+        select(GmailOAuthCredential).where(
+            GmailOAuthCredential.gmail_connection_id == connection.id
+        )
+    )
+    assert credential is not None
+    assert TokenCipher.from_settings().decrypt(credential.encrypted_refresh_token) == (
+        "synthetic-refresh-token"
+    )
+
+    other_owner = db.scalar(select(User).where(User.email == "agent.two@demo.local"))
+    assert other_owner is not None
+    db.add(
+        GmailConnection(
+            agency_id=other_owner.agency_id,
+            user_id=other_owner.id,
+            gmail_address="owned@gmail.test",
+            status=GmailConnectionStatus.DISCONNECTED,
+        )
+    )
+    db.commit()
+    fake.tokens = OAuthTokenSet(
+        access_token="access",
+        refresh_token="refresh",
+        expires_at=utc_now() + timedelta(hours=1),
+        granted_scopes=[GMAIL_READONLY_SCOPE],
+        gmail_address="owned@gmail.test",
+    )
+    conflict_state = start_oauth(client, auth, fake)
+    conflict = client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": conflict_state, "code": "synthetic-code"},
+        follow_redirects=False,
+    )
+    assert conflict.headers["location"].endswith("oauth=failed")

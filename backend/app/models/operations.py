@@ -149,6 +149,9 @@ class Attachment(TimestampMixin, Base):
             "processing_status IN ('PENDING', 'EXTRACTED', 'FAILED', 'UNSUPPORTED')",
             name="ck_attachments_processing_status",
         ),
+        UniqueConstraint(
+            "carrier_message_id", "external_id", name="uq_attachment_message_external_id"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

@@ -1,4 +1,4 @@
-# Stage 2 Architecture
+# Stage 3 Architecture
 
 ```text
 React + TanStack Query
@@ -26,6 +26,21 @@ The current data path is:
 explicit development seed -> PostgreSQL -> scoped FastAPI endpoint -> TanStack Query -> React page
 ```
 
-Future Gmail ingestion should enter at the left side of the same domain model: a connection supplies an idempotent source message in `RECEIVED` state before semantic fields are known, processing associates it with carriers/cases, and validated tasks/evidence/review items become visible through the existing API. Dashboard Gmail health is derived from scoped connection status—not merely row existence. OAuth secrets and live processing are deliberately absent in Stage 2.
+Gmail authorization is separate from Carrier Hub authentication. A signed-in user starts OAuth with a CSRF-protected request. The backend stores only a hash of a short-lived, one-time state bound to that user and browser session, redirects the browser to Google, verifies the callback state, exchanges the code server-side, asks Gmail for the authorized account identity, and encrypts the resulting tokens before PostgreSQL persistence.
 
-Security boundaries are server-side. The raw session token exists only in an HttpOnly cookie, passwords use Argon2id, unsafe requests require CSRF validation, CORS allows credentials only from the configured frontend origin, and every Manager API independently checks the role. `backend/.env` contains local secrets and is ignored by Git.
+```text
+Carrier Hub session -> OAuth state -> Google consent -> backend callback
+                    -> token exchange -> encrypted PostgreSQL credential
+```
+
+Mailbox work runs in a standalone process, never in FastAPI startup. This lets API availability and poll timing scale and fail independently. Each connection is isolated so one unavailable or revoked account cannot terminate the whole pass.
+
+```text
+poller -> CONNECTED/ERROR connection -> unread IDs -> idempotency check
+       -> sender metadata -> agency whitelist -> full MIME message
+       -> CarrierMessage RECEIVED + PENDING attachment metadata
+```
+
+Unapproved messages stop after the metadata lookup, so their body is not fetched or persisted. Approved messages enter the existing domain model as idempotent source records. Stage 3 does not create cases, tasks, evidence, reviews, classification, summary, or priority; that semantic processing remains a later responsibility. Dashboard Gmail health is derived from scoped connection status—not merely row existence.
+
+Security boundaries are server-side. The raw session token exists only in an HttpOnly cookie, passwords use Argon2id, unsafe requests require CSRF validation, CORS allows credentials only from the configured frontend origin, and every Manager API independently checks the role. Google access and refresh tokens are encrypted with a key that lives only in the ignored backend environment. OAuth codes, state values, tokens, keys, and message bodies are excluded from application audit metadata and worker logs.

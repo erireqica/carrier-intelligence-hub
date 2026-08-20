@@ -10,8 +10,10 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     String,
+    Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -94,3 +96,45 @@ class GmailConnection(TimestampMixin, Base):
     connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     owner: Mapped[User] = relationship()
+    oauth_credential: Mapped[GmailOAuthCredential | None] = relationship(
+        back_populates="connection",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class GmailOAuthCredential(TimestampMixin, Base):
+    __tablename__ = "gmail_oauth_credentials"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    gmail_connection_id: Mapped[int] = mapped_column(
+        ForeignKey("gmail_connections.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    encrypted_access_token: Mapped[str | None] = mapped_column(Text)
+    encrypted_refresh_token: Mapped[str] = mapped_column(Text, nullable=False)
+    access_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    granted_scopes: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+
+    connection: Mapped[GmailConnection] = relationship(back_populates="oauth_credential")
+
+
+class GmailOAuthState(Base):
+    __tablename__ = "gmail_oauth_states"
+    __table_args__ = (
+        Index("ix_gmail_oauth_states_expiration", "expires_at"),
+        Index("ix_gmail_oauth_states_user_consumed", "user_id", "consumed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    state_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    auth_session_id: Mapped[int] = mapped_column(
+        ForeignKey("auth_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    reconnect_connection_id: Mapped[int | None] = mapped_column(
+        ForeignKey("gmail_connections.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

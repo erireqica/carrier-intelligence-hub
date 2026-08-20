@@ -8,7 +8,14 @@ from app.models.operations import (
     ReviewItem,
     Task,
 )
-from app.models.organization import Agency, AuthSession, GmailConnection, User
+from app.models.organization import (
+    Agency,
+    AuthSession,
+    GmailConnection,
+    GmailOAuthCredential,
+    GmailOAuthState,
+    User,
+)
 
 __all__ = [
     "Agency",
@@ -21,6 +28,8 @@ __all__ = [
     "CarrierSender",
     "CaseEvidence",
     "GmailConnection",
+    "GmailOAuthCredential",
+    "GmailOAuthState",
     "PolicyCase",
     "ReviewItem",
     "Task",

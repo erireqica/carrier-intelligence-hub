@@ -1,6 +1,7 @@
 from collections.abc import Callable, Generator
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, make_url
@@ -81,3 +82,18 @@ def login() -> Callable[[TestClient, str], dict]:
         return response.json()
 
     return sign_in
+
+
+@pytest.fixture
+def configured_google(monkeypatch) -> Generator[str]:
+    encryption_key = Fernet.generate_key().decode("ascii")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "synthetic-client-id.apps.example.test")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "synthetic-client-secret")
+    monkeypatch.setenv("GOOGLE_TOKEN_ENCRYPTION_KEY", encryption_key)
+    monkeypatch.setenv(
+        "GOOGLE_OAUTH_REDIRECT_URI",
+        "http://localhost:8000/api/v1/gmail/oauth/callback",
+    )
+    get_settings.cache_clear()
+    yield encryption_key
+    get_settings.cache_clear()

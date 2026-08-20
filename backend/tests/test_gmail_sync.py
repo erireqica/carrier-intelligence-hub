@@ -1,0 +1,325 @@
+import base64
+from datetime import timedelta
+from typing import Any
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.core.time import utc_now
+from app.db.seed import seed_demo_data
+from app.integrations.gmail.errors import (
+    GmailReauthorizationRequired,
+    GmailTransientError,
+)
+from app.integrations.gmail.sync import SyncResult, sync_connection
+from app.models.audit import AuditEvent
+from app.models.enums import GmailConnectionStatus, ProcessingStatus
+from app.models.operations import Attachment, CarrierMessage
+from app.models.organization import GmailConnection, GmailOAuthCredential, User
+from app.workers.gmail_poll import _configure_shutdown_signals, poll_once
+
+
+def encoded(value: str) -> str:
+    return base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
+
+
+def gmail_message(
+    message_id: str,
+    sender: str,
+    *,
+    subject: str = "Pending requirements for policy TEST-10001",
+    body: str = "Synthetic development message.",
+    attachment: bool = False,
+) -> dict[str, Any]:
+    parts: list[dict[str, Any]] = [
+        {"partId": "0", "mimeType": "text/plain", "body": {"data": encoded(body)}}
+    ]
+    if attachment:
+        parts.append(
+            {
+                "partId": "1",
+                "mimeType": "application/pdf",
+                "filename": "synthetic-requirements.pdf",
+                "body": {"attachmentId": f"attachment-{message_id}", "size": 2048},
+            }
+        )
+    return {
+        "id": message_id,
+        "threadId": f"thread-{message_id}",
+        "internalDate": "1787184000000",
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [
+                {"name": "From", "value": f"Synthetic Sender <{sender}>"},
+                {"name": "Subject", "value": subject},
+            ],
+            "parts": parts,
+        },
+    }
+
+
+class FakeMailbox:
+    def __init__(self, messages: list[dict[str, Any]]) -> None:
+        self.messages = {item["id"]: item for item in messages}
+        self.full_fetches: list[str] = []
+        self.list_calls: list[str | None] = []
+
+    def list_messages(self, query: str, page_token: str | None = None) -> dict:
+        assert query.startswith("in:inbox is:unread newer_than:")
+        self.list_calls.append(page_token)
+        ids = list(self.messages)
+        if len(ids) > 1 and page_token is None:
+            return {"messages": [{"id": ids[0]}], "nextPageToken": "next"}
+        selected = ids[1:] if page_token else ids
+        return {"messages": [{"id": item} for item in selected]}
+
+    def get_metadata(self, message_id: str) -> dict:
+        full = self.messages[message_id]
+        return {"id": message_id, "payload": {"headers": full["payload"]["headers"]}}
+
+    def get_full_message(self, message_id: str) -> dict:
+        self.full_fetches.append(message_id)
+        return self.messages[message_id]
+
+
+def create_connection(db: Session, owner: User, address: str) -> GmailConnection:
+    connection = GmailConnection(
+        agency_id=owner.agency_id,
+        user_id=owner.id,
+        gmail_address=address,
+        status=GmailConnectionStatus.CONNECTED,
+        connected_at=utc_now(),
+    )
+    db.add(connection)
+    db.flush()
+    db.add(
+        GmailOAuthCredential(
+            gmail_connection_id=connection.id,
+            encrypted_access_token="encrypted-access",
+            encrypted_refresh_token="encrypted-refresh",
+            access_token_expires_at=utc_now() + timedelta(hours=1),
+            granted_scopes=["https://www.googleapis.com/auth/gmail.readonly"],
+        )
+    )
+    db.commit()
+    return connection
+
+
+def test_approved_ingestion_is_received_idempotent_and_paginates(
+    seeded_db: Session,
+) -> None:
+    owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert owner is not None
+    connection = create_connection(seeded_db, owner, "sync@gmail.test")
+    mailbox = FakeMailbox(
+        [
+            gmail_message("approved-1", "alerts@americo.com", attachment=True),
+            gmail_message("unapproved-1", "friend@example.test", body="Never persist this body"),
+        ]
+    )
+
+    def factory(credential):
+        return mailbox, False
+
+    first = sync_connection(seeded_db, connection.id, mailbox_factory=factory)
+    assert first.messages_seen == 2
+    assert first.approved == first.ingested == 1
+    assert first.skipped_unapproved == 1
+    assert first.attachments_discovered == 1
+    assert mailbox.list_calls == [None, "next"]
+    assert mailbox.full_fetches == ["approved-1"]
+
+    stored = seeded_db.scalar(
+        select(CarrierMessage).where(CarrierMessage.gmail_message_id == "approved-1")
+    )
+    assert stored is not None
+    assert stored.processing_status is ProcessingStatus.RECEIVED
+    assert stored.classification is stored.summary is stored.priority is stored.case_id is None
+    assert stored.sender == "alerts@americo.com"
+    assert stored.gmail_thread_id == "thread-approved-1"
+    attachment = seeded_db.scalar(
+        select(Attachment).where(Attachment.carrier_message_id == stored.id)
+    )
+    assert attachment is not None
+    assert attachment.processing_status.value == "PENDING"
+    assert attachment.extracted_text is None
+    assert not seeded_db.scalars(
+        select(CarrierMessage).where(CarrierMessage.raw_content.contains("Never persist"))
+    ).all()
+
+    second = sync_connection(seeded_db, connection.id, mailbox_factory=factory)
+    assert second.ingested == 0
+    assert second.already_ingested == 1
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(CarrierMessage)
+            .where(
+                CarrierMessage.gmail_connection_id == connection.id,
+                CarrierMessage.gmail_message_id == "approved-1",
+            )
+        )
+        == 1
+    )
+
+
+def test_same_gmail_id_is_safe_across_connections(seeded_db: Session) -> None:
+    owners = seeded_db.scalars(select(User).where(User.role == "AGENT").order_by(User.id)).all()
+    assert len(owners) == 2
+    first_connection = create_connection(seeded_db, owners[0], "first@gmail.test")
+    second_connection = create_connection(seeded_db, owners[1], "second@gmail.test")
+    fixture = gmail_message("shared-id", "alerts@americo.com")
+    first_mailbox = FakeMailbox([fixture])
+    second_mailbox = FakeMailbox([fixture])
+    assert (
+        sync_connection(
+            seeded_db,
+            first_connection.id,
+            mailbox_factory=lambda credential: (first_mailbox, False),
+        ).ingested
+        == 1
+    )
+    assert (
+        sync_connection(
+            seeded_db,
+            second_connection.id,
+            mailbox_factory=lambda credential: (second_mailbox, False),
+        ).ingested
+        == 1
+    )
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(CarrierMessage)
+            .where(CarrierMessage.gmail_message_id == "shared-id")
+        )
+        == 2
+    )
+
+
+def test_sync_credential_and_transient_errors_update_health(seeded_db: Session) -> None:
+    owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert owner is not None
+    connection = create_connection(seeded_db, owner, "errors@gmail.test")
+
+    def reauth_factory(credential):
+        raise GmailReauthorizationRequired("synthetic invalid grant")
+
+    with pytest.raises(GmailReauthorizationRequired):
+        sync_connection(seeded_db, connection.id, mailbox_factory=reauth_factory)
+    seeded_db.refresh(connection)
+    assert connection.status is GmailConnectionStatus.NEEDS_REAUTH
+    assert "invalid grant" not in (connection.last_error_summary or "")
+
+    connection.status = GmailConnectionStatus.CONNECTED
+    seeded_db.commit()
+
+    def transient_factory(credential):
+        raise GmailTransientError("synthetic provider body with unsafe detail")
+
+    with pytest.raises(GmailTransientError):
+        sync_connection(seeded_db, connection.id, mailbox_factory=transient_factory)
+    seeded_db.refresh(connection)
+    assert connection.status is GmailConnectionStatus.ERROR
+    assert "unsafe detail" not in (connection.last_error_summary or "")
+
+    recovered = FakeMailbox([])
+    sync_connection(
+        seeded_db,
+        connection.id,
+        mailbox_factory=lambda credential: (recovered, False),
+    )
+    seeded_db.refresh(connection)
+    assert connection.status is GmailConnectionStatus.CONNECTED
+    assert connection.last_error_summary is None
+    event_types = set(
+        seeded_db.scalars(
+            select(AuditEvent.event_type).where(AuditEvent.agency_id == owner.agency_id)
+        ).all()
+    )
+    assert {"GMAIL_REAUTH_REQUIRED", "GMAIL_SYNC_FAILED", "GMAIL_SYNC_COMPLETED"} <= event_types
+
+
+def test_missing_credentials_and_unexpected_failures_update_health(seeded_db: Session) -> None:
+    owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert owner is not None
+    missing = GmailConnection(
+        agency_id=owner.agency_id,
+        user_id=owner.id,
+        gmail_address="missing-credential@gmail.test",
+        status=GmailConnectionStatus.CONNECTED,
+    )
+    seeded_db.add(missing)
+    seeded_db.commit()
+
+    with pytest.raises(GmailReauthorizationRequired):
+        sync_connection(seeded_db, missing.id)
+    seeded_db.refresh(missing)
+    assert missing.status is GmailConnectionStatus.NEEDS_REAUTH
+    assert missing.last_attempted_sync_at is not None
+
+    unexpected = create_connection(seeded_db, owner, "unexpected-error@gmail.test")
+
+    def broken_factory(credential):
+        raise RuntimeError("synthetic unsafe implementation detail")
+
+    with pytest.raises(GmailTransientError, match="failed safely"):
+        sync_connection(seeded_db, unexpected.id, mailbox_factory=broken_factory)
+    seeded_db.refresh(unexpected)
+    assert unexpected.status is GmailConnectionStatus.ERROR
+    assert "unsafe" not in (unexpected.last_error_summary or "")
+
+
+def test_worker_isolates_a_broken_connection(test_engine) -> None:
+    connection = test_engine.connect()
+    transaction = connection.begin()
+    TestingSession = sessionmaker(
+        bind=connection,
+        autoflush=False,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+    try:
+        with TestingSession() as db:
+            seed_demo_data(db, "worker-test-password")
+            owners = db.scalars(select(User).where(User.role == "AGENT").order_by(User.id)).all()
+            broken = create_connection(db, owners[0], "broken-worker@gmail.test")
+            healthy = create_connection(db, owners[1], "healthy-worker@gmail.test")
+
+        called: list[int] = []
+
+        def fake_sync(db: Session, connection_id: int) -> SyncResult:
+            called.append(connection_id)
+            if connection_id == broken.id:
+                raise GmailTransientError("synthetic failure")
+            return SyncResult(connection_id=connection_id)
+
+        results = poll_once(
+            sync_function=fake_sync,
+            session_factory=TestingSession,
+        )
+        assert called == [broken.id, healthy.id]
+        assert [item.connection_id for item in results] == [healthy.id]
+    finally:
+        transaction.rollback()
+        connection.close()
+
+
+def test_worker_configures_windows_break_for_graceful_shutdown(monkeypatch) -> None:
+    configured: list[tuple[object, object]] = []
+    fake_sigbreak = object()
+
+    monkeypatch.setattr("app.workers.gmail_poll.signal.SIGBREAK", fake_sigbreak, raising=False)
+    monkeypatch.setattr(
+        "app.workers.gmail_poll.signal.signal",
+        lambda signum, handler: configured.append((signum, handler)),
+    )
+
+    _configure_shutdown_signals()
+
+    assert len(configured) == 1
+    signum, handler = configured[0]
+    assert signum is fake_sigbreak
+    with pytest.raises(KeyboardInterrupt):
+        handler(0, None)

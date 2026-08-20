@@ -1,13 +1,22 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from app.api.schemas.common import InternalEmail
 from app.core.security import normalize_domain, normalize_email
 from app.models.enums import (
     AttachmentStatus,
     AuditSeverity,
+    GmailConnectionStatus,
     GmailHealth,
     MessageClassification,
     PolicyStatus,
@@ -164,10 +173,45 @@ class GmailConnectionItem(BaseModel):
     id: int
     gmail_address: EmailStr
     owner: AgentBrief
-    status: str
+    status: GmailConnectionStatus
+    connected_at: datetime | None
     last_successful_sync_at: datetime | None
     last_attempted_sync_at: datetime | None
     last_error_summary: str | None
+    is_owner: bool
+
+
+class GmailConnectionsResponse(BaseModel):
+    configured: bool
+    connections: list[GmailConnectionItem]
+
+
+class GmailOAuthStartRequest(BaseModel):
+    reconnect_connection_id: int | None = Field(default=None, gt=0)
+
+
+class GmailOAuthStartResponse(BaseModel):
+    authorization_url: AnyHttpUrl
+
+
+class GmailSyncResult(BaseModel):
+    connection_id: int
+    messages_seen: int
+    already_ingested: int
+    approved: int
+    ingested: int
+    skipped_unapproved: int
+    attachments_discovered: int
+
+
+class GmailMessageListItem(BaseModel):
+    id: int
+    carrier: CarrierBrief
+    sender: str
+    subject: str
+    received_at: datetime
+    processing_status: ProcessingStatus
+    attachment_count: int
 
 
 class DashboardMetrics(BaseModel):

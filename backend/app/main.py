@@ -3,9 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import get_settings
+from app.core.logging import configure_sensitive_log_redaction
 
 
 def create_app() -> FastAPI:
+    configure_sensitive_log_redaction()
     settings = get_settings()
     application = FastAPI(
         title=settings.app_name,

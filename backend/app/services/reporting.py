@@ -9,7 +9,6 @@ from app.api.schemas.domain import (
     AuditLogResponse,
     DashboardMetrics,
     DashboardResponse,
-    GmailConnectionItem,
     WorkloadItem,
 )
 from app.core.time import utc_now
@@ -173,27 +172,6 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
         gmail_connected=gmail_health == GmailHealth.CONNECTED,
         gmail_health=gmail_health,
     )
-
-
-def gmail_connections(db: Session, current: AuthContext) -> list[GmailConnectionItem]:
-    query = select(GmailConnection).where(GmailConnection.agency_id == current.user.agency_id)
-    if current.user.role is UserRole.AGENT:
-        query = query.where(GmailConnection.user_id == current.user.id)
-    connections = db.scalars(
-        query.options(joinedload(GmailConnection.owner)).order_by(GmailConnection.created_at.desc())
-    ).all()
-    return [
-        GmailConnectionItem(
-            id=item.id,
-            gmail_address=item.gmail_address,
-            owner=agent_brief(item.owner),
-            status=item.status.value,
-            last_successful_sync_at=item.last_successful_sync_at,
-            last_attempted_sync_at=item.last_attempted_sync_at,
-            last_error_summary=item.last_error_summary,
-        )
-        for item in connections
-    ]
 
 
 def list_agents(db: Session, current: AuthContext) -> list[AgentListItem]:
