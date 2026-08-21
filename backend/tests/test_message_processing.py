@@ -3,6 +3,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pymupdf
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -28,6 +30,7 @@ from app.models.enums import (
     Priority,
     ProcessingStatus,
     ReviewStatus,
+    TaskStatus,
     UserRole,
 )
 from app.models.gmail_labels import GmailThreadLabelSync
@@ -51,6 +54,7 @@ from app.services.message_processing import (
     process_message,
     recover_stale_processing,
 )
+from app.services.operations import get_case_detail
 from app.workers.message_process import (
     _configure_shutdown_signals,
     process_once,
@@ -129,15 +133,21 @@ def analysis_result(
 
 
 def create_received_message(
-    db: Session, *, client: str, policy: str, subject_suffix: str
+    db: Session,
+    *,
+    client: str,
+    policy: str,
+    subject_suffix: str,
+    owner: User | None = None,
+    gmail_address: str | None = None,
 ) -> CarrierMessage:
-    owner = db.scalar(select(User).where(User.role == UserRole.AGENT).order_by(User.id))
+    owner = owner or db.scalar(select(User).where(User.role == UserRole.AGENT).order_by(User.id))
     carrier = db.scalar(select(Carrier).where(Carrier.name == "Americo"))
     assert owner is not None and carrier is not None
     connection = GmailConnection(
         agency_id=owner.agency_id,
         user_id=owner.id,
-        gmail_address=f"stage4-{subject_suffix}@gmail.test",
+        gmail_address=gmail_address or f"stage4-{subject_suffix}@gmail.test",
         status=GmailConnectionStatus.CONNECTED,
     )
     db.add(connection)
@@ -505,6 +515,159 @@ def test_existing_case_is_reused_preserves_assignment_and_known_non_null_values(
         )
         == 1
     )
+
+
+def test_same_mailbox_handoff_transfers_case_and_only_active_work(
+    seeded_db: Session,
+) -> None:
+    agents = seeded_db.scalars(
+        select(User).where(User.role == UserRole.AGENT).order_by(User.id)
+    ).all()
+    manager = seeded_db.scalar(select(User).where(User.role == UserRole.MANAGER))
+    existing = seeded_db.scalar(
+        select(PolicyCase).where(PolicyCase.policy_number == "AMR-98765432")
+    )
+    assert len(agents) == 2 and manager is not None and existing is not None
+    former_owner, new_owner = agents
+    historical = GmailConnection(
+        agency_id=existing.agency_id,
+        user_id=former_owner.id,
+        gmail_address="shared-handoff@gmail.test",
+        status=GmailConnectionStatus.DISCONNECTED,
+    )
+    seeded_db.add(historical)
+    seeded_db.flush()
+    historical_message = seeded_db.scalar(
+        select(CarrierMessage)
+        .where(CarrierMessage.case_id == existing.id)
+        .order_by(CarrierMessage.id)
+    )
+    assert historical_message is not None
+    historical_message.gmail_connection_id = historical.id
+    completed = Task(
+        agency_id=existing.agency_id,
+        case_id=existing.id,
+        assigned_agent_id=former_owner.id,
+        title="Historical completed handoff task",
+        priority=Priority.NORMAL,
+        status=TaskStatus.COMPLETED,
+        completed_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    resolved = ReviewItem(
+        agency_id=existing.agency_id,
+        case_id=existing.id,
+        carrier_message_id=historical_message.id,
+        assigned_reviewer_id=former_owner.id,
+        status=ReviewStatus.RESOLVED,
+        reason_code="HISTORICAL_REVIEW",
+        reason="Historical resolved review",
+        resolved_at=datetime(2026, 8, 2, tzinfo=UTC),
+    )
+    seeded_db.add_all([completed, resolved])
+    seeded_db.commit()
+    message = create_received_message(
+        seeded_db,
+        client="John Doe",
+        policy="AMR-98765432",
+        subject_suffix="same-mailbox-handoff",
+        owner=new_owner,
+        gmail_address="SHARED-HANDOFF@gmail.test",
+    )
+    with pytest.raises(HTTPException) as not_yet_transferred:
+        get_case_detail(seeded_db, auth_context(seeded_db, new_owner.id), existing.id)
+    assert not_yet_transferred.value.status_code == 404
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(analysis_result(client="John Doe", policy="AMR-98765432")),
+    )
+
+    seeded_db.refresh(existing)
+    seeded_db.refresh(completed)
+    seeded_db.refresh(resolved)
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.case_id == existing.id
+    assert existing.assigned_agent_id == new_owner.id
+    assert completed.assigned_agent_id == former_owner.id
+    assert completed.status is TaskStatus.COMPLETED
+    assert resolved.assigned_reviewer_id == former_owner.id
+    assert resolved.status is ReviewStatus.RESOLVED
+    active_tasks = seeded_db.scalars(
+        select(Task).where(
+            Task.case_id == existing.id,
+            Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+        )
+    ).all()
+    assert active_tasks and all(task.assigned_agent_id == new_owner.id for task in active_tasks)
+    active_reviews = seeded_db.scalars(
+        select(ReviewItem).where(
+            ReviewItem.case_id == existing.id,
+            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+        )
+    ).all()
+    assert all(review.assigned_reviewer_id == new_owner.id for review in active_reviews)
+    transfer = seeded_db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.case_id == existing.id,
+            AuditEvent.event_type == "CASE_OWNERSHIP_TRANSFERRED",
+        )
+    )
+    assert transfer is not None
+    with pytest.raises(HTTPException) as denied:
+        get_case_detail(seeded_db, auth_context(seeded_db, former_owner.id), existing.id)
+    assert denied.value.status_code == 404
+    assert (
+        get_case_detail(seeded_db, auth_context(seeded_db, new_owner.id), existing.id).id
+        == existing.id
+    )
+    assert (
+        get_case_detail(seeded_db, auth_context(seeded_db, manager.id), existing.id).id
+        == existing.id
+    )
+
+
+def test_different_mailbox_policy_collision_routes_to_unlinked_review(
+    seeded_db: Session,
+) -> None:
+    agents = seeded_db.scalars(
+        select(User).where(User.role == UserRole.AGENT).order_by(User.id)
+    ).all()
+    existing = seeded_db.scalar(
+        select(PolicyCase).where(PolicyCase.policy_number == "AMR-98765432")
+    )
+    assert len(agents) == 2 and existing is not None
+    former_owner_id = existing.assigned_agent_id
+    message = create_received_message(
+        seeded_db,
+        client="John Doe",
+        policy="AMR-98765432",
+        subject_suffix="different-mailbox-conflict",
+        owner=agents[1],
+        gmail_address="unrelated-inbox@gmail.test",
+    )
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(analysis_result(client="John Doe", policy="AMR-98765432")),
+    )
+
+    review = seeded_db.get(ReviewItem, result.review_id)
+    seeded_db.refresh(existing)
+    seeded_db.refresh(message)
+    assert result.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert result.case_id is None
+    assert result.validation_flags == ("CASE_OWNER_CONFLICT",)
+    assert review is not None
+    assert review.reason_code == "CASE_OWNER_CONFLICT"
+    assert review.case_id is None
+    assert review.assigned_reviewer_id == agents[1].id
+    assert message.case_id is None
+    assert existing.assigned_agent_id == former_owner_id
+    assert not seeded_db.scalars(
+        select(Task).where(Task.source_carrier_message_id == message.id)
+    ).all()
 
 
 def test_low_confidence_review_can_be_corrected_and_applied(seeded_db: Session) -> None:

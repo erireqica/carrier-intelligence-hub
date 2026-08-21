@@ -76,6 +76,23 @@ describe('CaseDetailPage carrier messages', () => {
             email: 'agent.one@demo.local',
           },
         },
+        {
+          id: 6,
+          case_id: 1,
+          client_name: 'Synthetic Client',
+          policy_number: null,
+          title: 'Other assignee task',
+          description: 'Handled by another user.',
+          priority: 'NORMAL',
+          due_at: null,
+          status: 'IN_PROGRESS',
+          completed_at: null,
+          assigned_agent: {
+            id: 3,
+            full_name: 'Marcus Lee',
+            email: 'agent.two@demo.local',
+          },
+        },
       ],
       evidence: [],
       activity: [],
@@ -106,6 +123,10 @@ describe('CaseDetailPage carrier messages', () => {
       screen.getByText('Submit the form by August 28, 2026.'),
     ).toBeInTheDocument()
     expect(screen.queryByText('OTHER')).not.toBeInTheDocument()
+    expect(screen.getByText('Status managed by Marcus Lee')).toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('Update Other assignee task'),
+    ).not.toBeInTheDocument()
   })
 
   it('lets an agent submit an audited current-case correction', async () => {

@@ -48,12 +48,14 @@ describe('AppShell navigation', () => {
     renderShell('AGENT')
     expect(screen.queryByText('System Logs')).not.toBeInTheDocument()
     expect(screen.getAllByText('My Tasks').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('My Activity').length).toBeGreaterThan(0)
   })
 
   it('shows agency management navigation to Managers', () => {
     renderShell('MANAGER')
     expect(screen.getAllByText('System Logs').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Carriers').length).toBeGreaterThan(0)
+    expect(screen.queryByText('My Activity')).not.toBeInTheDocument()
   })
 
   it('clears all user-scoped cache before completing sign out', async () => {

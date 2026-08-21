@@ -3,19 +3,26 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
-import { getActivity, getAgents } from '../../lib/api'
+import { useCurrentUser } from '../app/auth'
+import { getActivity } from '../lib/api'
+import { authFixture } from '../test/fixtures'
 import { ActivityPage } from './ActivityPage'
 
-vi.mock('../../lib/api', () => ({ getActivity: vi.fn(), getAgents: vi.fn() }))
+vi.mock('../app/auth', () => ({ useCurrentUser: vi.fn() }))
+vi.mock('../lib/api', () => ({ getActivity: vi.fn() }))
 
 describe('ActivityPage', () => {
-  it('shows human-readable agent and case context', async () => {
-    vi.mocked(getAgents).mockResolvedValue([])
+  it('shows only self-scoped human-readable activity without actor controls', async () => {
+    vi.mocked(useCurrentUser).mockReturnValue({
+      data: authFixture('AGENT'),
+    } as ReturnType<typeof useCurrentUser>)
     vi.mocked(getActivity).mockResolvedValue({
       items: [
         {
           id: 1,
           event_type: 'CASE_CORRECTED',
+          event_label: 'Case Corrected',
+          category: 'Cases',
           severity: 'INFO',
           actor_name: 'Elena Torres',
           actor_user_id: 2,
@@ -24,11 +31,13 @@ describe('ActivityPage', () => {
           case_label: 'Taylor Demo · DEMO-4',
           task_id: null,
           task_title: null,
+          review_id: null,
+          review_label: null,
           metadata: {},
           created_at: '2026-08-20T10:00:00Z',
         },
       ],
-      page: { page: 1, page_size: 100, total: 1, pages: 1 },
+      page: { page: 1, page_size: 25, total: 1, pages: 1 },
     })
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -40,8 +49,9 @@ describe('ActivityPage', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    expect(await screen.findByText('Elena Torres')).toBeInTheDocument()
+    expect(await screen.findByText('Case Corrected')).toBeInTheDocument()
     expect(screen.getByText('Case: Taylor Demo · DEMO-4')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Activity agent')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'View case' })).toHaveAttribute(
       'href',
       '/cases/4',

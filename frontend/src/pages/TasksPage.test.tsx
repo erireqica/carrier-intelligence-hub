@@ -71,7 +71,7 @@ describe('TasksPage mutations', () => {
     )
   })
 
-  it('gives managers reassignment controls without task status controls', async () => {
+  it('gives managers status controls for their own task and reassignment controls', async () => {
     const manager = authFixture('MANAGER')
     mockedAuth.mockReturnValue({ data: manager } as ReturnType<
       typeof useCurrentUser
@@ -120,8 +120,52 @@ describe('TasksPage mutations', () => {
     expect(
       screen.getByRole('option', { name: 'Morgan Reed (current — manager)' }),
     ).toBeDisabled()
+    expect(screen.getByLabelText('Update Agent decision')).toBeInTheDocument()
+  })
+
+  it('shows another assignee task status as read-only while preserving reassignment', async () => {
+    const manager = authFixture('MANAGER')
+    const agent = authFixture('AGENT').user
+    mockedAuth.mockReturnValue({ data: manager } as ReturnType<
+      typeof useCurrentUser
+    >)
+    vi.mocked(getAgents).mockResolvedValue([
+      { ...agent, open_tasks: 1, urgent_cases: 0, gmail_connections: 1 },
+    ])
+    mockedGetTasks.mockResolvedValue({
+      items: [
+        {
+          id: 9,
+          case_id: 3,
+          client_name: 'Assigned Client',
+          policy_number: 'A-9',
+          title: 'Assigned agent decision',
+          description: null,
+          priority: 'NORMAL',
+          due_at: null,
+          status: 'IN_PROGRESS',
+          completed_at: null,
+          assigned_agent: agent,
+        },
+      ],
+      page: { page: 1, page_size: 100, total: 1, pages: 1 },
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TasksPage />
+      </QueryClientProvider>,
+    )
     expect(
-      screen.queryByLabelText('Update Agent decision'),
+      await screen.findByText('Status managed by assignee'),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('Update Assigned agent decision'),
     ).not.toBeInTheDocument()
+    expect(
+      screen.getByLabelText('Reassign Assigned agent decision'),
+    ).toBeInTheDocument()
   })
 })

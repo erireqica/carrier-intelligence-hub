@@ -23,3 +23,10 @@ export function ManagerRoute() {
     return <Navigate to="/dashboard" replace />
   return <Outlet />
 }
+
+export function AgentRoute() {
+  const auth = useCurrentUser()
+  if (auth.data?.user.role !== 'AGENT')
+    return <Navigate to="/dashboard" replace />
+  return <Outlet />
+}

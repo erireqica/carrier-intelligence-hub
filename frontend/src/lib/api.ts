@@ -224,7 +224,7 @@ export const getAuditLogs = (params = '') =>
   )
 export const getActivity = (params = '') =>
   apiRequest<{ items: AuditLog[]; page: PageInfo }>(
-    `/manager/activity${params ? `?${params}` : ''}`,
+    `/activity${params ? `?${params}` : ''}`,
   )
 
 export const createCarrier = (data: {

@@ -78,6 +78,10 @@ REVIEW_REASONS = {
     "SOURCE_TRUNCATED": "The source exceeded the configured analysis limit.",
     "SOURCE_INCOMPLETE": "The available email and attachment text is incomplete.",
     "CLIENT_MISMATCH": "The extracted client conflicts with the existing policy case.",
+    "CASE_OWNER_CONFLICT": (
+        "This policy is currently owned through a different Gmail inbox and requires "
+        "a safe ownership decision."
+    ),
     "INVALID_PREMIUM": "The proposed premium or currency is invalid.",
     "INVALID_DATE": "A proposed date is invalid.",
     "INVALID_DEADLINE": "The proposed deadline is invalid.",
@@ -446,6 +450,76 @@ def _case_for_result(
     )
 
 
+def _reconcile_case_owner(
+    db: Session,
+    message: CarrierMessage,
+    case: PolicyCase | None,
+) -> bool:
+    """Transfer active work for a proven same-mailbox handoff; return True on conflict."""
+    if case is None or case.assigned_agent_id is None:
+        return False
+    connection = _connection(db, message)
+    if connection is None or connection.status is GmailConnectionStatus.DISCONNECTED:
+        return True
+    if case.assigned_agent_id == connection.user_id:
+        return False
+
+    former_owner_id = case.assigned_agent_id
+    historical_connection_id = db.scalar(
+        select(GmailConnection.id)
+        .join(
+            CarrierMessage,
+            CarrierMessage.gmail_connection_id == GmailConnection.id,
+        )
+        .where(
+            CarrierMessage.case_id == case.id,
+            GmailConnection.agency_id == message.agency_id,
+            GmailConnection.user_id == former_owner_id,
+            GmailConnection.status == GmailConnectionStatus.DISCONNECTED,
+            func.lower(GmailConnection.gmail_address)
+            == connection.gmail_address.strip().casefold(),
+        )
+        .limit(1)
+    )
+    if historical_connection_id is None:
+        return True
+
+    active_tasks = db.scalars(
+        select(Task).where(
+            Task.case_id == case.id,
+            Task.assigned_agent_id == former_owner_id,
+            Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+        )
+    ).all()
+    active_reviews = db.scalars(
+        select(ReviewItem).where(
+            ReviewItem.case_id == case.id,
+            ReviewItem.assigned_reviewer_id == former_owner_id,
+            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+        )
+    ).all()
+    case.assigned_agent_id = connection.user_id
+    for task in active_tasks:
+        task.assigned_agent_id = connection.user_id
+    for review in active_reviews:
+        review.assigned_reviewer_id = connection.user_id
+    record_audit_event(
+        db,
+        agency_id=message.agency_id,
+        case_id=case.id,
+        carrier_message_id=message.id,
+        event_type="CASE_OWNERSHIP_TRANSFERRED",
+        description="Case ownership transferred after a verified same-mailbox handoff",
+        metadata={
+            "former_owner_id": former_owner_id,
+            "new_owner_id": connection.user_id,
+            "active_tasks_transferred": len(active_tasks),
+            "active_reviews_transferred": len(active_reviews),
+        },
+    )
+    return False
+
+
 def _client_key(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
@@ -787,6 +861,9 @@ def process_claimed_message(
     )
     flags = set(validated.flags)
     case = _case_for_result(db, message, validated.result)
+    owner_conflict = _reconcile_case_owner(db, message, case)
+    if owner_conflict:
+        flags.add("CASE_OWNER_CONFLICT")
     if (
         case
         and validated.result.client_name
@@ -826,14 +903,14 @@ def process_claimed_message(
             db,
             message,
             validated.flags,
-            existing_case=case,
+            existing_case=None if owner_conflict else case,
             model_name=analyzer.model_name,
             confidence=result.overall_confidence,
         )
         return ProcessingResult(
             message.id,
             ProcessingStatus.NEEDS_REVIEW,
-            case_id=case.id if case else None,
+            case_id=case.id if case and not owner_conflict else None,
             review_id=review.id,
             attachments_extracted=attachments_extracted,
             analysis_confidence=result.overall_confidence,
@@ -1040,6 +1117,8 @@ def apply_review(
     )
     blocking = set(validated.flags) - {"MODEL_UNCERTAINTY", "LOW_CONFIDENCE"}
     case = _case_for_result(db, message, validated.result)
+    if _reconcile_case_owner(db, message, case):
+        blocking.add("CASE_OWNER_CONFLICT")
     if (
         case
         and validated.result.client_name

@@ -8,6 +8,21 @@ from argon2.low_level import Type
 password_hasher = PasswordHasher(type=Type.ID)
 dummy_password_hash = password_hasher.hash("carrier-hub-timing-protection")
 
+PUBLIC_EMAIL_PROVIDER_DOMAINS = frozenset(
+    {
+        "aol.com",
+        "gmail.com",
+        "googlemail.com",
+        "hotmail.com",
+        "icloud.com",
+        "live.com",
+        "outlook.com",
+        "proton.me",
+        "protonmail.com",
+        "yahoo.com",
+    }
+)
+
 
 def hash_password(password: str) -> str:
     return password_hasher.hash(password)

@@ -5,6 +5,18 @@ export function formatDate(value: string | null | undefined) {
   )
 }
 
+export function formatDateTime(
+  value: string | null | undefined,
+  timezone?: string,
+) {
+  if (!value) return '—'
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    ...(timezone ? { timeZone: timezone } : {}),
+  }).format(new Date(value))
+}
+
 export function formatBusinessDate(value: string | null | undefined) {
   if (!value) return '—'
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)

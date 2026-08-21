@@ -306,6 +306,8 @@ describe('ReviewDetailPage', () => {
     expect(
       screen.queryByRole('button', { name: 'Not actionable' }),
     ).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Client name')).toBeDisabled()
+    expect(screen.queryByLabelText('Client name')).not.toBeInTheDocument()
+    expect(screen.getByText('Confirmed analysis')).toBeInTheDocument()
+    expect(screen.getAllByText('Review Client').length).toBeGreaterThan(0)
   })
 })

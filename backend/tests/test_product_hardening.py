@@ -74,7 +74,7 @@ def test_profile_update_duplicate_email_wrong_password_and_password_change(
     assert event_types == {"PROFILE_UPDATED", "PASSWORD_CHANGED"}
 
 
-def test_tasks_default_to_actionable_and_manager_cannot_change_status(
+def test_tasks_default_to_actionable_and_status_is_assignee_scoped(
     client: TestClient, db: Session, login
 ) -> None:
     agent = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
@@ -94,7 +94,17 @@ def test_tasks_default_to_actionable_and_manager_cannot_change_status(
         json={"status": "DISMISSED"},
         headers={"X-CSRF-Token": manager["csrf_token"]},
     )
-    assert denied.status_code == 403
+    assert denied.status_code == 404
+    manager_user = db.scalar(select(User).where(User.email == "manager@demo.local"))
+    assert manager_user is not None
+    task.assigned_agent_id = manager_user.id
+    db.commit()
+    own_update = client.patch(
+        f"/api/v1/tasks/{task.id}",
+        json={"status": "DISMISSED"},
+        headers={"X-CSRF-Token": manager["csrf_token"]},
+    )
+    assert own_update.status_code == 200
 
 
 def test_agent_case_correction_is_audited_and_preserves_ai_history(
@@ -183,7 +193,7 @@ def test_agent_case_correction_is_audited_and_preserves_ai_history(
     )
 
 
-def test_manager_activity_filters_actor_and_review_mutations_are_forbidden(
+def test_agent_activity_is_self_scoped_and_manager_review_mutations_are_forbidden(
     client: TestClient, db: Session, login
 ) -> None:
     agent = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
@@ -220,6 +230,9 @@ def test_manager_activity_filters_actor_and_review_mutations_are_forbidden(
         f"/api/v1/reviews/{review.id}/apply-analysis", json=proposal, headers=headers
     )
     assert applied.status_code == 403
-    activity = client.get(f"/api/v1/manager/activity?actor_user_id={agent.id}")
+    assert client.get("/api/v1/manager/activity").status_code == 404
+    assert client.get("/api/v1/activity").status_code == 403
+    login(client, agent.email)
+    activity = client.get("/api/v1/activity?actor_user_id=999999")
     assert activity.status_code == 200
     assert all(item["actor_user_id"] == agent.id for item in activity.json()["items"])

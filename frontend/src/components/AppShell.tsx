@@ -10,6 +10,7 @@ const agentNavigation = [
   ['Dashboard', '/dashboard'],
   ['Cases', '/cases'],
   ['My Tasks', '/tasks'],
+  ['My Activity', '/activity'],
   ['Review Queue', '/reviews'],
   ['Gmail Connections', '/gmail-connections'],
   ['Profile', '/profile'],
@@ -17,7 +18,6 @@ const agentNavigation = [
 
 const managerNavigation = [
   ['Analytics', '/manager/analytics'],
-  ['Activity', '/manager/activity'],
   ['Agents', '/manager/agents'],
   ['Carriers', '/manager/carriers'],
   ['System Logs', '/manager/system-logs'],
@@ -44,6 +44,9 @@ function NavigationLink({ label, to }: { label: string; to: string }) {
 export function AppShell() {
   const auth = useCurrentUser()
   const user = auth.data!.user
+  const primaryNavigation = agentNavigation.filter(
+    ([, to]) => user.role === 'AGENT' || to !== '/activity',
+  )
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const logoutMutation = useMutation({
@@ -67,7 +70,7 @@ export function AppShell() {
           className="min-h-0 flex-1 overflow-y-auto px-3 py-5"
           aria-label="Primary navigation"
         >
-          {agentNavigation.map(([label, to]) => (
+          {primaryNavigation.map(([label, to]) => (
             <NavigationLink key={to} label={label} to={to} />
           ))}
           {user.role === 'MANAGER' && (
@@ -128,7 +131,7 @@ export function AppShell() {
             aria-label="Mobile navigation"
           >
             {[
-              ...agentNavigation,
+              ...primaryNavigation,
               ...(user.role === 'MANAGER' ? managerNavigation : []),
             ].map(([label, to]) => (
               <NavLink

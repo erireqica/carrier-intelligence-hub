@@ -89,6 +89,12 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
     setEditing(true)
   }
 
+  function confirmRemoval(kind: 'domain' | 'sender', value: string) {
+    return window.confirm(
+      `Remove approved ${kind} “${value}” from ${carrier.name}?\n\nFuture messages matching this ${kind} will no longer be accepted for this carrier. Existing cases, messages, tasks, and audit history remain unchanged.`,
+    )
+  }
+
   return (
     <article className="border border-slate-200 bg-white">
       <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
@@ -212,13 +218,14 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
                   <button
                     className="font-medium text-red-700 hover:underline disabled:text-slate-400"
                     disabled={domainEntryMutation.isPending}
-                    onClick={() =>
-                      domainEntryMutation.mutate({
-                        id: item.id,
-                        enabled: false,
-                        remove: true,
-                      })
-                    }
+                    onClick={() => {
+                      if (confirmRemoval('domain', item.domain))
+                        domainEntryMutation.mutate({
+                          id: item.id,
+                          enabled: false,
+                          remove: true,
+                        })
+                    }}
                   >
                     Remove
                   </button>
@@ -284,13 +291,14 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
                     <button
                       className="font-medium text-red-700 hover:underline disabled:text-slate-400"
                       disabled={senderEntryMutation.isPending}
-                      onClick={() =>
-                        senderEntryMutation.mutate({
-                          id: item.id,
-                          enabled: false,
-                          remove: true,
-                        })
-                      }
+                      onClick={() => {
+                        if (confirmRemoval('sender', item.email))
+                          senderEntryMutation.mutate({
+                            id: item.id,
+                            enabled: false,
+                            remove: true,
+                          })
+                      }}
                     >
                       Remove
                     </button>
@@ -374,7 +382,7 @@ export function CarriersPage() {
       <PageHeader
         eyebrow="Agency configuration"
         title="Carriers & Whitelist"
-        description="These database records will determine which senders are eligible for future Gmail processing."
+        description="Approved carrier-controlled domains and exact sender addresses determine which incoming messages Carrier Hub accepts."
         action={
           <Button
             onClick={() => {
@@ -387,6 +395,11 @@ export function CarriersPage() {
           </Button>
         }
       />
+      <p className="border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+        Approve a whole domain only when the carrier controls it. For Gmail,
+        Outlook, Yahoo, and other public email providers, add the specific
+        sender address instead.
+      </p>
       {showForm && (
         <form
           className="grid gap-4 border border-slate-200 bg-white p-5 sm:grid-cols-[1fr_180px_auto]"

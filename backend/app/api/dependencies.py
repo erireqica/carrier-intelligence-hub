@@ -62,3 +62,12 @@ def require_manager_csrf(current: CsrfUser) -> AuthContext:
 
 
 ManagerCsrfUser = Annotated[AuthContext, Depends(require_manager_csrf)]
+
+
+def require_agent(current: CurrentUser) -> AuthContext:
+    if current.user.role is not UserRole.AGENT:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent access required")
+    return current
+
+
+AgentUser = Annotated[AuthContext, Depends(require_agent)]

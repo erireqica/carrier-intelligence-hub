@@ -2,33 +2,27 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import { useCurrentUser } from '../app/auth'
 import {
   EmptyState,
   ErrorState,
   LoadingState,
   PageHeader,
-} from '../../components/ui'
-import { formatDate } from '../../lib/format'
-import { getActivity, getAgents } from '../../lib/api'
+} from '../components/ui'
+import { getActivity } from '../lib/api'
+import { formatDateTime } from '../lib/format'
 
 export function ActivityPage() {
-  const [agentId, setAgentId] = useState('')
+  const auth = useCurrentUser()
   const [group, setGroup] = useState('')
-  const [includeSystem, setIncludeSystem] = useState(false)
-  const params = new URLSearchParams({ page_size: '100' })
-  if (agentId) params.set('actor_user_id', agentId)
+  const [page, setPage] = useState(1)
+  const params = new URLSearchParams({ page_size: '25', page: String(page) })
   if (group) params.set('action_group', group)
-  if (includeSystem) params.set('include_system', 'true')
   const activity = useQuery({
-    queryKey: ['manager', 'activity', agentId, group, includeSystem],
+    queryKey: ['activity', group, page],
     queryFn: () => getActivity(params.toString()),
   })
-  const agents = useQuery({
-    queryKey: ['manager', 'agents'],
-    queryFn: getAgents,
-  })
-  if (activity.isPending)
-    return <LoadingState label="Loading agency activity…" />
+  if (activity.isPending) return <LoadingState label="Loading your activity…" />
   if (activity.isError)
     return (
       <ErrorState
@@ -39,28 +33,21 @@ export function ActivityPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Activity"
-        description="See the work agents have completed across the agency."
+        title="My Activity"
+        description="Your recent case, task, review, Gmail, and account actions."
       />
-      <div className="flex flex-wrap gap-3 border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap items-center gap-3 border border-slate-200 bg-white p-4">
+        <label className="text-sm font-medium" htmlFor="activity-type">
+          Action type
+        </label>
         <select
-          aria-label="Activity agent"
-          className="border border-slate-300 bg-white px-3 py-2 text-sm"
-          value={agentId}
-          onChange={(event) => setAgentId(event.target.value)}
-        >
-          <option value="">All agents</option>
-          {agents.data?.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {agent.full_name}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Activity type"
+          id="activity-type"
           className="border border-slate-300 bg-white px-3 py-2 text-sm"
           value={group}
-          onChange={(event) => setGroup(event.target.value)}
+          onChange={(event) => {
+            setGroup(event.target.value)
+            setPage(1)
+          }}
         >
           <option value="">All actions</option>
           <option value="TASKS">Task work</option>
@@ -69,19 +56,11 @@ export function ActivityPage() {
           <option value="GMAIL">Gmail connections</option>
           <option value="ACCESS">Account access</option>
         </select>
-        <label className="flex items-center gap-2 text-sm font-medium">
-          <input
-            type="checkbox"
-            checked={includeSystem}
-            onChange={(event) => setIncludeSystem(event.target.checked)}
-          />{' '}
-          Include system activity
-        </label>
       </div>
       {activity.data.items.length === 0 ? (
         <EmptyState
           title="No activity found"
-          description="No agency activity matches these filters."
+          description="Your actions will appear here as you work in Carrier Hub."
         />
       ) : (
         <div className="divide-y divide-slate-100 border border-slate-200 bg-white">
@@ -92,10 +71,13 @@ export function ActivityPage() {
             >
               <div>
                 <p className="font-semibold text-slate-900">
-                  {event.actor_name ?? 'System'}
+                  {event.event_label}
                 </p>
                 <p className="text-xs text-slate-500">
-                  {formatDate(event.created_at)}
+                  {formatDateTime(
+                    event.created_at,
+                    auth.data!.user.agency.timezone,
+                  )}
                 </p>
               </div>
               <div>
@@ -123,6 +105,25 @@ export function ActivityPage() {
           ))}
         </div>
       )}
+      <div className="flex items-center justify-between text-sm">
+        <button
+          className="font-semibold text-blue-700 disabled:text-slate-400"
+          disabled={page <= 1}
+          onClick={() => setPage((value) => value - 1)}
+        >
+          Previous
+        </button>
+        <span>
+          Page {activity.data.page.page} of {activity.data.page.pages}
+        </span>
+        <button
+          className="font-semibold text-blue-700 disabled:text-slate-400"
+          disabled={page >= activity.data.page.pages}
+          onClick={() => setPage((value) => value + 1)}
+        >
+          Next
+        </button>
+      </div>
     </div>
   )
 }

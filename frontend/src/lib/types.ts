@@ -127,6 +127,7 @@ export type CaseDetail = CaseItem & {
     id: number
     field_name: string
     source_type: string
+    attachment_filename: string | null
     excerpt: string
   }>
   activity: ActivityItem[]
@@ -344,6 +345,8 @@ export type Analytics = {
 export type AuditLog = {
   id: number
   event_type: string
+  event_label: string
+  category: string
   severity: 'INFO' | 'WARNING' | 'ERROR'
   actor_name: string | null
   actor_user_id: number | null
@@ -352,6 +355,8 @@ export type AuditLog = {
   case_label: string | null
   task_id: number | null
   task_title: string | null
+  review_id: number | null
+  review_label: string | null
   metadata: Record<string, unknown>
   created_at: string
 }

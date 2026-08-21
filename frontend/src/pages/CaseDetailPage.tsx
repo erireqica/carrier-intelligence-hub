@@ -13,6 +13,7 @@ import {
   StatusBadge,
 } from '../components/ui'
 import { formatBusinessDate, formatDate } from '../lib/format'
+import { evidenceSourceLabel, humanFieldLabel } from '../lib/humanize'
 import { correctCase, getCase, updateTask } from '../lib/api'
 import type {
   CaseCorrectionInput,
@@ -275,9 +276,11 @@ export function CaseDetailPage() {
         title={item.client_name}
         description={item.summary}
         action={
-          <div className="flex flex-wrap gap-2">
-            <PriorityBadge priority={item.priority} />
-            <StatusBadge status={item.policy_status} />
+          <div className="flex w-full flex-col items-start gap-3 self-start sm:w-auto sm:items-end sm:self-end">
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-end">
+              <PriorityBadge priority={item.priority} />
+              <StatusBadge status={item.policy_status} />
+            </div>
             {!isManager && (
               <Button variant="secondary" onClick={() => setCorrecting(true)}>
                 Correct case information
@@ -298,8 +301,9 @@ export function CaseDetailPage() {
             await queryClient.invalidateQueries({ queryKey: ['case', caseId] })
             await queryClient.invalidateQueries({ queryKey: ['cases'] })
             await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+            await queryClient.invalidateQueries({ queryKey: ['activity'] })
             await queryClient.invalidateQueries({
-              queryKey: ['manager', 'activity'],
+              queryKey: ['manager', 'audit-events'],
             })
           }}
         />
@@ -351,7 +355,7 @@ export function CaseDetailPage() {
                     <label className="sr-only" htmlFor={`case-task-${task.id}`}>
                       Update {task.title}
                     </label>
-                    {!isManager && (
+                    {task.assigned_agent.id === auth.data!.user.id ? (
                       <select
                         id={`case-task-${task.id}`}
                         className="mt-2 block border border-slate-300 bg-white px-2 py-1.5 text-sm"
@@ -372,6 +376,10 @@ export function CaseDetailPage() {
                           ),
                         )}
                       </select>
+                    ) : (
+                      <p className="mt-2 max-w-40 text-xs text-slate-500">
+                        Status managed by {task.assigned_agent.full_name}
+                      </p>
                     )}
                   </div>
                 </div>
@@ -503,7 +511,11 @@ export function CaseDetailPage() {
                 item.evidence.map((evidence) => (
                   <blockquote key={evidence.id} className="px-5 py-4">
                     <p className="text-xs font-semibold text-slate-500 uppercase">
-                      {evidence.field_name.replaceAll('_', ' ')}
+                      {humanFieldLabel(evidence.field_name)} ·{' '}
+                      {evidenceSourceLabel(
+                        evidence.source_type,
+                        evidence.attachment_filename,
+                      )}
                     </p>
                     <p className="mt-2 text-sm leading-6 text-slate-700">
                       “{evidence.excerpt}”

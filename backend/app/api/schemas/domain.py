@@ -13,7 +13,7 @@ from pydantic import (
 )
 
 from app.api.schemas.common import InternalEmail
-from app.core.security import normalize_domain, normalize_email
+from app.core.security import PUBLIC_EMAIL_PROVIDER_DOMAINS, normalize_domain, normalize_email
 from app.integrations.ai.schemas import AnalysisResult
 from app.models.enums import (
     AttachmentStatus,
@@ -165,6 +165,7 @@ class EvidenceItem(BaseModel):
     id: int
     field_name: str
     source_type: str
+    attachment_filename: str | None = None
     excerpt: str
 
 
@@ -390,6 +391,11 @@ class DomainWrite(BaseModel):
             not label or not label.replace("-", "").isalnum() for label in labels
         ):
             raise ValueError("Enter a valid domain")
+        if normalized in PUBLIC_EMAIL_PROVIDER_DOMAINS:
+            raise ValueError(
+                "Public email-provider domains cannot be approved for an entire carrier; "
+                "add the specific sender address instead"
+            )
         return normalized
 
 
@@ -422,6 +428,8 @@ class AnalyticsResponse(BaseModel):
 class AuditLogItem(BaseModel):
     id: int
     event_type: str
+    event_label: str
+    category: str
     severity: AuditSeverity
     actor_name: str | None
     actor_user_id: int | None
@@ -430,6 +438,8 @@ class AuditLogItem(BaseModel):
     case_label: str | None = None
     task_id: int | None
     task_title: str | None = None
+    review_id: int | None = None
+    review_label: str | None = None
     metadata: dict[str, object]
     created_at: datetime
 

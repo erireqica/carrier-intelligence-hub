@@ -12,9 +12,17 @@ from app.models.carriers import Carrier, CarrierDomain, CarrierSender
 from app.models.enums import (
     GmailConnectionStatus,
     ProcessingStatus,
+    ReviewStatus,
     TaskStatus,
 )
-from app.models.operations import CarrierMessage, PolicyCase, ReviewItem, Task
+from app.models.operations import (
+    Attachment,
+    CarrierMessage,
+    CaseEvidence,
+    PolicyCase,
+    ReviewItem,
+    Task,
+)
 from app.models.organization import Agency, GmailConnection, User
 
 
@@ -153,6 +161,13 @@ def test_manager_carrier_whitelist_and_review_workflows(
     assert domain.status_code == 200
     domain_id = domain.json()["domains"][0]["id"]
     assert domain.json()["domains"][0]["domain"] == "example.com"
+    public_domain = client.post(
+        f"/api/v1/manager/carriers/{carrier_id}/domains",
+        json={"domain": "gmail.com", "is_enabled": True},
+        headers=headers,
+    )
+    assert public_domain.status_code == 422
+    assert "specific sender address" in public_domain.text
     assert (
         client.post(
             f"/api/v1/manager/carriers/{carrier_id}/domains",
@@ -175,6 +190,17 @@ def test_manager_carrier_whitelist_and_review_workflows(
     )
     sender_id = sender.json()["senders"][0]["id"]
     assert sender.json()["senders"][0]["email"] == "notices@example.com"
+    public_sender = client.post(
+        f"/api/v1/manager/carriers/{carrier_id}/senders",
+        json={"email": "specific.sender@gmail.com", "is_enabled": True},
+        headers=headers,
+    )
+    assert public_sender.status_code == 200
+    public_sender_id = next(
+        item["id"]
+        for item in public_sender.json()["senders"]
+        if item["email"] == "specific.sender@gmail.com"
+    )
     assert (
         client.post(
             f"/api/v1/manager/carriers/{carrier_id}/senders",
@@ -183,9 +209,10 @@ def test_manager_carrier_whitelist_and_review_workflows(
         ).status_code
         == 409
     )
+    client.delete(f"/api/v1/manager/carriers/{carrier_id}/senders/{sender_id}", headers=headers)
     assert (
         client.delete(
-            f"/api/v1/manager/carriers/{carrier_id}/senders/{sender_id}", headers=headers
+            f"/api/v1/manager/carriers/{carrier_id}/senders/{public_sender_id}", headers=headers
         ).json()["senders"]
         == []
     )
@@ -232,6 +259,102 @@ def test_manager_carrier_whitelist_and_review_workflows(
     assert logs.status_code == 200
     event_types = {item["event_type"] for item in logs.json()["items"]}
     assert {"CARRIER_CREATED", "WHITELIST_UPDATED", "CASE_REVIEWED"} <= event_types
+    assert all(item["event_label"] and item["category"] for item in logs.json()["items"])
+    carrier_logs = client.get(
+        f"/api/v1/manager/audit-events?page_size=2&category=CARRIER_CONFIG&actor={auth['user']['id']}"
+    )
+    assert carrier_logs.status_code == 200
+    assert carrier_logs.json()["page"]["page_size"] == 2
+    assert carrier_logs.json()["page"]["total"] >= 2
+    assert all(item["category"] == "Carrier config" for item in carrier_logs.json()["items"])
+    assert all(
+        item["actor_name"] == auth["user"]["full_name"] for item in carrier_logs.json()["items"]
+    )
+    system_logs = client.get("/api/v1/manager/audit-events?page_size=5&actor=system")
+    assert system_logs.status_code == 200
+    assert all(item["actor_user_id"] is None for item in system_logs.json()["items"])
+
+
+def test_case_evidence_returns_trustworthy_attachment_provenance(
+    client: TestClient, db: Session, login
+) -> None:
+    case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "John Doe"))
+    assert case is not None
+    attachment = db.scalar(
+        select(Attachment)
+        .join(CarrierMessage, Attachment.carrier_message_id == CarrierMessage.id)
+        .where(CarrierMessage.case_id == case.id)
+    )
+    evidence = db.scalar(select(CaseEvidence).where(CaseEvidence.case_id == case.id))
+    assert attachment is not None and evidence is not None
+    evidence.attachment_id = attachment.id
+    evidence.source_type = "PDF"
+    db.commit()
+
+    login(client, "agent.one@demo.local")
+    response = client.get(f"/api/v1/cases/{case.id}")
+
+    assert response.status_code == 200
+    stored = next(item for item in response.json()["evidence"] if item["id"] == evidence.id)
+    assert stored["source_type"] == "PDF"
+    assert stored["attachment_filename"] == attachment.filename
+    assert "page" not in stored
+
+
+def test_agents_connected_inbox_count_excludes_disconnected_history(
+    client: TestClient, db: Session, login
+) -> None:
+    agent = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert agent is not None
+    db.add_all(
+        [
+            GmailConnection(
+                agency_id=agent.agency_id,
+                user_id=agent.id,
+                gmail_address="active-count@gmail.test",
+                status=GmailConnectionStatus.CONNECTED,
+            ),
+            GmailConnection(
+                agency_id=agent.agency_id,
+                user_id=agent.id,
+                gmail_address="historical-count@gmail.test",
+                status=GmailConnectionStatus.DISCONNECTED,
+            ),
+        ]
+    )
+    db.commit()
+    login(client, "manager@demo.local")
+
+    response = client.get("/api/v1/manager/agents")
+
+    listed = next(item for item in response.json() if item["id"] == agent.id)
+    assert listed["gmail_connections"] == 1
+
+
+def test_review_history_defaults_to_actionable_and_terminal_detail_is_scoped(
+    client: TestClient, db: Session, login
+) -> None:
+    review = db.scalar(select(ReviewItem).where(ReviewItem.status == "OPEN"))
+    assert review is not None and review.assigned_reviewer is not None
+    owner_email = review.assigned_reviewer.email
+    login(client, owner_email)
+    actionable = client.get("/api/v1/reviews?page_size=100")
+    assert review.id in {item["id"] for item in actionable.json()["items"]}
+
+    review.status = ReviewStatus.RESOLVED
+    review.resolved_at = utc_now()
+    db.commit()
+    assert review.id not in {
+        item["id"] for item in client.get("/api/v1/reviews?page_size=100").json()["items"]
+    }
+    history = client.get("/api/v1/reviews?view=RESOLVED&page_size=100")
+    assert review.id in {item["id"] for item in history.json()["items"]}
+    assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 200
+
+    login(client, "agent.two@demo.local")
+    assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 404
+    login(client, "manager@demo.local")
+    assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 200
 
 
 def test_seed_is_idempotent(seeded_db: Session) -> None:
@@ -449,7 +572,7 @@ def test_task_patch_validation_and_change_specific_audits(
         json={"status": "COMPLETED"},
         headers=manager_headers,
     )
-    assert manager_status.status_code == 403
+    assert manager_status.status_code == 404
     reassigned = client.patch(
         f"/api/v1/tasks/{task.id}",
         json={"assigned_agent_id": target_agent.id},

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { useCurrentUser } from '../app/auth'
 import { authFixture } from '../test/fixtures'
 import { ApiError } from '../lib/api'
-import { ManagerRoute, ProtectedRoute } from './RouteGuards'
+import { AgentRoute, ManagerRoute, ProtectedRoute } from './RouteGuards'
 
 vi.mock('../app/auth', () => ({ useCurrentUser: vi.fn() }))
 const mockedAuth = vi.mocked(useCurrentUser)
@@ -58,5 +58,25 @@ describe('ProtectedRoute', () => {
     )
     expect(screen.getByText('Login screen')).toBeInTheDocument()
     expect(screen.queryByText('Protected cases')).not.toBeInTheDocument()
+  })
+})
+
+describe('AgentRoute', () => {
+  it('redirects a Manager away from the Agent-only activity URL', () => {
+    mockedAuth.mockReturnValue({ data: authFixture('MANAGER') } as ReturnType<
+      typeof useCurrentUser
+    >)
+    render(
+      <MemoryRouter initialEntries={['/activity']}>
+        <Routes>
+          <Route path="/dashboard" element={<p>Manager dashboard</p>} />
+          <Route element={<AgentRoute />}>
+            <Route path="/activity" element={<p>Agent activity</p>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Manager dashboard')).toBeInTheDocument()
+    expect(screen.queryByText('Agent activity')).not.toBeInTheDocument()
   })
 })

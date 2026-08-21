@@ -13,14 +13,18 @@ import { formatDate } from '../lib/format'
 import { getReviews } from '../lib/api'
 
 export function ReviewsPage() {
-  const [status, setStatus] = useState('')
+  const [view, setView] = useState<
+    'ACTIONABLE' | 'RESOLVED' | 'DISMISSED' | 'ALL'
+  >('ACTIONABLE')
+  const [page, setPage] = useState(1)
   const reviews = useQuery({
-    queryKey: ['reviews', status],
+    queryKey: ['reviews', view, page],
     queryFn: () =>
       getReviews(
         new URLSearchParams({
-          page_size: '100',
-          ...(status ? { status } : {}),
+          page_size: '25',
+          page: String(page),
+          view,
         }).toString(),
       ),
   })
@@ -39,42 +43,37 @@ export function ReviewsPage() {
         title="Review Queue"
         description="Records that need explicit human attention because validation or source interpretation was incomplete."
       />
-      <div className="flex items-center gap-3 border border-slate-200 bg-white p-4">
-        <label className="text-sm font-medium" htmlFor="review-status">
-          Status
-        </label>
-        <select
-          id="review-status"
-          className="border border-slate-300 bg-white px-3 py-2 text-sm"
-          value={status}
-          onChange={(event) => setStatus(event.target.value)}
-        >
-          <option value="">All statuses</option>
-          {['OPEN', 'IN_REVIEW', 'RESOLVED', 'DISMISSED'].map((value) => (
-            <option key={value} value={value}>
-              {value.replaceAll('_', ' ')}
-            </option>
-          ))}
-        </select>
-        {status && (
+      <div className="flex flex-wrap gap-2" aria-label="Review views">
+        {(
+          [
+            ['ACTIONABLE', 'Needs attention'],
+            ['RESOLVED', 'Resolved'],
+            ['DISMISSED', 'Dismissed'],
+            ['ALL', 'All'],
+          ] as const
+        ).map(([value, label]) => (
           <button
-            className="text-sm font-semibold text-blue-700"
-            onClick={() => setStatus('')}
+            key={value}
+            className={`border px-4 py-2 text-sm font-semibold ${view === value ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
+            onClick={() => {
+              setView(value)
+              setPage(1)
+            }}
           >
-            Reset filter
+            {label}
           </button>
-        )}
+        ))}
       </div>
       {reviews.data.items.length === 0 ? (
         <EmptyState
           title={
-            status
+            view !== 'ACTIONABLE'
               ? 'No reviews match this filter'
               : 'No reviews require attention'
           }
           description={
-            status
-              ? 'Reset the status filter to see the full queue.'
+            view !== 'ACTIONABLE'
+              ? 'Choose another review view to see other records.'
               : 'New validation exceptions will appear here.'
           }
         />
@@ -122,20 +121,39 @@ export function ReviewsPage() {
                       Open case
                     </Link>
                   )}
-                  {!['RESOLVED', 'DISMISSED'].includes(item.status) && (
-                    <Link
-                      className="border border-slate-900 bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
-                      to={`/reviews/${item.id}`}
-                    >
-                      Review analysis
-                    </Link>
-                  )}
+                  <Link
+                    className="border border-slate-900 bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+                    to={`/reviews/${item.id}`}
+                  >
+                    {['RESOLVED', 'DISMISSED'].includes(item.status)
+                      ? 'View review'
+                      : 'Review analysis'}
+                  </Link>
                 </div>
               </div>
             </article>
           ))}
         </div>
       )}
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <button
+          className="font-semibold text-blue-700 disabled:text-slate-400"
+          disabled={page <= 1}
+          onClick={() => setPage((value) => value - 1)}
+        >
+          Previous
+        </button>
+        <span>
+          Page {reviews.data.page.page} of {reviews.data.page.pages}
+        </span>
+        <button
+          className="font-semibold text-blue-700 disabled:text-slate-400"
+          disabled={page >= reviews.data.page.pages}
+          onClick={() => setPage((value) => value + 1)}
+        >
+          Next
+        </button>
+      </div>
     </div>
   )
 }

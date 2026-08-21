@@ -36,7 +36,7 @@ export function DashboardPage() {
             : 'My workspace'
         }
         title={`Good day, ${auth.data!.user.full_name.split(' ')[0]}`}
-        description="Prioritized operational work based on the current database state."
+        description="Prioritized operational work from your carrier communications and assigned follow-up."
       />
       {data.gmail_health === 'NEEDS_ATTENTION' && (
         <div className="border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
@@ -47,8 +47,8 @@ export function DashboardPage() {
       {data.gmail_health === 'NOT_CONNECTED' && (
         <div className="border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
           <strong>No Gmail inbox connected.</strong> Automatic carrier
-          monitoring is not active yet. The current records are deterministic
-          development data.
+          monitoring is inactive. Existing cases, tasks, and history remain
+          available.
         </div>
       )}
       <section
@@ -125,49 +125,58 @@ export function DashboardPage() {
           </div>
         </section>
       )}
-      <section className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
-        <div className="border border-slate-200 bg-white">
+      <section className="grid items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+        <div className="self-start border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
             <h2 className="font-semibold">Recent cases</h2>
             <Link className="text-sm font-semibold text-blue-700" to="/cases">
               View all
             </Link>
           </div>
-          <div className="divide-y divide-slate-100">
-            {data.recent_cases.map((item) => (
-              <Link
-                key={item.id}
-                to={`/cases/${item.id}`}
-                className="grid gap-2 px-5 py-4 hover:bg-slate-50 sm:grid-cols-[1fr_auto]"
-              >
-                <div>
-                  <p className="font-medium text-slate-950">
-                    {item.client_name}
-                  </p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {item.carrier.name} ·{' '}
-                    {item.policy_number ?? 'Policy number pending'}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <PriorityBadge priority={item.priority} />
-                  <StatusBadge status={item.policy_status} />
-                </div>
-              </Link>
-            ))}
-          </div>
+          {data.recent_cases.length ? (
+            <div className="divide-y divide-slate-100">
+              {data.recent_cases.map((item) => (
+                <Link
+                  key={item.id}
+                  to={`/cases/${item.id}`}
+                  className="grid gap-2 px-5 py-4 hover:bg-slate-50 sm:grid-cols-[1fr_auto]"
+                >
+                  <div>
+                    <p className="font-medium text-slate-950">
+                      {item.client_name}
+                    </p>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {item.carrier.name} ·{' '}
+                      {item.policy_number ?? 'Policy number pending'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <PriorityBadge priority={item.priority} />
+                    <StatusBadge status={item.policy_status} />
+                  </div>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <p className="px-5 py-4 text-sm text-slate-600">
+              No cases yet. Approved carrier messages will appear here after
+              processing.
+            </p>
+          )}
         </div>
         <div className="border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
             <h2 className="font-semibold">Recent activity</h2>
-            {auth.data!.user.role === 'MANAGER' && (
-              <Link
-                className="text-sm font-semibold text-blue-700"
-                to="/manager/activity"
-              >
-                View all
-              </Link>
-            )}
+            <Link
+              className="text-sm font-semibold text-blue-700"
+              to={
+                auth.data!.user.role === 'MANAGER'
+                  ? '/manager/system-logs'
+                  : '/activity'
+              }
+            >
+              View all
+            </Link>
           </div>
           <div className="divide-y divide-slate-100">
             {data.recent_activity.map((event) => (

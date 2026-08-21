@@ -32,7 +32,14 @@ from app.core.time import utc_now
 from app.integrations.ai.schemas import AnalysisResult
 from app.models.audit import AuditEvent
 from app.models.enums import PolicyStatus, Priority, ReviewStatus, TaskStatus, UserRole
-from app.models.operations import Attachment, CarrierMessage, PolicyCase, ReviewItem, Task
+from app.models.operations import (
+    Attachment,
+    CarrierMessage,
+    CaseEvidence,
+    PolicyCase,
+    ReviewItem,
+    Task,
+)
 from app.models.organization import User
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
@@ -176,7 +183,7 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
             selectinload(PolicyCase.messages).selectinload(CarrierMessage.attachments),
             selectinload(PolicyCase.messages).joinedload(CarrierMessage.analysis),
             selectinload(PolicyCase.tasks).joinedload(Task.assigned_agent),
-            selectinload(PolicyCase.evidence),
+            selectinload(PolicyCase.evidence).joinedload(CaseEvidence.attachment),
         )
     )
     case = db.scalar(query)
@@ -235,6 +242,9 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
                 id=evidence.id,
                 field_name=evidence.field_name,
                 source_type=evidence.source_type,
+                attachment_filename=(
+                    evidence.attachment.filename if evidence.attachment is not None else None
+                ),
                 excerpt=evidence.excerpt,
             )
             for evidence in case.evidence
@@ -302,17 +312,15 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
         .options(joinedload(Task.case), joinedload(Task.assigned_agent))
         .where(Task.id == task_id, Task.agency_id == current.user.agency_id)
     )
-    if task is None or (
-        current.user.role is UserRole.AGENT and task.assigned_agent_id != current.user.id
-    ):
+    if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
     if update.assigned_agent_id is not None and current.user.role is not UserRole.MANAGER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
-    if update.status is not None and current.user.role is UserRole.MANAGER:
+    if update.status is not None and task.assigned_agent_id != current.user.id:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Task status decisions are completed by the assigned agent",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found",
         )
 
     previous_status = task.status
@@ -386,6 +394,7 @@ def list_reviews(
     page: int,
     page_size: int,
     review_status: ReviewStatus | None,
+    review_view: str,
 ) -> ReviewListResponse:
     query = select(ReviewItem).where(ReviewItem.agency_id == current.user.agency_id)
     if current.user.role is UserRole.AGENT:
@@ -397,6 +406,12 @@ def list_reviews(
         )
     if review_status:
         query = query.where(ReviewItem.status == review_status)
+    elif review_view == "ACTIONABLE":
+        query = query.where(ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]))
+    elif review_view == "RESOLVED":
+        query = query.where(ReviewItem.status == ReviewStatus.RESOLVED)
+    elif review_view == "DISMISSED":
+        query = query.where(ReviewItem.status == ReviewStatus.DISMISSED)
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     reviews = (
         db.scalars(

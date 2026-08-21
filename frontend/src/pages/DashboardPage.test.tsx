@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -35,9 +35,9 @@ const dashboardBase: Omit<Dashboard, 'gmail_health'> = {
   gmail_connected: false,
 }
 
-function renderDashboard() {
+function renderDashboard(role: 'AGENT' | 'MANAGER' = 'AGENT') {
   vi.mocked(useCurrentUser).mockReturnValue({
-    data: authFixture('AGENT'),
+    data: authFixture(role),
   } as ReturnType<typeof useCurrentUser>)
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -75,5 +75,39 @@ describe('DashboardPage Gmail health', () => {
     expect(
       await screen.findByText('No Gmail inbox connected.'),
     ).toBeInTheDocument()
+    expect(
+      screen.getByText(/Existing cases, tasks, and history remain/),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(/deterministic development data/i),
+    ).not.toBeInTheDocument()
+  })
+
+  it('routes recent activity to the role-appropriate full history', async () => {
+    vi.mocked(getDashboard).mockResolvedValue({
+      ...dashboardBase,
+      gmail_health: 'CONNECTED',
+    })
+    renderDashboard('AGENT')
+    expect(
+      (await screen.findAllByRole('link', { name: 'View all' })).some(
+        (link) => link.getAttribute('href') === '/activity',
+      ),
+    ).toBe(true)
+  })
+
+  it('routes manager recent activity to agency system logs', async () => {
+    vi.mocked(getDashboard).mockResolvedValue({
+      ...dashboardBase,
+      gmail_health: 'CONNECTED',
+    })
+    renderDashboard('MANAGER')
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole('link', { name: 'View all' })
+          .some((link) => link.getAttribute('href') === '/manager/system-logs'),
+      ).toBe(true),
+    )
   })
 })

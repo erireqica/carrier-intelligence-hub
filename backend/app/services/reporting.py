@@ -30,13 +30,67 @@ from app.models.organization import GmailConnection, User
 from app.services.auth import AuthContext
 from app.services.operations import agent_brief, case_item, page_info, scoped_cases_query
 
-ACTIVITY_GROUPS = {
-    "TASKS": {"TASK_STATUS_CHANGED", "TASK_ASSIGNED", "TASK_COMPLETED"},
-    "REVIEWS": {"CASE_REVIEWED", "AI_REVIEW_DISMISSED", "AI_REVIEW_APPLIED"},
-    "CASES": {"CASE_CORRECTED", "CASE_CREATED"},
-    "GMAIL": {"GMAIL_CONNECTED", "GMAIL_RECONNECTED", "GMAIL_DISCONNECTED"},
-    "ACCESS": {"USER_LOGIN", "USER_LOGOUT", "PROFILE_UPDATED", "PASSWORD_CHANGED"},
+AUDIT_CATEGORY_LABELS = {
+    "ACCESS": "Access",
+    "TASKS": "Tasks",
+    "REVIEWS": "Reviews",
+    "CASES": "Cases",
+    "GMAIL": "Gmail",
+    "CARRIER_CONFIG": "Carrier config",
+    "PROCESSING_SYSTEM": "Processing / System",
 }
+
+
+def audit_category(event_type: str) -> str:
+    if event_type.startswith(("USER_", "PROFILE_", "PASSWORD_")):
+        return "ACCESS"
+    if event_type.startswith("TASK_"):
+        return "TASKS"
+    if event_type.startswith("AI_REVIEW_") or event_type == "CASE_REVIEWED":
+        return "REVIEWS"
+    if event_type.startswith("CASE_"):
+        return "CASES"
+    if event_type.startswith("GMAIL_"):
+        return "GMAIL"
+    if event_type.startswith(("CARRIER_", "WHITELIST_")):
+        return "CARRIER_CONFIG"
+    return "PROCESSING_SYSTEM"
+
+
+def audit_event_label(event_type: str) -> str:
+    return event_type.replace("_", " ").title()
+
+
+def _category_clause(category: str):
+    access = or_(
+        AuditEvent.event_type.like("USER\\_%", escape="\\"),
+        AuditEvent.event_type.like("PROFILE\\_%", escape="\\"),
+        AuditEvent.event_type.like("PASSWORD\\_%", escape="\\"),
+    )
+    tasks = AuditEvent.event_type.like("TASK\\_%", escape="\\")
+    reviews = or_(
+        AuditEvent.event_type.like("AI\\_REVIEW\\_%", escape="\\"),
+        AuditEvent.event_type == "CASE_REVIEWED",
+    )
+    cases = AuditEvent.event_type.like("CASE\\_%", escape="\\") & (
+        AuditEvent.event_type != "CASE_REVIEWED"
+    )
+    gmail = AuditEvent.event_type.like("GMAIL\\_%", escape="\\")
+    carrier = or_(
+        AuditEvent.event_type.like("CARRIER\\_%", escape="\\"),
+        AuditEvent.event_type.like("WHITELIST\\_%", escape="\\"),
+    )
+    clauses = {
+        "ACCESS": access,
+        "TASKS": tasks,
+        "REVIEWS": reviews,
+        "CASES": cases,
+        "GMAIL": gmail,
+        "CARRIER_CONFIG": carrier,
+    }
+    if category == "PROCESSING_SYSTEM":
+        return ~(access | tasks | reviews | cases | gmail | carrier)
+    return clauses.get(category)
 
 
 def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
@@ -325,7 +379,10 @@ def list_agents(db: Session, current: AuthContext) -> list[AgentListItem]:
             db.scalar(
                 select(func.count())
                 .select_from(GmailConnection)
-                .where(GmailConnection.user_id == user.id)
+                .where(
+                    GmailConnection.user_id == user.id,
+                    GmailConnection.status != GmailConnectionStatus.DISCONNECTED,
+                )
             )
             or 0
         )
@@ -425,37 +482,37 @@ def audit_logs(
     page_size: int,
     event_type: str | None,
     severity: AuditSeverity | None,
+    actor: str | None,
+    category: str | None,
 ) -> AuditLogResponse:
     query = select(AuditEvent).where(AuditEvent.agency_id == current.user.agency_id)
     if event_type:
         query = query.where(AuditEvent.event_type == event_type)
     if severity:
         query = query.where(AuditEvent.severity == severity)
-    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
-    events = db.scalars(
-        query.options(joinedload(AuditEvent.actor))
-        .order_by(AuditEvent.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    ).all()
-    return AuditLogResponse(
-        items=[
-            AuditLogItem(
-                id=event.id,
-                event_type=event.event_type,
-                severity=event.severity,
-                actor_name=event.actor.full_name if event.actor else None,
-                actor_user_id=event.actor_user_id,
-                description=event.description,
-                case_id=event.case_id,
-                task_id=event.task_id,
-                metadata=event.event_metadata,
-                created_at=event.created_at,
+    if actor == "system":
+        query = query.where(AuditEvent.actor_user_id.is_(None))
+    elif actor:
+        try:
+            actor_id = int(actor)
+        except ValueError:
+            query = query.where(AuditEvent.id == -1)
+        else:
+            valid_actor = db.scalar(
+                select(User.id).where(
+                    User.id == actor_id,
+                    User.agency_id == current.user.agency_id,
+                )
             )
-            for event in events
-        ],
-        page=page_info(page, page_size, total),
-    )
+            query = query.where(
+                AuditEvent.actor_user_id == actor_id
+                if valid_actor is not None
+                else AuditEvent.id == -1
+            )
+    if category:
+        clause = _category_clause(category.upper())
+        query = query.where(clause if clause is not None else AuditEvent.id == -1)
+    return _audit_page(db, current, query=query, page=page, page_size=page_size)
 
 
 def activity_logs(
@@ -464,31 +521,26 @@ def activity_logs(
     *,
     page: int,
     page_size: int,
-    actor_user_id: int | None,
     action_group: str | None,
-    include_system: bool,
 ) -> AuditLogResponse:
-    query = select(AuditEvent).where(AuditEvent.agency_id == current.user.agency_id)
-    if actor_user_id is not None:
-        valid_actor = db.scalar(
-            select(User.id).where(
-                User.id == actor_user_id,
-                User.agency_id == current.user.agency_id,
-            )
-        )
-        if valid_actor is None:
-            query = query.where(AuditEvent.id == -1)
-        else:
-            query = query.where(AuditEvent.actor_user_id == actor_user_id)
-    elif not include_system:
-        query = query.where(AuditEvent.actor_user_id.is_not(None))
+    query = select(AuditEvent).where(
+        AuditEvent.agency_id == current.user.agency_id,
+        AuditEvent.actor_user_id == current.user.id,
+    )
     if action_group:
-        event_types = ACTIVITY_GROUPS.get(action_group.upper())
-        if event_types:
-            query = query.where(AuditEvent.event_type.in_(event_types))
-        else:
-            query = query.where(AuditEvent.id == -1)
+        clause = _category_clause(action_group.upper())
+        query = query.where(clause if clause is not None else AuditEvent.id == -1)
+    return _audit_page(db, current, query=query, page=page, page_size=page_size)
 
+
+def _audit_page(
+    db: Session,
+    current: AuthContext,
+    *,
+    query,
+    page: int,
+    page_size: int,
+) -> AuditLogResponse:
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     events = db.scalars(
         query.options(joinedload(AuditEvent.actor))
@@ -498,6 +550,9 @@ def activity_logs(
     ).all()
     case_ids = {event.case_id for event in events if event.case_id is not None}
     task_ids = {event.task_id for event in events if event.task_id is not None}
+    message_ids = {
+        event.carrier_message_id for event in events if event.carrier_message_id is not None
+    }
     case_labels = (
         {
             case.id: f"{case.client_name} · {case.policy_number or 'Policy number pending'}"
@@ -524,11 +579,32 @@ def activity_logs(
         if task_ids
         else {}
     )
+    reviews = (
+        db.scalars(
+            select(ReviewItem)
+            .where(
+                ReviewItem.carrier_message_id.in_(message_ids),
+                ReviewItem.agency_id == current.user.agency_id,
+            )
+            .order_by(ReviewItem.id.desc())
+        ).all()
+        if message_ids
+        else []
+    )
+    reviews_by_message = {}
+    for review in reviews:
+        reviews_by_message.setdefault(review.carrier_message_id, review)
+    review_labels_by_message = {
+        message_id: f"Review {review.reason_code.replace('_', ' ').title()}"
+        for message_id, review in reviews_by_message.items()
+    }
     return AuditLogResponse(
         items=[
             AuditLogItem(
                 id=event.id,
                 event_type=event.event_type,
+                event_label=audit_event_label(event.event_type),
+                category=AUDIT_CATEGORY_LABELS[audit_category(event.event_type)],
                 severity=event.severity,
                 actor_name=event.actor.full_name if event.actor else None,
                 actor_user_id=event.actor_user_id,
@@ -537,6 +613,18 @@ def activity_logs(
                 case_label=case_labels.get(event.case_id),
                 task_id=event.task_id,
                 task_title=task_titles.get(event.task_id),
+                review_id=(
+                    reviews_by_message[event.carrier_message_id].id
+                    if event.carrier_message_id in reviews_by_message
+                    and audit_category(event.event_type) == "REVIEWS"
+                    else None
+                ),
+                review_label=(
+                    review_labels_by_message[event.carrier_message_id]
+                    if event.carrier_message_id in reviews_by_message
+                    and audit_category(event.event_type) == "REVIEWS"
+                    else None
+                ),
                 metadata=event.event_metadata,
                 created_at=event.created_at,
             )

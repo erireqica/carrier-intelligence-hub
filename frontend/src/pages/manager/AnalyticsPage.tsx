@@ -15,19 +15,37 @@ function Breakdown({
   title: string
   values: Record<string, number>
 }) {
+  const entries = Object.entries(values)
+  const maximum = Math.max(1, ...entries.map(([, value]) => value))
   return (
     <div className="border border-slate-200 bg-white">
       <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
         {title}
       </h2>
-      <dl className="divide-y divide-slate-100">
-        {Object.entries(values).map(([label, value]) => (
-          <div key={label} className="flex justify-between px-5 py-3 text-sm">
-            <dt>{label.replaceAll('_', ' ')}</dt>
-            <dd className="font-semibold">{value}</dd>
-          </div>
-        ))}
-      </dl>
+      {entries.length ? (
+        <dl className="space-y-4 p-5">
+          {entries.map(([label, value]) => (
+            <div key={label} className="text-sm">
+              <div className="flex justify-between gap-3">
+                <dt>{label.replaceAll('_', ' ')}</dt>
+                <dd className="font-semibold">{value}</dd>
+              </div>
+              <div
+                className="mt-2 h-2 bg-slate-100"
+                role="img"
+                aria-label={`${label.replaceAll('_', ' ')}: ${value}`}
+              >
+                <div
+                  className="h-2 bg-blue-600"
+                  style={{ width: `${(value / maximum) * 100}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="p-5 text-sm text-slate-600">No cases to summarize yet.</p>
+      )}
     </div>
   )
 }
@@ -52,7 +70,7 @@ export function AnalyticsPage() {
       <PageHeader
         eyebrow="Agency oversight"
         title="Analytics"
-        description="Focused metrics calculated directly from current PostgreSQL records."
+        description="Agency workload and carrier-processing metrics."
       />
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
         <Metric
@@ -73,21 +91,36 @@ export function AnalyticsPage() {
           <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
             Open workload by agent
           </h2>
-          <dl className="divide-y divide-slate-100">
-            {data.workload_by_agent.map((item) => (
-              <div
-                key={item.agent.id}
-                className="flex justify-between gap-4 px-5 py-3 text-sm"
-              >
-                <dt>
-                  {item.agent.full_name}
-                  <span className="block text-xs text-slate-500">
-                    {item.agent.email}
-                  </span>
-                </dt>
-                <dd className="font-semibold">{item.open_tasks}</dd>
-              </div>
-            ))}
+          <dl className="space-y-4 p-5">
+            {data.workload_by_agent.map((item) => {
+              const maximum = Math.max(
+                1,
+                ...data.workload_by_agent.map((entry) => entry.open_tasks),
+              )
+              return (
+                <div key={item.agent.id} className="text-sm">
+                  <div className="flex justify-between gap-4">
+                    <dt>
+                      {item.agent.full_name}
+                      <span className="block text-xs text-slate-500">
+                        {item.agent.email}
+                      </span>
+                    </dt>
+                    <dd className="font-semibold">{item.open_tasks}</dd>
+                  </div>
+                  <div
+                    className="mt-2 h-2 bg-slate-100"
+                    role="img"
+                    aria-label={`${item.agent.full_name}: ${item.open_tasks} open tasks`}
+                  >
+                    <div
+                      className="h-2 bg-blue-600"
+                      style={{ width: `${(item.open_tasks / maximum) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )
+            })}
           </dl>
         </div>
       </section>

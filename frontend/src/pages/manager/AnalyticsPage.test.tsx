@@ -49,5 +49,6 @@ describe('AnalyticsPage workload identity', () => {
     expect(await screen.findAllByText('Shared Name')).toHaveLength(2)
     expect(screen.getByText('first@example.test')).toBeInTheDocument()
     expect(screen.getByText('second@example.test')).toBeInTheDocument()
+    expect(screen.getAllByRole('img', { name: /open tasks/ })).toHaveLength(2)
   })
 })

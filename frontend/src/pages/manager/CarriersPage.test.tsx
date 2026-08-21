@@ -6,6 +6,8 @@ import {
   ApiError,
   createCarrier,
   getCarriers,
+  removeCarrierDomain,
+  removeCarrierSender,
   updateCarrier,
 } from '../../lib/api'
 import { CarriersPage } from './CarriersPage'
@@ -79,5 +81,40 @@ describe('CarriersPage mutation errors', () => {
     expect(
       await screen.findByText('A carrier with this name already exists'),
     ).toHaveAttribute('role', 'alert')
+  })
+
+  it('confirms destructive whitelist removals and respects cancellation', async () => {
+    const configured = {
+      ...carrier,
+      domains: [{ id: 11, domain: 'americo.com', is_enabled: true }],
+      senders: [
+        { id: 12, email: 'specific.sender@gmail.com', is_enabled: true },
+      ],
+    }
+    vi.mocked(getCarriers).mockResolvedValue([configured])
+    vi.mocked(removeCarrierDomain).mockResolvedValue(configured)
+    vi.mocked(removeCarrierSender).mockResolvedValue(configured)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderCarriers()
+
+    const removeButtons = await screen.findAllByRole('button', {
+      name: 'Remove',
+    })
+    fireEvent.click(removeButtons[0])
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('americo.com'))
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining('Existing cases'),
+    )
+    expect(removeCarrierDomain).not.toHaveBeenCalled()
+
+    confirm.mockReturnValue(true)
+    fireEvent.click(removeButtons[0])
+    await vi.waitFor(() =>
+      expect(removeCarrierDomain).toHaveBeenCalledWith(1, 11),
+    )
+    fireEvent.click(removeButtons[1])
+    await vi.waitFor(() =>
+      expect(removeCarrierSender).toHaveBeenCalledWith(1, 12),
+    )
   })
 })

@@ -2,8 +2,9 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 
-from app.api.dependencies import CsrfUser, CurrentUser, DbSession
+from app.api.dependencies import AgentUser, CsrfUser, CurrentUser, DbSession
 from app.api.schemas.domain import (
+    AuditLogResponse,
     CaseCorrectionInput,
     CaseDetail,
     CaseListResponse,
@@ -107,9 +108,34 @@ def get_reviews(
     page: Page = 1,
     page_size: PageSize = 50,
     review_status: ReviewStatusFilter = None,
+    review_view: Annotated[
+        Literal["ACTIONABLE", "RESOLVED", "DISMISSED", "ALL"], Query(alias="view")
+    ] = "ACTIONABLE",
 ) -> ReviewListResponse:
     return operations_service.list_reviews(
-        db, current, page=page, page_size=page_size, review_status=review_status
+        db,
+        current,
+        page=page,
+        page_size=page_size,
+        review_status=review_status,
+        review_view=review_view,
+    )
+
+
+@router.get("/activity", response_model=AuditLogResponse)
+def get_activity(
+    current: AgentUser,
+    db: DbSession,
+    page: Page = 1,
+    page_size: PageSize = 50,
+    action_group: str | None = None,
+) -> AuditLogResponse:
+    return reporting.activity_logs(
+        db,
+        current,
+        page=page,
+        page_size=page_size,
+        action_group=action_group,
     )
 
 

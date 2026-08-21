@@ -1,4 +1,5 @@
 import base64
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -6,6 +7,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.schemas.domain import TaskUpdate
 from app.integrations.ai.schemas import ActionItem, AnalysisResult, Deadline, Evidence
 from app.integrations.gmail.client import GmailThreadLabelState
 from app.integrations.gmail.errors import GmailTransientError
@@ -13,18 +15,26 @@ from app.integrations.gmail.oauth import GMAIL_MODIFY_SCOPE
 from app.integrations.gmail.sync import sync_connection
 from app.models.enums import (
     GmailConnectionStatus,
+    GmailLabelKey,
     GmailLabelSyncStatus,
     MessageClassification,
     PolicyStatus,
     Priority,
     ProcessingStatus,
+    TaskStatus,
     UserRole,
 )
 from app.models.gmail_labels import GmailThreadLabelSync
 from app.models.operations import CarrierMessage, CaseEvidence, PolicyCase, ReviewItem, Task
 from app.models.organization import GmailConnection, GmailOAuthCredential, User
-from app.services.gmail_labels import claim_label_sync, process_claimed_label_sync
+from app.services.auth import AuthContext, create_session
+from app.services.gmail_labels import (
+    MANAGED_LABEL_NAMES,
+    claim_label_sync,
+    process_claimed_label_sync,
+)
 from app.services.message_processing import claim_message, process_claimed_message
+from app.services.operations import update_task
 from app.workers.pipeline import pipeline_once
 
 
@@ -106,12 +116,15 @@ class FakeAnalyzer:
     def analyze(self, source_bundle: str) -> AnalysisResult:
         self.calls += 1
         assert "Stage Five Offline" in source_bundle
+        policy_match = re.search(r"Policy Number: ([A-Z0-9-]+)", source_bundle)
+        assert policy_match is not None
+        policy_number = policy_match.group(1)
         return AnalysisResult(
             classification=MessageClassification.PENDING_REQUIREMENTS,
             summary="Americo needs a signed authorization for Stage Five Offline.",
             priority=Priority.HIGH,
             client_name="Stage Five Offline",
-            policy_number="OFFLINE-5001",
+            policy_number=policy_number,
             policy_status=PolicyStatus.PENDING,
             premium_amount=None,
             currency=None,
@@ -141,7 +154,7 @@ class FakeAnalyzer:
                 Evidence(
                     field_name="policy_number",
                     source_id="email",
-                    excerpt="Policy Number: OFFLINE-5001",
+                    excerpt=f"Policy Number: {policy_number}",
                 ),
                 Evidence(
                     field_name="policy_status",
@@ -198,6 +211,8 @@ def test_offline_pipeline_is_automatic_idempotent_and_whitelist_first(
             gmail_message("unapproved-5001", "friend@example.test", "Never persist this body"),
         ]
     )
+    mailbox.labels["Personal"] = "user-personal"
+    mailbox.thread_labels["thread-approved-5001"] = {"user-personal"}
     analyzer = FakeAnalyzer()
     mailbox.fail_modify = True
     initial_counts = {
@@ -214,7 +229,17 @@ def test_offline_pipeline_is_automatic_idempotent_and_whitelist_first(
             )
         ]
 
+    received_before_worker: list[ProcessingStatus] = []
+
     def process():
+        status_before_claim = seeded_db.scalar(
+            select(CarrierMessage.processing_status).where(
+                CarrierMessage.gmail_connection_id == connection.id,
+                CarrierMessage.gmail_message_id == "approved-5001",
+            )
+        )
+        assert status_before_claim is not None
+        received_before_worker.append(status_before_claim)
         claimed = claim_message(seeded_db)
         if claimed is None:
             return []
@@ -247,6 +272,7 @@ def test_offline_pipeline_is_automatic_idempotent_and_whitelist_first(
         select(CarrierMessage).where(CarrierMessage.gmail_message_id == "approved-5001")
     )
     assert stored is not None
+    assert received_before_worker[0] is ProcessingStatus.RECEIVED
     assert first.messages_ingested == first.messages_processed == 1
     assert stored.processing_status is ProcessingStatus.PROCESSED
     assert stored.case is not None
@@ -295,6 +321,44 @@ def test_offline_pipeline_is_automatic_idempotent_and_whitelist_first(
     assert second_counts == first_counts
     seeded_db.refresh(sync)
     assert sync.status is GmailLabelSyncStatus.APPLIED
+    applied_names = {
+        name
+        for name, label_id in mailbox.labels.items()
+        if label_id in mailbox.thread_labels[stored.gmail_thread_id]
+    }
+    assert {
+        MANAGED_LABEL_NAMES[GmailLabelKey.ACTION_REQUIRED],
+        MANAGED_LABEL_NAMES[GmailLabelKey.PENDING_REQUIREMENTS],
+        MANAGED_LABEL_NAMES[GmailLabelKey.PROCESSED],
+        "Personal",
+    } <= applied_names
+
+    session, _, csrf = create_session(seeded_db, owner)
+    seeded_db.commit()
+    update_task(
+        seeded_db,
+        AuthContext(user=owner, agency=owner.agency, session=session, csrf_token=csrf),
+        created_task.id,
+        TaskUpdate(status=TaskStatus.COMPLETED),
+    )
+    task_claim = claim_label_sync(seeded_db, sync_id=sync.id)
+    assert task_claim is not None
+    process_claimed_label_sync(
+        seeded_db,
+        task_claim,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+    final_names = {
+        name
+        for name, label_id in mailbox.labels.items()
+        if label_id in mailbox.thread_labels[stored.gmail_thread_id]
+    }
+    assert MANAGED_LABEL_NAMES[GmailLabelKey.ACTION_REQUIRED] not in final_names
+    assert {
+        MANAGED_LABEL_NAMES[GmailLabelKey.PENDING_REQUIREMENTS],
+        MANAGED_LABEL_NAMES[GmailLabelKey.PROCESSED],
+        "Personal",
+    } <= final_names
     assert first_counts[CarrierMessage] == initial_counts[CarrierMessage] + 1
     assert first_counts[PolicyCase] == initial_counts[PolicyCase] + 1
     assert first_counts[Task] == initial_counts[Task] + 1
@@ -330,7 +394,7 @@ def test_combined_pipeline_processes_multiple_eligible_connections(
         )
         body = (
             "Client Name: Stage Five Offline\n"
-            "Policy Number: OFFLINE-5001\n"
+            f"Policy Number: OFFLINE-500{index}\n"
             "Policy Status: PENDING\n"
             "Obtain the signed authorization form and submit it to Americo by August 28, 2026."
         )
