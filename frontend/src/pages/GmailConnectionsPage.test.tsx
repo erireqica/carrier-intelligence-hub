@@ -61,6 +61,7 @@ const baseMessage: GmailMessage = {
   case_assigned_agent: null,
   can_open_case: false,
   review_id: null,
+  can_open_review: false,
   last_processing_error_code: null,
   processing_attempt_count: 0,
   processing_next_retry_at: null,
@@ -300,6 +301,8 @@ describe('GmailConnectionsPage', () => {
         id: 26,
         subject: 'Reassigned case message',
         processing_status: 'PROCESSED',
+        review_id: 91,
+        can_open_review: false,
         case_id: 32,
         case_assigned_agent: {
           id: 3,
@@ -308,6 +311,14 @@ describe('GmailConnectionsPage', () => {
         },
         can_open_case: false,
         label_sync_status: 'NEEDS_PERMISSION',
+      },
+      {
+        ...baseMessage,
+        id: 27,
+        subject: 'Accessible review message',
+        processing_status: 'NEEDS_REVIEW',
+        review_id: 92,
+        can_open_review: true,
       },
     ])
     renderPage()
@@ -327,6 +338,9 @@ describe('GmailConnectionsPage', () => {
       screen.queryByRole('link', { name: /case.*32/i }),
     ).not.toBeInTheDocument()
     expect(screen.getByText('Managed by Marcus Lee')).toBeInTheDocument()
+    const reviewLinks = screen.getAllByRole('link', { name: 'Review' })
+    expect(reviewLinks).toHaveLength(1)
+    expect(reviewLinks[0]).toHaveAttribute('href', '/reviews/92')
     expect(
       screen.getByText('Case assigned to another agent'),
     ).toBeInTheDocument()

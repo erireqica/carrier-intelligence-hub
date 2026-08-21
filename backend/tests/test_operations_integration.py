@@ -648,6 +648,7 @@ def test_manager_assigns_case_and_active_work_to_an_active_agent(
         resolved_at=utc_now(),
     )
     db.add_all([active_review, terminal_task, terminal_review])
+    message.case_id = None
     db.commit()
 
     manager = login(client, "manager@demo.local")
@@ -716,6 +717,7 @@ def test_manager_assigns_case_and_active_work_to_an_active_agent(
         )
     )
     assert active_review.assigned_reviewer_id == target.id
+    assert message.case_id == case.id
     assert terminal_task.assigned_agent_id == original.id
     assert terminal_review.assigned_reviewer_id == original.id
     event = db.scalar(

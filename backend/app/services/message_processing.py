@@ -67,6 +67,15 @@ class ProcessingResult:
     validation_flags: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class OperationalOwnershipReconciliation:
+    previous_assignee_id: int | None
+    active_tasks_reassigned: int
+    active_reviews_reassigned: int
+    source_messages_linked: int
+    ownership_conflicts_reconciled: int
+
+
 REVIEW_REASONS = {
     "LOW_CONFIDENCE": "The model confidence signal is below the automatic threshold.",
     "MISSING_POLICY_NUMBER": "A reliable policy number was not found.",
@@ -486,9 +495,27 @@ def _reconcile_case_owner(
     if connection is None or connection.status is GmailConnectionStatus.DISCONNECTED:
         return True
     if case.assignment_source is CaseAssignmentSource.MANAGER:
-        return not _case_has_operational_agent(db, case)
+        if not _case_has_operational_agent(db, case):
+            return True
+        reconcile_case_operational_ownership(
+            db,
+            case,
+            assigned_agent_id=case.assigned_agent_id,
+            assignment_source=case.assignment_source,
+            actor_user_id=None,
+        )
+        return False
     if case.assigned_agent_id == connection.user_id:
-        return not _case_has_operational_agent(db, case)
+        if not _case_has_operational_agent(db, case):
+            return True
+        reconcile_case_operational_ownership(
+            db,
+            case,
+            assigned_agent_id=case.assigned_agent_id,
+            assignment_source=case.assignment_source,
+            actor_user_id=None,
+        )
+        return False
     if _active_agent_id(db, connection.user_id) is None:
         return True
 
@@ -512,26 +539,13 @@ def _reconcile_case_owner(
     if historical_connection_id is None:
         return True
 
-    active_tasks = db.scalars(
-        select(Task).where(
-            Task.case_id == case.id,
-            Task.assigned_agent_id == former_owner_id,
-            Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
-        )
-    ).all()
-    active_reviews = db.scalars(
-        select(ReviewItem).where(
-            ReviewItem.case_id == case.id,
-            ReviewItem.assigned_reviewer_id == former_owner_id,
-            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
-        )
-    ).all()
-    case.assigned_agent_id = connection.user_id
-    case.assignment_source = CaseAssignmentSource.GMAIL_HANDOFF
-    for task in active_tasks:
-        task.assigned_agent_id = connection.user_id
-    for review in active_reviews:
-        review.assigned_reviewer_id = connection.user_id
+    ownership = reconcile_case_operational_ownership(
+        db,
+        case,
+        assigned_agent_id=connection.user_id,
+        assignment_source=CaseAssignmentSource.GMAIL_HANDOFF,
+        actor_user_id=None,
+    )
     record_audit_event(
         db,
         agency_id=message.agency_id,
@@ -542,8 +556,10 @@ def _reconcile_case_owner(
         metadata={
             "former_owner_id": former_owner_id,
             "new_owner_id": connection.user_id,
-            "active_tasks_transferred": len(active_tasks),
-            "active_reviews_transferred": len(active_reviews),
+            "active_tasks_transferred": ownership.active_tasks_reassigned,
+            "active_reviews_transferred": ownership.active_reviews_reassigned,
+            "source_messages_linked": ownership.source_messages_linked,
+            "ownership_conflicts_reconciled": ownership.ownership_conflicts_reconciled,
         },
     )
     return False
@@ -609,8 +625,12 @@ def _review_for_flags(
         )
         db.add(review)
     else:
+        review.case_id = existing_case.id if existing_case else None
+        review.assigned_reviewer_id = reviewer_id
         review.reason_code = primary
         review.reason = REVIEW_REASONS.get(primary, "The analysis requires human review.")
+    if existing_case is not None:
+        message.case_id = existing_case.id
     message.processing_status = ProcessingStatus.NEEDS_REVIEW
     message.processing_started_at = None
     message.processing_next_retry_at = None
@@ -820,6 +840,174 @@ def _finalize(
     )
 
 
+def _ownership_conflict_matches_case(review: ReviewItem, case: PolicyCase) -> bool:
+    if review.case_id == case.id:
+        return True
+    if review.case_id is not None or review.carrier_message.case_id is not None:
+        return False
+    message = review.carrier_message
+    analysis = message.analysis
+    if (
+        message.agency_id != case.agency_id
+        or message.carrier_id != case.carrier_id
+        or analysis is None
+        or not case.policy_number
+    ):
+        return False
+    try:
+        result = AnalysisResult.model_validate(analysis.model_result_json)
+    except ValueError:
+        return False
+    return bool(
+        result.policy_number
+        and result.policy_number.strip().casefold() == case.policy_number.strip().casefold()
+    )
+
+
+def reconcile_case_owner_conflicts(
+    db: Session,
+    case: PolicyCase,
+    *,
+    actor_user_id: int | None,
+) -> int:
+    """Resolve active ownership blockers from stored analysis without another LLM call."""
+    reviews = db.scalars(
+        select(ReviewItem)
+        .where(
+            ReviewItem.agency_id == case.agency_id,
+            ReviewItem.reason_code == "CASE_OWNER_CONFLICT",
+            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+        )
+        .options(
+            joinedload(ReviewItem.carrier_message).joinedload(CarrierMessage.analysis),
+            joinedload(ReviewItem.carrier_message).joinedload(CarrierMessage.carrier),
+            joinedload(ReviewItem.carrier_message).selectinload(CarrierMessage.attachments),
+        )
+    ).all()
+    agency = db.get(Agency, case.agency_id)
+    assert agency is not None
+    reconciled = 0
+    for review in reviews:
+        if not _ownership_conflict_matches_case(review, case):
+            continue
+        message = review.carrier_message
+        analysis = message.analysis
+        if analysis is None:
+            continue
+        try:
+            result = AnalysisResult.model_validate(analysis.model_result_json)
+        except ValueError:
+            continue
+
+        message.case_id = case.id
+        review.case_id = case.id
+        review.assigned_reviewer_id = case.assigned_agent_id
+        bundle = build_source_bundle(message, max_chars=get_settings().ai_max_source_chars)
+        retained_flags = set(analysis.validation_flags) - {"CASE_OWNER_CONFLICT"}
+        validated = validate_analysis(
+            result,
+            bundle,
+            agency_timezone=agency.timezone,
+            confidence_threshold=get_settings().ai_auto_apply_confidence_threshold,
+            source_flags=retained_flags,
+        )
+        flags = set(validated.flags)
+        if result.client_name and _client_key(case.client_name) != _client_key(result.client_name):
+            flags.add("CLIENT_MISMATCH")
+        if flags != set(validated.flags):
+            validated = ValidatedAnalysis(
+                result=validated.result,
+                flags=tuple(sorted(flags)),
+                verified_evidence=validated.verified_evidence,
+                premium_amount=validated.premium_amount,
+                effective_date=validated.effective_date,
+                deadline_at=validated.deadline_at,
+            )
+        analysis.validation_flags = list(validated.flags)
+        if validated.safe_to_apply:
+            _finalize(
+                db,
+                message,
+                analysis,
+                validated,
+                bundle,
+                actor_user_id=actor_user_id,
+                review=review,
+            )
+        else:
+            _review_for_flags(
+                db,
+                message,
+                validated.flags,
+                existing_case=case,
+                model_name=analysis.model_name,
+                confidence=float(analysis.overall_confidence),
+            )
+        reconciled += 1
+    return reconciled
+
+
+def reconcile_case_operational_ownership(
+    db: Session,
+    case: PolicyCase,
+    *,
+    assigned_agent_id: int,
+    assignment_source: CaseAssignmentSource,
+    actor_user_id: int | None,
+) -> OperationalOwnershipReconciliation:
+    """Move all active Case work together and repair safely recoverable associations."""
+    previous_assignee_id = case.assigned_agent_id
+    active_tasks = db.scalars(
+        select(Task).where(
+            Task.case_id == case.id,
+            Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+        )
+    ).all()
+    active_reviews = db.scalars(
+        select(ReviewItem)
+        .where(
+            ReviewItem.case_id == case.id,
+            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+        )
+        .options(joinedload(ReviewItem.carrier_message))
+    ).all()
+
+    case.assigned_agent_id = assigned_agent_id
+    case.assignment_source = assignment_source
+    tasks_reassigned = 0
+    reviews_reassigned = 0
+    messages_linked = 0
+    for task in active_tasks:
+        if task.assigned_agent_id != assigned_agent_id:
+            task.assigned_agent_id = assigned_agent_id
+            tasks_reassigned += 1
+    for review in active_reviews:
+        if review.assigned_reviewer_id != assigned_agent_id:
+            review.assigned_reviewer_id = assigned_agent_id
+            reviews_reassigned += 1
+        message = review.carrier_message
+        if (
+            message.case_id is None
+            and message.agency_id == case.agency_id
+            and message.carrier_id == case.carrier_id
+        ):
+            message.case_id = case.id
+            messages_linked += 1
+
+    ownership_conflicts = reconcile_case_owner_conflicts(
+        db,
+        case,
+        actor_user_id=actor_user_id,
+    )
+    return OperationalOwnershipReconciliation(
+        previous_assignee_id=previous_assignee_id,
+        active_tasks_reassigned=tasks_reassigned,
+        active_reviews_reassigned=reviews_reassigned,
+        source_messages_linked=messages_linked,
+        ownership_conflicts_reconciled=ownership_conflicts,
+    )
+
+
 def process_claimed_message(
     db: Session,
     message_id: int,
@@ -938,14 +1126,14 @@ def process_claimed_message(
             db,
             message,
             validated.flags,
-            existing_case=None if owner_conflict else case,
+            existing_case=case,
             model_name=analyzer.model_name,
             confidence=result.overall_confidence,
         )
         return ProcessingResult(
             message.id,
             ProcessingStatus.NEEDS_REVIEW,
-            case_id=case.id if case and not owner_conflict else None,
+            case_id=case.id if case else None,
             review_id=review.id,
             attachments_extracted=attachments_extracted,
             analysis_confidence=result.overall_confidence,

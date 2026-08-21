@@ -304,6 +304,7 @@ export type GmailMessage = {
   case_assigned_agent: AgentBrief | null
   can_open_case: boolean
   review_id: number | null
+  can_open_review: boolean
   last_processing_error_code: string | null
   processing_attempt_count: number
   processing_next_retry_at: string | null

@@ -566,6 +566,25 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
     )
     seeded_db.add_all([completed, resolved])
     seeded_db.commit()
+    legacy_message = create_received_message(
+        seeded_db,
+        client="John Doe",
+        policy="AMR-98765432",
+        subject_suffix="legacy-conflict-before-handoff",
+        owner=new_owner,
+        gmail_address="different-handoff-inbox@gmail.test",
+    )
+    legacy_result = process_message(
+        seeded_db,
+        legacy_message.id,
+        analyzer=FakeAnalyzer(analysis_result(client="John Doe", policy="AMR-98765432")),
+    )
+    legacy_review = seeded_db.get(ReviewItem, legacy_result.review_id)
+    assert legacy_review is not None
+    legacy_review.case_id = None
+    legacy_review.assigned_reviewer_id = new_owner.id
+    legacy_message.case_id = None
+    seeded_db.commit()
     message = create_received_message(
         seeded_db,
         client="John Doe",
@@ -587,6 +606,8 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
     seeded_db.refresh(existing)
     seeded_db.refresh(completed)
     seeded_db.refresh(resolved)
+    seeded_db.refresh(legacy_message)
+    seeded_db.refresh(legacy_review)
     assert result.processing_status is ProcessingStatus.PROCESSED
     assert result.case_id == existing.id
     assert existing.assigned_agent_id == new_owner.id
@@ -595,6 +616,11 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
     assert completed.status is TaskStatus.COMPLETED
     assert resolved.assigned_reviewer_id == former_owner.id
     assert resolved.status is ReviewStatus.RESOLVED
+    assert legacy_message.case_id == existing.id
+    assert legacy_message.processing_status is ProcessingStatus.PROCESSED
+    assert legacy_review.case_id == existing.id
+    assert legacy_review.assigned_reviewer_id == new_owner.id
+    assert legacy_review.status is ReviewStatus.RESOLVED
     active_tasks = seeded_db.scalars(
         select(Task).where(
             Task.case_id == existing.id,
@@ -629,7 +655,7 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
     )
 
 
-def test_different_mailbox_policy_collision_routes_to_unlinked_review(
+def test_different_mailbox_policy_collision_links_review_to_current_case_owner(
     seeded_db: Session,
 ) -> None:
     agents = seeded_db.scalars(
@@ -659,17 +685,236 @@ def test_different_mailbox_policy_collision_routes_to_unlinked_review(
     seeded_db.refresh(existing)
     seeded_db.refresh(message)
     assert result.processing_status is ProcessingStatus.NEEDS_REVIEW
-    assert result.case_id is None
+    assert result.case_id == existing.id
     assert result.validation_flags == ("CASE_OWNER_CONFLICT",)
     assert review is not None
     assert review.reason_code == "CASE_OWNER_CONFLICT"
-    assert review.case_id is None
-    assert review.assigned_reviewer_id == agents[1].id
-    assert message.case_id is None
+    assert review.case_id == existing.id
+    assert review.assigned_reviewer_id == former_owner_id
+    assert message.case_id == existing.id
     assert existing.assigned_agent_id == former_owner_id
     assert not seeded_db.scalars(
         select(Task).where(Task.source_carrier_message_id == message.id)
     ).all()
+
+
+def test_case_linked_active_review_uses_case_owner_not_stale_reviewer(
+    client: TestClient, seeded_db: Session, login
+) -> None:
+    agents = seeded_db.scalars(
+        select(User).where(User.role == UserRole.AGENT).order_by(User.id)
+    ).all()
+    existing = seeded_db.scalar(
+        select(PolicyCase).where(PolicyCase.policy_number == "AMR-98765432")
+    )
+    assert len(agents) == 2 and existing is not None
+    case_owner = seeded_db.get(User, existing.assigned_agent_id)
+    gmail_owner = next(agent for agent in agents if agent.id != existing.assigned_agent_id)
+    assert case_owner is not None
+    message = create_received_message(
+        seeded_db,
+        client="John Doe",
+        policy="AMR-98765432",
+        subject_suffix="stale-reviewer-scope",
+        owner=gmail_owner,
+        gmail_address="stale-reviewer@gmail.test",
+    )
+    proposed = analysis_result(client="John Doe", policy="AMR-98765432")
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+    review = seeded_db.get(ReviewItem, result.review_id)
+    assert review is not None
+    review.assigned_reviewer_id = gmail_owner.id
+    seeded_db.commit()
+
+    gmail_auth = login(client, gmail_owner.email)
+    gmail_headers = {"X-CSRF-Token": gmail_auth["csrf_token"]}
+    assert review.id not in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
+    assert client.get(f"/api/v1/reviews/{review.id}").status_code == 404
+    assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 404
+    correction = proposed.model_dump(
+        mode="json", exclude={"evidence", "overall_confidence", "uncertainties"}
+    )
+    assert (
+        client.post(
+            f"/api/v1/reviews/{review.id}/apply-analysis",
+            json=correction,
+            headers=gmail_headers,
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/api/v1/reviews/{review.id}/dismiss-analysis",
+            json={"resolution_notes": "Must not be accepted"},
+            headers=gmail_headers,
+        ).status_code
+        == 404
+    )
+
+    case_auth = login(client, case_owner.email)
+    case_headers = {"X-CSRF-Token": case_auth["csrf_token"]}
+    assert review.id in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
+    assert client.get(f"/api/v1/reviews/{review.id}").status_code == 200
+    assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 200
+
+    manager_auth = login(client, "manager@demo.local")
+    manager_headers = {"X-CSRF-Token": manager_auth["csrf_token"]}
+    assert review.id in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
+    assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/reviews/{review.id}/apply-analysis",
+            json=correction,
+            headers=manager_headers,
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            f"/api/v1/reviews/{review.id}/dismiss-analysis",
+            json={"resolution_notes": "Managers are read-only"},
+            headers=manager_headers,
+        ).status_code
+        == 403
+    )
+    case_auth = login(client, case_owner.email)
+    case_headers = {"X-CSRF-Token": case_auth["csrf_token"]}
+    assert (
+        client.post(
+            f"/api/v1/reviews/{review.id}/dismiss-analysis",
+            json={"resolution_notes": "Current Case owner completed the review"},
+            headers=case_headers,
+        ).status_code
+        == 200
+    )
+
+
+def test_unlinked_active_review_uses_assigned_reviewer_without_widening_message_access(
+    client: TestClient, seeded_db: Session, login
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Unlinked Review Client",
+        policy="UNLINKED-REVIEW-1",
+        subject_suffix="unlinked-review-scope",
+    )
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(
+            analysis_result(
+                client="Unlinked Review Client",
+                policy="UNLINKED-REVIEW-1",
+                confidence=0.4,
+            )
+        ),
+    )
+    review = seeded_db.get(ReviewItem, result.review_id)
+    assigned = seeded_db.scalar(select(User).where(User.email == "agent.two@demo.local"))
+    assert review is not None and assigned is not None and review.case_id is None
+    review.assigned_reviewer_id = assigned.id
+    seeded_db.commit()
+
+    login(client, "agent.one@demo.local")
+    assert review.id not in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
+    assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 404
+
+    assigned_auth = login(client, assigned.email)
+    assigned_headers = {"X-CSRF-Token": assigned_auth["csrf_token"]}
+    assert review.id in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
+    assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 200
+    assert client.get(f"/api/v1/carrier-messages/{message.id}/analysis").status_code == 404
+    dismissed = client.post(
+        f"/api/v1/reviews/{review.id}/dismiss-analysis",
+        json={"resolution_notes": "Synthetic unlinked review dismissed"},
+        headers=assigned_headers,
+    )
+    assert dismissed.status_code == 200
+
+
+@pytest.mark.parametrize("confidence, expected_status", [(0.95, "RESOLVED"), (0.4, "OPEN")])
+def test_manager_resave_reconciles_legacy_unlinked_owner_conflict_from_stored_analysis(
+    client: TestClient,
+    seeded_db: Session,
+    login,
+    monkeypatch,
+    confidence: float,
+    expected_status: str,
+) -> None:
+    agents = seeded_db.scalars(
+        select(User).where(User.role == UserRole.AGENT).order_by(User.id)
+    ).all()
+    existing = seeded_db.scalar(
+        select(PolicyCase).where(PolicyCase.policy_number == "AMR-98765432")
+    )
+    assert len(agents) == 2 and existing is not None
+    case_owner = seeded_db.get(User, existing.assigned_agent_id)
+    gmail_owner = next(agent for agent in agents if agent.id != existing.assigned_agent_id)
+    assert case_owner is not None
+    message = create_received_message(
+        seeded_db,
+        client="John Doe",
+        policy="AMR-98765432",
+        subject_suffix=f"legacy-owner-conflict-{confidence}",
+        owner=gmail_owner,
+        gmail_address=f"legacy-owner-conflict-{confidence}@gmail.test",
+    )
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(
+            analysis_result(client="John Doe", policy="AMR-98765432", confidence=confidence)
+        ),
+    )
+    review = seeded_db.get(ReviewItem, result.review_id)
+    assert review is not None and message.analysis is not None
+    review.case_id = None
+    review.assigned_reviewer_id = gmail_owner.id
+    message.case_id = None
+    seeded_db.commit()
+    monkeypatch.setattr(
+        "app.services.message_processing.OpenAIAnalyzer",
+        lambda *_args, **_kwargs: pytest.fail("Reconciliation must not invoke OpenAI"),
+    )
+
+    manager = login(client, "manager@demo.local")
+    response = client.patch(
+        f"/api/v1/cases/{existing.id}/assignment",
+        json={"assigned_agent_id": case_owner.id},
+        headers={"X-CSRF-Token": manager["csrf_token"]},
+    )
+    assert response.status_code == 200
+    seeded_db.refresh(message)
+    seeded_db.refresh(review)
+    seeded_db.refresh(existing)
+    assert existing.assigned_agent_id == case_owner.id
+    assert message.case_id == existing.id
+    assert review.case_id == existing.id
+    assert review.assigned_reviewer_id == case_owner.id
+    assert review.status.value == expected_status
+    if expected_status == "RESOLVED":
+        assert message.processing_status is ProcessingStatus.PROCESSED
+        assert message.analysis.validation_flags == []
+        tasks = seeded_db.scalars(
+            select(Task).where(Task.source_carrier_message_id == message.id)
+        ).all()
+        assert tasks and all(task.assigned_agent_id == case_owner.id for task in tasks)
+        label_sync = seeded_db.scalar(
+            select(GmailThreadLabelSync).where(
+                GmailThreadLabelSync.gmail_connection_id == message.gmail_connection_id,
+                GmailThreadLabelSync.gmail_thread_id == message.gmail_thread_id,
+            )
+        )
+        assert label_sync is not None
+        assert label_sync.status is GmailLabelSyncStatus.PENDING
+    else:
+        assert message.processing_status is ProcessingStatus.NEEDS_REVIEW
+        assert review.reason_code == "LOW_CONFIDENCE"
+        assert message.analysis.validation_flags == ["LOW_CONFIDENCE"]
+        login(client, gmail_owner.email)
+        assert client.get(f"/api/v1/reviews/{review.id}").status_code == 404
+        login(client, case_owner.email)
+        assert client.get(f"/api/v1/reviews/{review.id}").status_code == 200
 
 
 def test_manager_case_assignment_remains_authoritative_for_future_gmail_messages(

@@ -9,8 +9,8 @@ from app.core.security import hash_password
 from app.core.time import utc_now
 from app.integrations.gmail.crypto import TokenCipher
 from app.integrations.gmail.sync import SyncResult
-from app.models.enums import GmailConnectionStatus, UserRole
-from app.models.operations import CarrierMessage, PolicyCase
+from app.models.enums import GmailConnectionStatus, ReviewStatus, UserRole
+from app.models.operations import CarrierMessage, PolicyCase, ReviewItem
 from app.models.organization import (
     Agency,
     GmailConnection,
@@ -163,6 +163,16 @@ def test_recent_message_case_access_matches_case_authorization(
     policy_case.assigned_agent_id = case_owner.id
     connection = add_connection(db, gmail_owner, "case-scope@gmail.test")
     message.gmail_connection_id = connection.id
+    review = ReviewItem(
+        agency_id=policy_case.agency_id,
+        case_id=policy_case.id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=gmail_owner.id,
+        status=ReviewStatus.OPEN,
+        reason_code="SCOPE_TEST",
+        reason="Synthetic scope test",
+    )
+    db.add(review)
     db.commit()
 
     login(client, gmail_owner.email)
@@ -173,11 +183,14 @@ def test_recent_message_case_access_matches_case_authorization(
     assert owner_item["case_assigned_agent"]["id"] == case_owner.id
     assert owner_item["case_assigned_agent"]["full_name"] == case_owner.full_name
     assert owner_item["can_open_case"] is False
+    assert owner_item["review_id"] == review.id
+    assert owner_item["can_open_review"] is False
     assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 404
 
     login(client, "manager@demo.local")
     manager_item = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()[0]
     assert manager_item["can_open_case"] is True
+    assert manager_item["can_open_review"] is True
     assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 200
 
     policy_case.assigned_agent_id = gmail_owner.id
@@ -185,6 +198,7 @@ def test_recent_message_case_access_matches_case_authorization(
     login(client, gmail_owner.email)
     current_owner_item = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()[0]
     assert current_owner_item["can_open_case"] is True
+    assert current_owner_item["can_open_review"] is True
     assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 200
 
 

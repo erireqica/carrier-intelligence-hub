@@ -379,7 +379,7 @@ def recent_messages(
     )
     # Reuse the Case service's authorization scope so message metadata cannot
     # accidentally grant a link that the Case endpoint itself would reject.
-    from app.services.operations import scoped_cases_query
+    from app.services.operations import scoped_cases_query, scoped_reviews_query
 
     accessible_case_ids = (
         set(
@@ -390,6 +390,18 @@ def recent_messages(
             ).all()
         )
         if case_ids
+        else set()
+    )
+    review_ids = {review_id for _, _, review_id, _ in rows if review_id is not None}
+    accessible_review_ids = (
+        set(
+            db.scalars(
+                scoped_reviews_query(current)
+                .where(ReviewItem.id.in_(review_ids))
+                .with_only_columns(ReviewItem.id)
+            ).all()
+        )
+        if review_ids
         else set()
     )
     return [
@@ -418,6 +430,7 @@ def recent_messages(
             ),
             can_open_case=message.case_id in accessible_case_ids,
             review_id=review_id,
+            can_open_review=review_id in accessible_review_ids,
             last_processing_error_code=message.last_processing_error_code,
             processing_attempt_count=message.processing_attempt_count,
             processing_next_retry_at=message.processing_next_retry_at,

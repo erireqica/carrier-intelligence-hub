@@ -132,7 +132,7 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
               </td>
               <td className="px-3 py-3">{message.attachment_count}</td>
               <td className="px-3 py-3">
-                {message.review_id ? (
+                {message.review_id && message.can_open_review ? (
                   <Link
                     className="font-semibold text-blue-700"
                     to={`/reviews/${message.review_id}`}

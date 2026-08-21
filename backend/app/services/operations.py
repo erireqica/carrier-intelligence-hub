@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -294,45 +294,34 @@ def assign_case(
     if assignee is None:
         raise HTTPException(status_code=422, detail="Assigned agent is invalid")
 
-    previous_assignee_id = case.assigned_agent_id
-    if (
-        previous_assignee_id == assignee.id
-        and case.assignment_source is CaseAssignmentSource.MANAGER
-    ):
-        return get_case_detail(db, current, case.id)
+    from app.services.message_processing import reconcile_case_operational_ownership
 
-    active_tasks = db.scalars(
-        select(Task).where(
-            Task.case_id == case.id,
-            Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
-        )
-    ).all()
-    active_reviews = db.scalars(
-        select(ReviewItem).where(
-            ReviewItem.case_id == case.id,
-            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
-        )
-    ).all()
-    case.assigned_agent_id = assignee.id
-    case.assignment_source = CaseAssignmentSource.MANAGER
-    for task in active_tasks:
-        task.assigned_agent_id = assignee.id
-    for review in active_reviews:
-        review.assigned_reviewer_id = assignee.id
-    record_audit_event(
+    ownership = reconcile_case_operational_ownership(
         db,
-        agency_id=current.user.agency_id,
+        case,
+        assigned_agent_id=assignee.id,
+        assignment_source=CaseAssignmentSource.MANAGER,
         actor_user_id=current.user.id,
-        case_id=case.id,
-        event_type="CASE_REASSIGNED" if previous_assignee_id is not None else "CASE_ASSIGNED",
-        description="Case assignment changed",
-        metadata={
-            "previous_assignee_id": previous_assignee_id,
-            "new_assignee_id": assignee.id,
-            "active_tasks_transferred": len(active_tasks),
-            "active_reviews_transferred": len(active_reviews),
-        },
     )
+    previous_assignee_id = ownership.previous_assignee_id
+    assignment_changed = previous_assignee_id != assignee.id
+    if assignment_changed:
+        record_audit_event(
+            db,
+            agency_id=current.user.agency_id,
+            actor_user_id=current.user.id,
+            case_id=case.id,
+            event_type="CASE_REASSIGNED" if previous_assignee_id is not None else "CASE_ASSIGNED",
+            description="Case assignment changed",
+            metadata={
+                "previous_assignee_id": previous_assignee_id,
+                "new_assignee_id": assignee.id,
+                "active_tasks_transferred": ownership.active_tasks_reassigned,
+                "active_reviews_transferred": ownership.active_reviews_reassigned,
+                "source_messages_linked": ownership.source_messages_linked,
+                "ownership_conflicts_reconciled": (ownership.ownership_conflicts_reconciled),
+            },
+        )
     db.commit()
     db.expire_all()
     return get_case_detail(db, current, case.id)
@@ -439,14 +428,7 @@ def list_reviews(
     review_status: ReviewStatus | None,
     review_view: str,
 ) -> ReviewListResponse:
-    query = select(ReviewItem).where(ReviewItem.agency_id == current.user.agency_id)
-    if current.user.role is UserRole.AGENT:
-        query = query.join(PolicyCase, ReviewItem.case_id == PolicyCase.id, isouter=True).where(
-            or_(
-                ReviewItem.assigned_reviewer_id == current.user.id,
-                PolicyCase.assigned_agent_id == current.user.id,
-            )
-        )
+    query = scoped_reviews_query(current)
     if review_status:
         query = query.where(ReviewItem.status == review_status)
     elif review_view == "ACTIONABLE":
@@ -475,31 +457,59 @@ def list_reviews(
     return ReviewListResponse(items=items, page=page_info(page, page_size, total))
 
 
-def get_review_item(db: Session, current: AuthContext, review_id: int) -> ReviewItemResponse:
-    query = (
-        select(ReviewItem)
-        .where(
-            ReviewItem.id == review_id,
-            ReviewItem.agency_id == current.user.agency_id,
-        )
-        .options(
-            joinedload(ReviewItem.case),
-            joinedload(ReviewItem.carrier_message).joinedload(CarrierMessage.carrier),
-            joinedload(ReviewItem.carrier_message).joinedload(CarrierMessage.analysis),
-            joinedload(ReviewItem.assigned_reviewer),
+def scoped_reviews_query(current: AuthContext) -> Select[tuple[ReviewItem]]:
+    query = select(ReviewItem).where(ReviewItem.agency_id == current.user.agency_id)
+    if current.user.role is not UserRole.AGENT:
+        return query
+
+    active_statuses = (ReviewStatus.OPEN, ReviewStatus.IN_REVIEW)
+    terminal_statuses = (ReviewStatus.RESOLVED, ReviewStatus.DISMISSED)
+    return query.join(PolicyCase, ReviewItem.case_id == PolicyCase.id, isouter=True).where(
+        or_(
+            and_(
+                ReviewItem.status.in_(active_statuses),
+                ReviewItem.case_id.is_not(None),
+                PolicyCase.assigned_agent_id == current.user.id,
+            ),
+            and_(
+                ReviewItem.status.in_(active_statuses),
+                ReviewItem.case_id.is_(None),
+                ReviewItem.assigned_reviewer_id == current.user.id,
+            ),
+            and_(
+                ReviewItem.status.in_(terminal_statuses),
+                or_(
+                    ReviewItem.assigned_reviewer_id == current.user.id,
+                    PolicyCase.assigned_agent_id == current.user.id,
+                ),
+            ),
         )
     )
-    if current.user.role is UserRole.AGENT:
-        query = query.join(PolicyCase, ReviewItem.case_id == PolicyCase.id, isouter=True).where(
-            or_(
-                ReviewItem.assigned_reviewer_id == current.user.id,
-                PolicyCase.assigned_agent_id == current.user.id,
-            )
+
+
+def _review_query(current: AuthContext) -> Select[tuple[ReviewItem]]:
+    return scoped_reviews_query(current).options(
+        joinedload(ReviewItem.case),
+        joinedload(ReviewItem.carrier_message).joinedload(CarrierMessage.carrier),
+        joinedload(ReviewItem.carrier_message).joinedload(CarrierMessage.analysis),
+        joinedload(ReviewItem.carrier_message).selectinload(CarrierMessage.attachments),
+        joinedload(ReviewItem.assigned_reviewer),
+    )
+
+
+def get_review_entity(db: Session, current: AuthContext, review_id: int) -> ReviewItem:
+    item = db.scalar(
+        _review_query(current).where(
+            ReviewItem.id == review_id,
         )
-    item = db.scalar(query)
+    )
     if item is None:
         raise HTTPException(status_code=404, detail="Review item not found")
-    return review_item_response(item)
+    return item
+
+
+def get_review_item(db: Session, current: AuthContext, review_id: int) -> ReviewItemResponse:
+    return review_item_response(get_review_entity(db, current, review_id))
 
 
 def review_item_response(item: ReviewItem) -> ReviewItemResponse:
@@ -538,12 +548,7 @@ def review_item_response(item: ReviewItem) -> ReviewItemResponse:
     )
 
 
-def message_analysis_response(
-    db: Session, current: AuthContext, message_id: int
-) -> MessageAnalysisResponse:
-    from app.services.message_processing import authorize_message
-
-    message = authorize_message(db, current, message_id)
+def _message_analysis_response(db: Session, message: CarrierMessage) -> MessageAnalysisResponse:
     analysis = message.analysis
     proposed = None
     final = None
@@ -584,10 +589,21 @@ def message_analysis_response(
     )
 
 
+def message_analysis_response(
+    db: Session, current: AuthContext, message_id: int
+) -> MessageAnalysisResponse:
+    from app.services.message_processing import authorize_message
+
+    return _message_analysis_response(db, authorize_message(db, current, message_id))
+
+
 def get_review_detail(db: Session, current: AuthContext, review_id: int) -> ReviewDetailResponse:
-    base = get_review_item(db, current, review_id)
-    analysis = message_analysis_response(db, current, base.message_id)
-    return ReviewDetailResponse(**base.model_dump(), analysis=analysis)
+    item = get_review_entity(db, current, review_id)
+    base = review_item_response(item)
+    return ReviewDetailResponse(
+        **base.model_dump(),
+        analysis=_message_analysis_response(db, item.carrier_message),
+    )
 
 
 def update_review(

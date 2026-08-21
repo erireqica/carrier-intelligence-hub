@@ -287,6 +287,7 @@ class GmailMessageListItem(BaseModel):
     case_assigned_agent: AgentBrief | None
     can_open_case: bool
     review_id: int | None
+    can_open_review: bool
     last_processing_error_code: str | None
     processing_attempt_count: int
     processing_next_retry_at: datetime | None
