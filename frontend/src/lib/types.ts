@@ -301,6 +301,8 @@ export type GmailMessage = {
   processing_status: ProcessingStatus
   attachment_count: number
   case_id: number | null
+  case_assigned_agent: AgentBrief | null
+  can_open_case: boolean
   review_id: number | null
   last_processing_error_code: string | null
   processing_attempt_count: number

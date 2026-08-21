@@ -138,6 +138,11 @@ export const correctCase = (id: number, data: CaseCorrectionInput) =>
     method: 'PATCH',
     body: JSON.stringify(data),
   })
+export const assignCase = (id: number, assignedAgentId: number) =>
+  apiRequest<CaseDetail>(`/cases/${id}/assignment`, {
+    method: 'PATCH',
+    body: JSON.stringify({ assigned_agent_id: assignedAgentId }),
+  })
 export const getTasks = (params = '') =>
   apiRequest<{ items: TaskItem[]; page: PageInfo }>(
     `/tasks${params ? `?${params}` : ''}`,
@@ -146,11 +151,6 @@ export const updateTask = (id: number, status: TaskStatus) =>
   apiRequest<TaskItem>(`/tasks/${id}`, {
     method: 'PATCH',
     body: JSON.stringify({ status }),
-  })
-export const reassignTask = (id: number, assignedAgentId: number) =>
-  apiRequest<TaskItem>(`/tasks/${id}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ assigned_agent_id: assignedAgentId }),
   })
 export const getReviews = (params = '') =>
   apiRequest<{ items: ReviewItem[]; page: PageInfo }>(
@@ -196,11 +196,6 @@ export const syncGmailConnection = (connectionId: number) =>
   apiRequest<GmailSyncResult>(`/gmail-connections/${connectionId}/sync`, {
     method: 'POST',
   })
-export const retryGmailWorkflowLabels = (connectionId: number) =>
-  apiRequest<{ message: string }>(
-    `/gmail-connections/${connectionId}/workflow-labels/retry`,
-    { method: 'POST' },
-  )
 export const reconcileMessageGmailLabels = (messageId: number) =>
   apiRequest<{ message: string }>(
     `/carrier-messages/${messageId}/reconcile-gmail-labels`,

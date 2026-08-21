@@ -9,12 +9,21 @@ import {
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { correctCase, getCase, getMe, updateTask } from '../lib/api'
+import {
+  assignCase,
+  correctCase,
+  getAgents,
+  getCase,
+  getMe,
+  updateTask,
+} from '../lib/api'
 import { authFixture } from '../test/fixtures'
 import { CaseDetailPage } from './CaseDetailPage'
 
 vi.mock('../lib/api', () => ({
+  assignCase: vi.fn(),
   correctCase: vi.fn(),
+  getAgents: vi.fn(),
   getCase: vi.fn(),
   getMe: vi.fn(),
   updateTask: vi.fn(),
@@ -196,5 +205,82 @@ describe('CaseDetailPage carrier messages', () => {
         }),
       ),
     )
+  })
+
+  it('lets a manager assign the whole case while keeping tasks read-only', async () => {
+    const manager = authFixture('MANAGER')
+    const agent = {
+      ...authFixture('AGENT').user,
+      open_tasks: 1,
+      urgent_cases: 0,
+      gmail_connections: 1,
+    }
+    vi.mocked(getMe).mockResolvedValue(manager)
+    vi.mocked(getAgents).mockResolvedValue([agent])
+    const item = {
+      id: 3,
+      client_name: 'Managed Client',
+      policy_number: 'MAN-3',
+      policy_status: 'PENDING' as const,
+      priority: 'HIGH' as const,
+      summary: 'Pending managed case.',
+      deadline: null,
+      updated_at: '2026-08-20T10:00:00Z',
+      carrier: { id: 1, name: 'Americo', code: 'AMR' },
+      assigned_agent: {
+        id: manager.user.id,
+        full_name: manager.user.full_name,
+        email: manager.user.email,
+      },
+      needs_review: false,
+      premium_amount: null,
+      currency: null,
+      effective_date: null,
+      messages: [],
+      attachments: [],
+      tasks: [
+        {
+          id: 9,
+          case_id: 3,
+          client_name: 'Managed Client',
+          policy_number: 'MAN-3',
+          title: 'Agent-owned action',
+          description: null,
+          priority: 'HIGH' as const,
+          due_at: null,
+          status: 'OPEN' as const,
+          completed_at: null,
+          assigned_agent: agent,
+        },
+      ],
+      evidence: [],
+      activity: [],
+    }
+    vi.mocked(getCase).mockResolvedValue(item)
+    vi.mocked(assignCase).mockResolvedValue(item)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/cases/3']}>
+          <Routes>
+            <Route path="/cases/:caseId" element={<CaseDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    await screen.findByRole('option', { name: 'Elena Torres' })
+    fireEvent.change(screen.getByLabelText('Assigned agent'), {
+      target: { value: String(agent.id) },
+    })
+    await waitFor(() => expect(assignCase).toHaveBeenCalledWith(3, agent.id))
+    expect(
+      screen.queryByLabelText('Update Agent-owned action'),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText('Status managed by Elena Torres'),
+    ).toBeInTheDocument()
   })
 })

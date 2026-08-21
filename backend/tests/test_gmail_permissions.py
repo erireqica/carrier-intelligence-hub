@@ -10,6 +10,7 @@ from app.core.time import utc_now
 from app.integrations.gmail.crypto import TokenCipher
 from app.integrations.gmail.sync import SyncResult
 from app.models.enums import GmailConnectionStatus, UserRole
+from app.models.operations import CarrierMessage, PolicyCase
 from app.models.organization import (
     Agency,
     GmailConnection,
@@ -142,6 +143,49 @@ def test_agent_manager_and_cross_agency_connection_permissions(
         ).status_code
         == 404
     )
+
+
+def test_recent_message_case_access_matches_case_authorization(
+    client: TestClient,
+    db: Session,
+    login,
+) -> None:
+    gmail_owner = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    case_owner = db.scalar(select(User).where(User.email == "agent.two@demo.local"))
+    policy_case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "Mary Smith"))
+    message = (
+        db.scalar(select(CarrierMessage).where(CarrierMessage.case_id == policy_case.id))
+        if policy_case is not None
+        else None
+    )
+    assert gmail_owner is not None and case_owner is not None
+    assert policy_case is not None and message is not None
+    policy_case.assigned_agent_id = case_owner.id
+    connection = add_connection(db, gmail_owner, "case-scope@gmail.test")
+    message.gmail_connection_id = connection.id
+    db.commit()
+
+    login(client, gmail_owner.email)
+    owner_response = client.get(f"/api/v1/gmail-connections/{connection.id}/messages")
+    assert owner_response.status_code == 200
+    owner_item = owner_response.json()[0]
+    assert owner_item["case_id"] == policy_case.id
+    assert owner_item["case_assigned_agent"]["id"] == case_owner.id
+    assert owner_item["case_assigned_agent"]["full_name"] == case_owner.full_name
+    assert owner_item["can_open_case"] is False
+    assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 404
+
+    login(client, "manager@demo.local")
+    manager_item = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()[0]
+    assert manager_item["can_open_case"] is True
+    assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 200
+
+    policy_case.assigned_agent_id = gmail_owner.id
+    db.commit()
+    login(client, gmail_owner.email)
+    current_owner_item = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()[0]
+    assert current_owner_item["can_open_case"] is True
+    assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 200
 
 
 def test_disconnect_removes_local_credentials_even_when_revocation_is_best_effort(

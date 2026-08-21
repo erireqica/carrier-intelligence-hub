@@ -14,7 +14,13 @@ import {
 } from '../components/ui'
 import { formatBusinessDate, formatDate } from '../lib/format'
 import { evidenceSourceLabel, humanFieldLabel } from '../lib/humanize'
-import { correctCase, getCase, updateTask } from '../lib/api'
+import {
+  assignCase,
+  correctCase,
+  getAgents,
+  getCase,
+  updateTask,
+} from '../lib/api'
 import type {
   CaseCorrectionInput,
   CaseDetail,
@@ -243,6 +249,11 @@ export function CaseDetailPage() {
   const auth = useCurrentUser()
   const isManager = auth.data?.user.role === 'MANAGER'
   const [correcting, setCorrecting] = useState(false)
+  const agents = useQuery({
+    queryKey: ['manager', 'agents'],
+    queryFn: getAgents,
+    enabled: isManager,
+  })
   const detail = useQuery({
     queryKey: ['case', caseId],
     queryFn: () => getCase(caseId),
@@ -257,6 +268,20 @@ export function CaseDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
     },
   })
+  const assignmentMutation = useMutation({
+    mutationFn: (assignedAgentId: number) =>
+      assignCase(Number(caseId), assignedAgentId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['case', caseId] })
+      await queryClient.invalidateQueries({ queryKey: ['cases'] })
+      await queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      await queryClient.invalidateQueries({ queryKey: ['reviews'] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      await queryClient.invalidateQueries({
+        queryKey: ['manager', 'audit-events'],
+      })
+    },
+  })
   if (detail.isPending) return <LoadingState label="Loading case history…" />
   if (detail.isError)
     return (
@@ -266,6 +291,9 @@ export function CaseDetailPage() {
       />
     )
   const item = detail.data
+  const eligibleAgents = agents.data?.filter(
+    (agent) => agent.role === 'AGENT' && agent.is_active,
+  )
   return (
     <div className="space-y-6">
       <Link className="text-sm font-semibold text-blue-700" to="/cases">
@@ -309,9 +337,55 @@ export function CaseDetailPage() {
         />
       )}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold text-slate-500 uppercase">
+            Policy Status
+          </p>
+          <p className="mt-2 font-medium text-slate-900">
+            {item.policy_status.replaceAll('_', ' ')}
+          </p>
+        </div>
+        <div className="border border-slate-200 bg-white p-4">
+          <p className="text-xs font-semibold text-slate-500 uppercase">
+            Assigned agent
+          </p>
+          {isManager ? (
+            <select
+              aria-label="Assigned agent"
+              className="mt-2 min-h-10 w-full border border-slate-300 bg-white px-3 py-2 text-sm"
+              value={item.assigned_agent?.id ?? ''}
+              disabled={assignmentMutation.isPending || agents.isPending}
+              onChange={(event) =>
+                assignmentMutation.mutate(Number(event.target.value))
+              }
+            >
+              {!item.assigned_agent && <option value="">Unassigned</option>}
+              {item.assigned_agent &&
+                !eligibleAgents?.some(
+                  (agent) => agent.id === item.assigned_agent?.id,
+                ) && (
+                  <option value={item.assigned_agent.id} disabled>
+                    {item.assigned_agent.full_name} (requires reassignment)
+                  </option>
+                )}
+              {eligibleAgents?.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.full_name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <p className="mt-2 font-medium text-slate-900">
+              {item.assigned_agent?.full_name ?? 'Unassigned'}
+            </p>
+          )}
+          {assignmentMutation.error && (
+            <p className="mt-2 text-xs text-red-700" role="alert">
+              {assignmentMutation.error.message}
+            </p>
+          )}
+        </div>
         {[
-          ['Policy Status', item.policy_status.replaceAll('_', ' ')],
-          ['Assigned agent', item.assigned_agent?.full_name ?? 'Unassigned'],
           ['Key deadline', formatBusinessDate(item.deadline)],
           [
             'Premium',
@@ -355,7 +429,8 @@ export function CaseDetailPage() {
                     <label className="sr-only" htmlFor={`case-task-${task.id}`}>
                       Update {task.title}
                     </label>
-                    {task.assigned_agent.id === auth.data!.user.id ? (
+                    {!isManager &&
+                    task.assigned_agent.id === auth.data!.user.id ? (
                       <select
                         id={`case-task-${task.id}`}
                         className="mt-2 block border border-slate-300 bg-white px-2 py-1.5 text-sm"

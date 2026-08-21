@@ -44,9 +44,15 @@ function NavigationLink({ label, to }: { label: string; to: string }) {
 export function AppShell() {
   const auth = useCurrentUser()
   const user = auth.data!.user
-  const primaryNavigation = agentNavigation.filter(
-    ([, to]) => user.role === 'AGENT' || to !== '/activity',
-  )
+  const primaryNavigation = agentNavigation
+    .filter(([, to]) => user.role === 'AGENT' || to !== '/activity')
+    .map(
+      ([label, to]) =>
+        [
+          to === '/tasks' && user.role === 'MANAGER' ? 'Tasks' : label,
+          to,
+        ] as const,
+    )
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const logoutMutation = useMutation({
@@ -58,9 +64,9 @@ export function AppShell() {
   })
 
   return (
-    <div className="min-h-screen bg-slate-100 lg:grid lg:grid-cols-[248px_1fr] lg:items-start">
-      <aside className="hidden bg-slate-900 text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
-        <div className="border-b border-slate-700 px-6 py-6">
+    <div className="min-h-dvh bg-slate-100 lg:pl-[248px]">
+      <aside className="hidden bg-slate-900 text-white lg:fixed lg:inset-y-0 lg:left-0 lg:z-30 lg:flex lg:w-[248px] lg:flex-col lg:overflow-hidden">
+        <div className="shrink-0 border-b border-slate-700 px-6 py-6">
           <p className="text-xs font-semibold tracking-[0.12em] text-slate-400 uppercase">
             Carrier
           </p>
@@ -84,7 +90,7 @@ export function AppShell() {
             </>
           )}
         </nav>
-        <div className="border-t border-slate-700 p-4">
+        <div className="shrink-0 border-t border-slate-700 p-4">
           {auth.data!.environment === 'development' && (
             <p className="mb-3 text-xs font-medium text-slate-400">
               Development data
@@ -103,7 +109,7 @@ export function AppShell() {
         </div>
       </aside>
 
-      <div className="min-w-0">
+      <div className="min-h-dvh min-w-0">
         <header className="sticky top-0 z-20 border-b border-slate-200 bg-white px-5 py-4 lg:static lg:px-8">
           <div className="flex items-center justify-between">
             <p className="font-semibold text-slate-900 lg:hidden">

@@ -2,9 +2,10 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 
-from app.api.dependencies import AgentUser, CsrfUser, CurrentUser, DbSession
+from app.api.dependencies import AgentUser, CsrfUser, CurrentUser, DbSession, ManagerCsrfUser
 from app.api.schemas.domain import (
     AuditLogResponse,
+    CaseAssignmentInput,
     CaseCorrectionInput,
     CaseDetail,
     CaseListResponse,
@@ -67,6 +68,16 @@ def correct_case(
     case_id: int, data: CaseCorrectionInput, current: CsrfUser, db: DbSession
 ) -> CaseDetail:
     return operations_service.correct_case(db, current, case_id, data)
+
+
+@router.patch("/cases/{case_id}/assignment", response_model=CaseDetail)
+def assign_case(
+    case_id: int,
+    data: CaseAssignmentInput,
+    current: ManagerCsrfUser,
+    db: DbSession,
+) -> CaseDetail:
+    return operations_service.assign_case(db, current, case_id, data.assigned_agent_id)
 
 
 @router.get("/tasks", response_model=TaskListResponse)

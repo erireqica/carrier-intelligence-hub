@@ -10,10 +10,12 @@ from app.core.time import utc_now
 from app.models.audit import AuditEvent
 from app.models.carriers import Carrier, CarrierDomain, CarrierSender
 from app.models.enums import (
+    CaseAssignmentSource,
     GmailConnectionStatus,
     ProcessingStatus,
     ReviewStatus,
     TaskStatus,
+    UserRole,
 )
 from app.models.operations import (
     Attachment,
@@ -96,12 +98,12 @@ def test_role_authorization_case_and_task_scoping(client: TestClient, db: Sessio
         "Americo": 1,
         "American Amicable / AMAM": 1,
     }
-    reassigned = client.patch(
+    task_assignment_forbidden = client.patch(
         f"/api/v1/tasks/{mary_task.id}",
         json={"assigned_agent_id": manager_auth["user"]["id"]},
         headers={"X-CSRF-Token": manager_auth["csrf_token"]},
     )
-    assert reassigned.status_code == 200
+    assert task_assignment_forbidden.status_code == 422
 
 
 def test_business_deadlines_serialize_as_agency_local_dates(
@@ -547,11 +549,10 @@ def test_task_patch_validation_and_change_specific_audits(
     client: TestClient, db: Session, login
 ) -> None:
     task = db.scalar(select(Task).where(Task.status == TaskStatus.OPEN))
-    target_agent = db.scalar(select(User).where(User.email == "agent.two@demo.local"))
     original_agent = (
         db.scalar(select(User).where(User.id == task.assigned_agent_id)) if task else None
     )
-    assert task is not None and target_agent is not None and original_agent is not None
+    assert task is not None and original_agent is not None
     manager = login(client, "manager@demo.local")
     manager_headers = {"X-CSRF-Token": manager["csrf_token"]}
 
@@ -562,7 +563,7 @@ def test_task_patch_validation_and_change_specific_audits(
     assert (
         client.patch(
             f"/api/v1/tasks/{task.id}",
-            json={"status": None, "assigned_agent_id": None},
+            json={"status": None},
             headers=manager_headers,
         ).status_code
         == 422
@@ -572,33 +573,22 @@ def test_task_patch_validation_and_change_specific_audits(
         json={"status": "COMPLETED"},
         headers=manager_headers,
     )
-    assert manager_status.status_code == 404
+    assert manager_status.status_code == 403
     reassigned = client.patch(
         f"/api/v1/tasks/{task.id}",
-        json={"assigned_agent_id": target_agent.id},
+        json={"assigned_agent_id": original_agent.id},
         headers=manager_headers,
     )
-    assert reassigned.status_code == 200
-    assignment_event = db.scalar(
-        select(AuditEvent).where(
-            AuditEvent.task_id == task.id,
-            AuditEvent.event_type == "TASK_ASSIGNED",
-        )
-    )
-    assert assignment_event is not None
-    assert assignment_event.event_metadata == {
-        "previous_assignee_id": original_agent.id,
-        "new_assignee_id": target_agent.id,
-    }
+    assert reassigned.status_code == 422
 
-    agent_auth = login(client, target_agent.email)
+    agent_auth = login(client, original_agent.email)
     agent_headers = {"X-CSRF-Token": agent_auth["csrf_token"]}
     agent_reassign = client.patch(
         f"/api/v1/tasks/{task.id}",
         json={"assigned_agent_id": original_agent.id},
         headers=agent_headers,
     )
-    assert agent_reassign.status_code == 403
+    assert agent_reassign.status_code == 422
     completed = client.patch(
         f"/api/v1/tasks/{task.id}",
         json={"status": "COMPLETED"},
@@ -617,6 +607,148 @@ def test_task_patch_validation_and_change_specific_audits(
         "previous_status": "OPEN",
         "new_status": "COMPLETED",
     }
+
+
+def test_manager_assigns_case_and_active_work_to_an_active_agent(
+    client: TestClient, db: Session, login
+) -> None:
+    case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "Mary Smith"))
+    target = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    original = db.get(User, case.assigned_agent_id) if case else None
+    message = (
+        db.scalar(select(CarrierMessage).where(CarrierMessage.case_id == case.id)) if case else None
+    )
+    assert case is not None and target is not None and original is not None and message is not None
+    active_review = ReviewItem(
+        agency_id=case.agency_id,
+        case_id=case.id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=original.id,
+        status=ReviewStatus.IN_REVIEW,
+        reason_code="ASSIGNMENT_TEST",
+        reason="Synthetic active review",
+    )
+    terminal_task = Task(
+        agency_id=case.agency_id,
+        case_id=case.id,
+        assigned_agent_id=original.id,
+        title="Historical completed task",
+        priority=case.priority,
+        status=TaskStatus.COMPLETED,
+        completed_at=utc_now(),
+    )
+    terminal_review = ReviewItem(
+        agency_id=case.agency_id,
+        case_id=case.id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=original.id,
+        status=ReviewStatus.RESOLVED,
+        reason_code="HISTORICAL_TEST",
+        reason="Synthetic resolved review",
+        resolved_at=utc_now(),
+    )
+    db.add_all([active_review, terminal_task, terminal_review])
+    db.commit()
+
+    manager = login(client, "manager@demo.local")
+    headers = {"X-CSRF-Token": manager["csrf_token"]}
+    assert (
+        client.patch(
+            f"/api/v1/cases/{case.id}/assignment",
+            json={"assigned_agent_id": manager["user"]["id"]},
+            headers=headers,
+        ).status_code
+        == 422
+    )
+
+    target.is_active = False
+    db.commit()
+    assert (
+        client.patch(
+            f"/api/v1/cases/{case.id}/assignment",
+            json={"assigned_agent_id": target.id},
+            headers=headers,
+        ).status_code
+        == 422
+    )
+    target.is_active = True
+    other_agency = Agency(name="Other Agency", timezone="UTC", is_active=True)
+    db.add(other_agency)
+    db.flush()
+    outsider = User(
+        agency_id=other_agency.id,
+        email="outside.agent@example.test",
+        full_name="Outside Agent",
+        role=UserRole.AGENT,
+        password_hash="synthetic-not-a-password",
+        is_active=True,
+    )
+    db.add(outsider)
+    db.commit()
+    assert (
+        client.patch(
+            f"/api/v1/cases/{case.id}/assignment",
+            json={"assigned_agent_id": outsider.id},
+            headers=headers,
+        ).status_code
+        == 422
+    )
+
+    response = client.patch(
+        f"/api/v1/cases/{case.id}/assignment",
+        json={"assigned_agent_id": target.id},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    db.refresh(case)
+    db.refresh(active_review)
+    db.refresh(terminal_task)
+    db.refresh(terminal_review)
+    assert case.assigned_agent_id == target.id
+    assert case.assignment_source is CaseAssignmentSource.MANAGER
+    assert all(
+        task.assigned_agent_id == target.id
+        for task in db.scalars(
+            select(Task).where(
+                Task.case_id == case.id,
+                Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+            )
+        )
+    )
+    assert active_review.assigned_reviewer_id == target.id
+    assert terminal_task.assigned_agent_id == original.id
+    assert terminal_review.assigned_reviewer_id == original.id
+    event = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.case_id == case.id,
+            AuditEvent.event_type == "CASE_REASSIGNED",
+        )
+    )
+    assert event is not None
+    assert event.event_metadata["new_assignee_id"] == target.id
+
+    reassigned_back = client.patch(
+        f"/api/v1/cases/{case.id}/assignment",
+        json={"assigned_agent_id": original.id},
+        headers=headers,
+    )
+    assert reassigned_back.status_code == 200
+    db.refresh(case)
+    db.refresh(active_review)
+    db.refresh(terminal_task)
+    db.refresh(terminal_review)
+    assert case.assigned_agent_id == original.id
+    assert active_review.assigned_reviewer_id == original.id
+    assert terminal_task.assigned_agent_id == original.id
+    assert terminal_review.assigned_reviewer_id == original.id
+
+    agent_auth = login(client, "agent.one@demo.local")
+    forbidden = client.patch(
+        f"/api/v1/cases/{case.id}/assignment",
+        json={"assigned_agent_id": target.id},
+        headers={"X-CSRF-Token": agent_auth["csrf_token"]},
+    )
+    assert forbidden.status_code == 403
 
 
 def test_analytics_keeps_duplicate_display_names_separate(

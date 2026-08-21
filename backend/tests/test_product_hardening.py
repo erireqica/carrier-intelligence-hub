@@ -94,7 +94,7 @@ def test_tasks_default_to_actionable_and_status_is_assignee_scoped(
         json={"status": "DISMISSED"},
         headers={"X-CSRF-Token": manager["csrf_token"]},
     )
-    assert denied.status_code == 404
+    assert denied.status_code == 403
     manager_user = db.scalar(select(User).where(User.email == "manager@demo.local"))
     assert manager_user is not None
     task.assigned_agent_id = manager_user.id
@@ -104,7 +104,7 @@ def test_tasks_default_to_actionable_and_status_is_assignee_scoped(
         json={"status": "DISMISSED"},
         headers={"X-CSRF-Token": manager["csrf_token"]},
     )
-    assert own_update.status_code == 200
+    assert own_update.status_code == 403
 
 
 def test_agent_case_correction_is_audited_and_preserves_ai_history(

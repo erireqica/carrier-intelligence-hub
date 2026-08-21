@@ -4,7 +4,7 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from app.api.dependencies import CsrfUser, CurrentUser, DbSession
+from app.api.dependencies import AgentCsrfUser, CsrfUser, CurrentUser, DbSession
 from app.api.schemas.auth import MessageResponse
 from app.api.schemas.domain import (
     GmailConnectionsResponse,
@@ -28,6 +28,7 @@ from app.integrations.gmail.oauth import (
     GMAIL_READONLY_SCOPE,
     GoogleOAuthClient,
 )
+from app.models.enums import UserRole
 from app.services import gmail as gmail_service
 from app.services.auth import resolve_session
 
@@ -51,7 +52,7 @@ def get_gmail_connections(current: CurrentUser, db: DbSession) -> GmailConnectio
 @router.post("/gmail/oauth/start", response_model=GmailOAuthStartResponse)
 def start_gmail_oauth(
     data: GmailOAuthStartRequest,
-    current: CsrfUser,
+    current: AgentCsrfUser,
     db: DbSession,
 ) -> GmailOAuthStartResponse:
     try:
@@ -75,6 +76,9 @@ def gmail_oauth_callback(request: Request, db: DbSession) -> RedirectResponse:
     current = resolve_session(db, raw_session) if raw_session else None
     state = gmail_service.consume_oauth_state(db, current, request.query_params.get("state"))
     if state is None or current is None:
+        return _frontend_redirect("invalid_state")
+    if current.user.role is not UserRole.AGENT:
+        logger.warning("Gmail OAuth callback failed stage=role_validation")
         return _frontend_redirect("invalid_state")
     if request.query_params.get("error"):
         return _frontend_redirect(
@@ -168,17 +172,6 @@ def get_recent_gmail_messages(
     connection_id: int, current: CurrentUser, db: DbSession
 ) -> list[GmailMessageListItem]:
     return gmail_service.recent_messages(db, current, connection_id)
-
-
-@router.post(
-    "/gmail-connections/{connection_id}/workflow-labels/retry",
-    response_model=MessageResponse,
-)
-def retry_gmail_workflow_labels(
-    connection_id: int, current: CsrfUser, db: DbSession
-) -> MessageResponse:
-    count = gmail_service.retry_connection_labels(db, current, connection_id)
-    return MessageResponse(message=f"Queued workflow labels for {count} Gmail threads")
 
 
 @router.delete(

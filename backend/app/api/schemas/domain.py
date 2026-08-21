@@ -9,7 +9,6 @@ from pydantic import (
     EmailStr,
     Field,
     field_validator,
-    model_validator,
 )
 
 from app.api.schemas.common import InternalEmail
@@ -89,14 +88,15 @@ class TaskListResponse(BaseModel):
 
 
 class TaskUpdate(BaseModel):
-    status: TaskStatus | None = None
-    assigned_agent_id: int | None = Field(default=None, gt=0)
+    status: TaskStatus
 
-    @model_validator(mode="after")
-    def require_supported_change(self) -> TaskUpdate:
-        if self.status is None and self.assigned_agent_id is None:
-            raise ValueError("Provide status or assigned_agent_id")
-        return self
+    model_config = ConfigDict(extra="forbid")
+
+
+class CaseAssignmentInput(BaseModel):
+    assigned_agent_id: int = Field(gt=0)
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class CaseCorrectionInput(BaseModel):
@@ -284,6 +284,8 @@ class GmailMessageListItem(BaseModel):
     processing_status: ProcessingStatus
     attachment_count: int
     case_id: int | None
+    case_assigned_agent: AgentBrief | None
+    can_open_case: bool
     review_id: int | None
     last_processing_error_code: str | None
     processing_attempt_count: int

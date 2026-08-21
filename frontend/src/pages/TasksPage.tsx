@@ -11,7 +11,7 @@ import {
   StatusBadge,
 } from '../components/ui'
 import { businessDaysFromToday, formatBusinessDate } from '../lib/format'
-import { getAgents, getTasks, reassignTask, updateTask } from '../lib/api'
+import { getAgents, getTasks, updateTask } from '../lib/api'
 import type { TaskStatus } from '../lib/types'
 
 type TaskView = 'TODO' | 'COMPLETED' | 'DISMISSED' | 'ALL'
@@ -62,11 +62,6 @@ export function TasksPage() {
       updateTask(id, status),
     onSuccess: refresh,
   })
-  const assignmentMutation = useMutation({
-    mutationFn: ({ id, agent }: { id: number; agent: number }) =>
-      reassignTask(id, agent),
-    onSuccess: refresh,
-  })
   if (tasks.isPending) return <LoadingState label="Loading tasks…" />
   if (tasks.isError)
     return (
@@ -80,7 +75,7 @@ export function TasksPage() {
         title="Tasks"
         description={
           isManager
-            ? 'Monitor work and reassign it when needed.'
+            ? 'Monitor agency task status and workload.'
             : 'Your current policy follow-up work.'
         }
       />
@@ -154,7 +149,7 @@ export function TasksPage() {
                 <th className="px-4 py-3">Due</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Assigned agent</th>
-                <th className="px-4 py-3">Controls</th>
+                {!isManager && <th className="px-4 py-3">Controls</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -184,66 +179,8 @@ export function TasksPage() {
                     <StatusBadge status={task.status} />
                   </td>
                   <td className="px-4 py-4">{task.assigned_agent.full_name}</td>
-                  <td className="px-4 py-4">
-                    {isManager ? (
-                      <div className="space-y-2">
-                        {task.assigned_agent.id === auth.data!.user.id ? (
-                          <select
-                            aria-label={`Update ${task.title}`}
-                            className="block border border-slate-300 bg-white px-2 py-1.5"
-                            value={task.status}
-                            disabled={statusMutation.isPending}
-                            onChange={(event) =>
-                              statusMutation.mutate({
-                                id: task.id,
-                                status: event.target.value as TaskStatus,
-                              })
-                            }
-                          >
-                            {[
-                              'OPEN',
-                              'IN_PROGRESS',
-                              'COMPLETED',
-                              'DISMISSED',
-                            ].map((status) => (
-                              <option key={status} value={status}>
-                                {status.replaceAll('_', ' ')}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <p className="text-xs text-slate-500">
-                            Status managed by assignee
-                          </p>
-                        )}
-                        <select
-                          aria-label={`Reassign ${task.title}`}
-                          className="border border-slate-300 bg-white px-2 py-1.5"
-                          value={task.assigned_agent.id}
-                          disabled={assignmentMutation.isPending}
-                          onChange={(event) =>
-                            assignmentMutation.mutate({
-                              id: task.id,
-                              agent: Number(event.target.value),
-                            })
-                          }
-                        >
-                          {!eligibleAgents?.some(
-                            (agent) => agent.id === task.assigned_agent.id,
-                          ) && (
-                            <option value={task.assigned_agent.id} disabled>
-                              {task.assigned_agent.full_name} (current —
-                              manager)
-                            </option>
-                          )}
-                          {eligibleAgents?.map((agent) => (
-                            <option key={agent.id} value={agent.id}>
-                              {agent.full_name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    ) : (
+                  {!isManager && (
+                    <td className="px-4 py-4">
                       <select
                         aria-label={`Update ${task.title}`}
                         className="border border-slate-300 bg-white px-2 py-1.5"
@@ -264,17 +201,17 @@ export function TasksPage() {
                           ),
                         )}
                       </select>
-                    )}
-                  </td>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
-      {(statusMutation.error ?? assignmentMutation.error) && (
+      {statusMutation.error && (
         <p className="text-sm text-red-700" role="alert">
-          {(statusMutation.error ?? assignmentMutation.error)!.message}
+          {statusMutation.error.message}
         </p>
       )}
     </div>

@@ -49,6 +49,12 @@ class PolicyStatus(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class CaseAssignmentSource(StrEnum):
+    GMAIL = "GMAIL"
+    MANAGER = "MANAGER"
+    GMAIL_HANDOFF = "GMAIL_HANDOFF"
+
+
 class MessageClassification(StrEnum):
     POLICY_ISSUED = "POLICY_ISSUED"
     PENDING_REQUIREMENTS = "PENDING_REQUIREMENTS"

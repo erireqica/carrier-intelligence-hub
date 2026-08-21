@@ -24,6 +24,7 @@ from app.db.base import Base, TimestampMixin
 from app.models.carriers import Carrier
 from app.models.enums import (
     AttachmentStatus,
+    CaseAssignmentSource,
     MessageClassification,
     PolicyStatus,
     Priority,
@@ -46,6 +47,10 @@ class PolicyCase(TimestampMixin, Base):
             "priority IN ('LOW', 'NORMAL', 'HIGH', 'URGENT')",
             name="ck_cases_priority",
         ),
+        CheckConstraint(
+            "assignment_source IN ('GMAIL', 'MANAGER', 'GMAIL_HANDOFF')",
+            name="ck_cases_assignment_source",
+        ),
         Index(
             "uq_cases_policy_identity",
             "agency_id",
@@ -62,6 +67,11 @@ class PolicyCase(TimestampMixin, Base):
     agency_id: Mapped[int] = mapped_column(ForeignKey("agencies.id"), nullable=False)
     carrier_id: Mapped[int] = mapped_column(ForeignKey("carriers.id"), nullable=False)
     assigned_agent_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    assignment_source: Mapped[CaseAssignmentSource] = mapped_column(
+        Enum(CaseAssignmentSource, native_enum=False, length=24),
+        default=CaseAssignmentSource.GMAIL,
+        nullable=False,
+    )
     client_name: Mapped[str] = mapped_column(String(200), nullable=False)
     policy_number: Mapped[str | None] = mapped_column(String(100))
     current_policy_status: Mapped[PolicyStatus] = mapped_column(

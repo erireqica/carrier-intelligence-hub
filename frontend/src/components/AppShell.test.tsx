@@ -56,6 +56,27 @@ describe('AppShell navigation', () => {
     expect(screen.getAllByText('System Logs').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Carriers').length).toBeGreaterThan(0)
     expect(screen.queryByText('My Activity')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Tasks').length).toBeGreaterThan(0)
+    expect(screen.queryByText('My Tasks')).not.toBeInTheDocument()
+  })
+
+  it('uses a fixed dynamic-viewport desktop shell', () => {
+    const { container } = renderShell('AGENT')
+    const shell = container.firstElementChild
+    expect(shell).toHaveClass('min-h-dvh', 'lg:pl-[248px]')
+    const sidebar = container.querySelector('aside')
+    expect(sidebar).toHaveClass(
+      'lg:fixed',
+      'lg:inset-y-0',
+      'lg:overflow-hidden',
+    )
+    expect(sidebar?.firstElementChild).toHaveClass('shrink-0')
+    expect(sidebar?.lastElementChild).toHaveClass('shrink-0')
+    expect(sidebar?.querySelector('nav')).toHaveClass(
+      'min-h-0',
+      'flex-1',
+      'overflow-y-auto',
+    )
   })
 
   it('clears all user-scoped cache before completing sign out', async () => {

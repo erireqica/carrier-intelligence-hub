@@ -29,7 +29,7 @@ from app.models.enums import (
     UserRole,
 )
 from app.models.gmail_labels import GmailThreadLabelSync
-from app.models.operations import Attachment, CarrierMessage, ReviewItem
+from app.models.operations import Attachment, CarrierMessage, PolicyCase, ReviewItem
 from app.models.organization import (
     GmailConnection,
     GmailOAuthCredential,
@@ -154,6 +154,8 @@ def start_oauth(
     *,
     oauth_client: GoogleOAuthClient | None = None,
 ) -> GmailOAuthStartResponse:
+    if current.user.role is not UserRole.AGENT:
+        raise HTTPException(status_code=403, detail="Only agents can connect Gmail inboxes")
     settings = get_settings()
     if not settings.gmail_oauth_configured:
         raise HTTPException(status_code=503, detail="Gmail integration is not configured")
@@ -216,6 +218,8 @@ def complete_oauth(
     *,
     cipher: TokenCipher | None = None,
 ) -> GmailConnection:
+    if current.user.role is not UserRole.AGENT:
+        raise HTTPException(status_code=403, detail="Only agents can connect Gmail inboxes")
     if GMAIL_MODIFY_SCOPE not in tokens.granted_scopes:
         raise PermissionError("Required Gmail workflow-label scope was not granted")
     gmail_address = normalize_email(tokens.gmail_address)
@@ -360,6 +364,34 @@ def recent_messages(
         .order_by(CarrierMessage.received_at.desc())
         .limit(50)
     ).all()
+    case_ids = {message.case_id for message, *_ in rows if message.case_id is not None}
+    cases_by_id = (
+        {
+            case.id: case
+            for case in db.scalars(
+                select(PolicyCase)
+                .where(PolicyCase.id.in_(case_ids))
+                .options(joinedload(PolicyCase.assigned_agent))
+            ).all()
+        }
+        if case_ids
+        else {}
+    )
+    # Reuse the Case service's authorization scope so message metadata cannot
+    # accidentally grant a link that the Case endpoint itself would reject.
+    from app.services.operations import scoped_cases_query
+
+    accessible_case_ids = (
+        set(
+            db.scalars(
+                scoped_cases_query(current)
+                .where(PolicyCase.id.in_(case_ids))
+                .with_only_columns(PolicyCase.id)
+            ).all()
+        )
+        if case_ids
+        else set()
+    )
     return [
         GmailMessageListItem(
             id=message.id,
@@ -374,6 +406,17 @@ def recent_messages(
             processing_status=message.processing_status,
             attachment_count=attachment_count,
             case_id=message.case_id,
+            case_assigned_agent=(
+                AgentBrief(
+                    id=cases_by_id[message.case_id].assigned_agent.id,
+                    full_name=cases_by_id[message.case_id].assigned_agent.full_name,
+                    email=cases_by_id[message.case_id].assigned_agent.email,
+                )
+                if message.case_id in cases_by_id
+                and cases_by_id[message.case_id].assigned_agent is not None
+                else None
+            ),
+            can_open_case=message.case_id in accessible_case_ids,
             review_id=review_id,
             last_processing_error_code=message.last_processing_error_code,
             processing_attempt_count=message.processing_attempt_count,
@@ -382,30 +425,6 @@ def recent_messages(
         )
         for message, attachment_count, review_id, sync_status in rows
     ]
-
-
-def retry_connection_labels(db: Session, current: AuthContext, connection_id: int) -> int:
-    connection = get_connection(db, current, connection_id, manager_can_access=True)
-    from app.services.gmail_labels import enqueue_thread_label_sync
-
-    thread_ids = db.scalars(
-        select(CarrierMessage.gmail_thread_id)
-        .where(
-            CarrierMessage.gmail_connection_id == connection.id,
-            CarrierMessage.gmail_thread_id.is_not(None),
-            CarrierMessage.gmail_thread_id != "",
-        )
-        .distinct()
-    ).all()
-    for thread_id in thread_ids:
-        enqueue_thread_label_sync(
-            db,
-            agency_id=connection.agency_id,
-            gmail_connection_id=connection.id,
-            gmail_thread_id=thread_id,
-        )
-    db.commit()
-    return len(thread_ids)
 
 
 def disconnect(

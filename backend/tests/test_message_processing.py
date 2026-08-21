@@ -23,6 +23,7 @@ from app.models.audit import AuditEvent
 from app.models.carriers import Carrier
 from app.models.enums import (
     AttachmentStatus,
+    CaseAssignmentSource,
     GmailConnectionStatus,
     GmailLabelSyncStatus,
     MessageClassification,
@@ -589,6 +590,7 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
     assert result.processing_status is ProcessingStatus.PROCESSED
     assert result.case_id == existing.id
     assert existing.assigned_agent_id == new_owner.id
+    assert existing.assignment_source is CaseAssignmentSource.GMAIL_HANDOFF
     assert completed.assigned_agent_id == former_owner.id
     assert completed.status is TaskStatus.COMPLETED
     assert resolved.assigned_reviewer_id == former_owner.id
@@ -665,6 +667,82 @@ def test_different_mailbox_policy_collision_routes_to_unlinked_review(
     assert review.assigned_reviewer_id == agents[1].id
     assert message.case_id is None
     assert existing.assigned_agent_id == former_owner_id
+    assert not seeded_db.scalars(
+        select(Task).where(Task.source_carrier_message_id == message.id)
+    ).all()
+
+
+def test_manager_case_assignment_remains_authoritative_for_future_gmail_messages(
+    seeded_db: Session,
+) -> None:
+    agents = seeded_db.scalars(
+        select(User).where(User.role == UserRole.AGENT).order_by(User.id)
+    ).all()
+    existing = seeded_db.scalar(
+        select(PolicyCase).where(PolicyCase.policy_number == "AMR-98765432")
+    )
+    assert len(agents) == 2 and existing is not None
+    gmail_owner, assigned_agent = agents
+    existing.assigned_agent_id = assigned_agent.id
+    existing.assignment_source = CaseAssignmentSource.MANAGER
+    for task in existing.tasks:
+        if task.status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+            task.assigned_agent_id = assigned_agent.id
+    seeded_db.commit()
+    message = create_received_message(
+        seeded_db,
+        client="John Doe",
+        policy="AMR-98765432",
+        subject_suffix="manager-assignment-authoritative",
+        owner=gmail_owner,
+        gmail_address="originating-agent@gmail.test",
+    )
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(analysis_result(client="John Doe", policy="AMR-98765432")),
+    )
+
+    seeded_db.refresh(existing)
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.case_id == existing.id
+    assert "CASE_OWNER_CONFLICT" not in result.validation_flags
+    assert existing.assigned_agent_id == assigned_agent.id
+    assert existing.assignment_source is CaseAssignmentSource.MANAGER
+    new_tasks = seeded_db.scalars(
+        select(Task).where(Task.source_carrier_message_id == message.id)
+    ).all()
+    assert new_tasks and all(task.assigned_agent_id == assigned_agent.id for task in new_tasks)
+
+
+def test_legacy_manager_mailbox_cannot_create_manager_owned_operational_work(
+    seeded_db: Session,
+) -> None:
+    manager = seeded_db.scalar(select(User).where(User.role == UserRole.MANAGER))
+    assert manager is not None
+    message = create_received_message(
+        seeded_db,
+        client="Manager Mailbox Client",
+        policy="MANAGER-MAILBOX-1",
+        subject_suffix="manager-mailbox",
+        owner=manager,
+        gmail_address="legacy-manager@gmail.test",
+    )
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(
+            analysis_result(client="Manager Mailbox Client", policy="MANAGER-MAILBOX-1")
+        ),
+    )
+
+    review = seeded_db.get(ReviewItem, result.review_id)
+    assert result.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert result.case_id is None
+    assert "OPERATIONAL_OWNER_REQUIRED" in result.validation_flags
+    assert review is not None and review.assigned_reviewer_id is None
     assert not seeded_db.scalars(
         select(Task).where(Task.source_carrier_message_id == message.id)
     ).all()

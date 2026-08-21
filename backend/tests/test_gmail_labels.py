@@ -1210,7 +1210,7 @@ def test_google_mailbox_rejects_empty_or_malformed_thread_labels(response: dict)
         mailbox.get_thread_label_state("thread-malformed")
 
 
-def test_manual_label_retry_api_is_semantic_csrf_protected_and_scoped(
+def test_message_label_reconciliation_is_semantic_csrf_protected_and_scoped(
     client: TestClient, seeded_db: Session, login
 ) -> None:
     connection = create_connection(seeded_db, address="label-api@gmail.test")
@@ -1235,11 +1235,3 @@ def test_manual_label_retry_api_is_semantic_csrf_protected_and_scoped(
         headers={"X-CSRF-Token": owner["csrf_token"]},
     )
     assert queued.status_code == 200
-
-    manager = login(client, "manager@demo.local")
-    repaired = client.post(
-        f"/api/v1/gmail-connections/{connection.id}/workflow-labels/retry",
-        headers={"X-CSRF-Token": manager["csrf_token"]},
-    )
-    assert repaired.status_code == 200
-    assert "1 Gmail threads" in repaired.json()["message"]

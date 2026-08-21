@@ -31,7 +31,14 @@ from app.api.schemas.domain import (
 from app.core.time import utc_now
 from app.integrations.ai.schemas import AnalysisResult
 from app.models.audit import AuditEvent
-from app.models.enums import PolicyStatus, Priority, ReviewStatus, TaskStatus, UserRole
+from app.models.enums import (
+    CaseAssignmentSource,
+    PolicyStatus,
+    Priority,
+    ReviewStatus,
+    TaskStatus,
+    UserRole,
+)
 from app.models.operations import (
     Attachment,
     CarrierMessage,
@@ -262,6 +269,75 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
     )
 
 
+def assign_case(
+    db: Session,
+    current: AuthContext,
+    case_id: int,
+    assigned_agent_id: int,
+) -> CaseDetail:
+    case = db.scalar(
+        select(PolicyCase).where(
+            PolicyCase.id == case_id,
+            PolicyCase.agency_id == current.user.agency_id,
+        )
+    )
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    assignee = db.scalar(
+        select(User).where(
+            User.id == assigned_agent_id,
+            User.agency_id == current.user.agency_id,
+            User.role == UserRole.AGENT,
+            User.is_active.is_(True),
+        )
+    )
+    if assignee is None:
+        raise HTTPException(status_code=422, detail="Assigned agent is invalid")
+
+    previous_assignee_id = case.assigned_agent_id
+    if (
+        previous_assignee_id == assignee.id
+        and case.assignment_source is CaseAssignmentSource.MANAGER
+    ):
+        return get_case_detail(db, current, case.id)
+
+    active_tasks = db.scalars(
+        select(Task).where(
+            Task.case_id == case.id,
+            Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+        )
+    ).all()
+    active_reviews = db.scalars(
+        select(ReviewItem).where(
+            ReviewItem.case_id == case.id,
+            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+        )
+    ).all()
+    case.assigned_agent_id = assignee.id
+    case.assignment_source = CaseAssignmentSource.MANAGER
+    for task in active_tasks:
+        task.assigned_agent_id = assignee.id
+    for review in active_reviews:
+        review.assigned_reviewer_id = assignee.id
+    record_audit_event(
+        db,
+        agency_id=current.user.agency_id,
+        actor_user_id=current.user.id,
+        case_id=case.id,
+        event_type="CASE_REASSIGNED" if previous_assignee_id is not None else "CASE_ASSIGNED",
+        description="Case assignment changed",
+        metadata={
+            "previous_assignee_id": previous_assignee_id,
+            "new_assignee_id": assignee.id,
+            "active_tasks_transferred": len(active_tasks),
+            "active_reviews_transferred": len(active_reviews),
+        },
+    )
+    db.commit()
+    db.expire_all()
+    return get_case_detail(db, current, case.id)
+
+
 def list_tasks(
     db: Session,
     current: AuthContext,
@@ -314,39 +390,20 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
     )
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
-
-    if update.assigned_agent_id is not None and current.user.role is not UserRole.MANAGER:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
-    if update.status is not None and task.assigned_agent_id != current.user.id:
+    if current.user.role is not UserRole.AGENT:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent access required")
+    if task.assigned_agent_id != current.user.id or task.case.assigned_agent_id != current.user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found",
         )
 
     previous_status = task.status
-    previous_assignee_id = task.assigned_agent_id
-    status_changed = update.status is not None and update.status != task.status
-    assignment_changed = (
-        update.assigned_agent_id is not None and update.assigned_agent_id != task.assigned_agent_id
-    )
+    status_changed = update.status != task.status
 
     if status_changed:
-        assert update.status is not None
         task.status = update.status
         task.completed_at = utc_now() if update.status is TaskStatus.COMPLETED else None
-    if assignment_changed:
-        assert update.assigned_agent_id is not None
-        assignee = db.scalar(
-            select(User).where(
-                User.id == update.assigned_agent_id,
-                User.agency_id == current.user.agency_id,
-                User.is_active.is_(True),
-            )
-        )
-        if assignee is None:
-            raise HTTPException(status_code=422, detail="Assigned agent is invalid")
-        task.assigned_agent = assignee
-        task.assigned_agent_id = assignee.id
 
     if status_changed:
         record_audit_event(
@@ -362,21 +419,7 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
                 "new_status": task.status.value,
             },
         )
-    if assignment_changed:
-        record_audit_event(
-            db,
-            agency_id=current.user.agency_id,
-            actor_user_id=current.user.id,
-            case_id=task.case_id,
-            task_id=task.id,
-            event_type="TASK_ASSIGNED",
-            description=f"Task assignment changed: {task.title}",
-            metadata={
-                "previous_assignee_id": previous_assignee_id,
-                "new_assignee_id": task.assigned_agent_id,
-            },
-        )
-    if not status_changed and not assignment_changed:
+    if not status_changed:
         return task_item(task, current.agency.timezone)
 
     if status_changed and task.source_message is not None:

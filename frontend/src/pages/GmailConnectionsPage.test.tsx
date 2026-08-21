@@ -16,11 +16,10 @@ import {
   getGmailMessages,
   processMessage,
   redirectToOAuth,
-  retryGmailWorkflowLabels,
   startGmailOAuth,
   syncGmailConnection,
 } from '../lib/api'
-import type { GmailConnection } from '../lib/types'
+import type { GmailConnection, GmailMessage } from '../lib/types'
 import { authFixture } from '../test/fixtures'
 import { GmailConnectionsPage } from './GmailConnectionsPage'
 
@@ -31,7 +30,6 @@ vi.mock('../lib/api', () => ({
   getGmailMessages: vi.fn(),
   processMessage: vi.fn(),
   redirectToOAuth: vi.fn(),
-  retryGmailWorkflowLabels: vi.fn(),
   startGmailOAuth: vi.fn(),
   syncGmailConnection: vi.fn(),
 }))
@@ -49,6 +47,24 @@ const baseConnection: GmailConnection = {
   can_apply_workflow_labels: true,
   pending_label_sync_count: 0,
   failed_label_sync_count: 0,
+}
+
+const baseMessage: GmailMessage = {
+  id: 21,
+  carrier: { id: 4, name: 'Acme Carrier', code: 'ACME' },
+  sender: 'notices@acme.example',
+  subject: 'Renewal notice',
+  received_at: '2026-08-20T09:00:00Z',
+  processing_status: 'RECEIVED',
+  attachment_count: 2,
+  case_id: null,
+  case_assigned_agent: null,
+  can_open_case: false,
+  review_id: null,
+  last_processing_error_code: null,
+  processing_attempt_count: 0,
+  processing_next_retry_at: null,
+  label_sync_status: 'PENDING',
 }
 
 function renderPage(
@@ -182,9 +198,6 @@ describe('GmailConnectionsPage', () => {
     )
     renderPage()
 
-    fireEvent.click(
-      await screen.findByText('Troubleshooting and manual recovery'),
-    )
     fireEvent.click(await screen.findByRole('button', { name: 'Sync now' }))
     expect(
       await screen.findByRole('button', { name: 'Syncing…' }),
@@ -213,35 +226,117 @@ describe('GmailConnectionsPage', () => {
     vi.mocked(syncGmailConnection).mockRejectedValue(
       new Error('Gmail could not be reached.'),
     )
-    vi.mocked(getGmailMessages).mockResolvedValue([
-      {
-        id: 21,
-        carrier: { id: 4, name: 'Acme Carrier', code: 'ACME' },
-        sender: 'notices@acme.example',
-        subject: 'Renewal notice',
-        received_at: '2026-08-20T09:00:00Z',
-        processing_status: 'RECEIVED',
-        attachment_count: 2,
-        case_id: null,
-        review_id: null,
-        last_processing_error_code: null,
-        processing_attempt_count: 0,
-        processing_next_retry_at: null,
-        label_sync_status: 'PENDING',
-      },
-    ])
+    vi.mocked(getGmailMessages).mockResolvedValue([baseMessage])
     renderPage()
 
+    expect(getGmailMessages).not.toHaveBeenCalled()
+    const recentMessages = await screen.findByText(
+      'Recent ingested carrier messages',
+    )
+    fireEvent.click(recentMessages)
     expect(await screen.findByText('Renewal notice')).toBeInTheDocument()
     expect(screen.getByText('RECEIVED')).toBeInTheDocument()
-    fireEvent.click(screen.getByText('Manual recovery'))
-    fireEvent.click(screen.getByRole('button', { name: 'Analyze now' }))
-    await waitFor(() => expect(processMessage).toHaveBeenCalledWith(21))
-    fireEvent.click(screen.getByText('Troubleshooting and manual recovery'))
+    expect(screen.getByText('Queued for analysis')).toBeInTheDocument()
+    expect(screen.getByText('Labels queued')).toBeInTheDocument()
+    expect(getGmailMessages).toHaveBeenCalledWith(11)
+    expect(screen.queryByText('Sync manually')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Analyze now' }),
+    ).not.toBeInTheDocument()
+    expect(processMessage).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Gmail could not be reached.',
     )
+  })
+
+  it('keeps processing passive and exposes recovery only after retries exhaust', async () => {
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: true,
+      connections: [baseConnection],
+    })
+    vi.mocked(getGmailMessages).mockResolvedValue([
+      {
+        ...baseMessage,
+        id: 22,
+        subject: 'Processing message',
+        processing_status: 'PROCESSING',
+        label_sync_status: 'PROCESSING',
+      },
+      {
+        ...baseMessage,
+        id: 23,
+        subject: 'Scheduled retry message',
+        processing_status: 'FAILED',
+        processing_attempt_count: 1,
+        processing_next_retry_at: '2026-08-20T09:10:00Z',
+        label_sync_status: 'RETRY_WAIT',
+      },
+      {
+        ...baseMessage,
+        id: 24,
+        subject: 'Exhausted retry message',
+        processing_status: 'FAILED',
+        processing_attempt_count: 3,
+        last_processing_error_code: 'AI_PROVIDER_ERROR',
+        label_sync_status: 'FAILED',
+      },
+      {
+        ...baseMessage,
+        id: 25,
+        subject: 'Accessible case message',
+        processing_status: 'PROCESSED',
+        case_id: 31,
+        case_assigned_agent: {
+          id: 2,
+          full_name: 'Elena Torres',
+          email: 'agent.one@demo.local',
+        },
+        can_open_case: true,
+        label_sync_status: 'APPLIED',
+      },
+      {
+        ...baseMessage,
+        id: 26,
+        subject: 'Reassigned case message',
+        processing_status: 'PROCESSED',
+        case_id: 32,
+        case_assigned_agent: {
+          id: 3,
+          full_name: 'Marcus Lee',
+          email: 'agent.two@demo.local',
+        },
+        can_open_case: false,
+        label_sync_status: 'NEEDS_PERMISSION',
+      },
+    ])
+    renderPage()
+
+    fireEvent.click(await screen.findByText('Recent ingested carrier messages'))
+    expect(await screen.findByText('Analyzing…')).toBeInTheDocument()
+    expect(screen.getByText('Retry scheduled')).toBeInTheDocument()
+    expect(screen.getByText('Updating labels…')).toBeInTheDocument()
+    expect(screen.getByText('Label retry scheduled')).toBeInTheDocument()
+    expect(screen.getByText('Labels need attention')).toBeInTheDocument()
+    expect(screen.getByText('Gmail permissions required')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open case' })).toHaveAttribute(
+      'href',
+      '/cases/31',
+    )
+    expect(
+      screen.queryByRole('link', { name: /case.*32/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText('Managed by Marcus Lee')).toBeInTheDocument()
+    expect(
+      screen.getByText('Case assigned to another agent'),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Analyze now' }),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Sync manually'))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry analysis' }))
+    await waitFor(() => expect(processMessage).toHaveBeenCalledWith(24))
   })
 
   it('shows OAuth callback feedback and keeps manager actions read-only', async () => {
@@ -265,9 +360,11 @@ describe('GmailConnectionsPage', () => {
       screen.queryByRole('button', { name: 'Disconnect' }),
     ).not.toBeInTheDocument()
     expect(
-      screen.getByText(
-        /Managers can view, sync, and retry managed-label delivery/,
-      ),
+      screen.queryByRole('button', { name: 'Connect Gmail' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeInTheDocument()
+    expect(
+      screen.getByText(/Managers can monitor and sync agency connections/),
     ).toBeInTheDocument()
     expect(disconnectGmailConnection).not.toHaveBeenCalled()
   })
@@ -297,23 +394,26 @@ describe('GmailConnectionsPage', () => {
     ).toBeInTheDocument()
   })
 
-  it('queues managed-label repair without accepting label IDs', async () => {
+  it('does not expose manual workflow-label retry controls', async () => {
     vi.mocked(getGmailConnections).mockResolvedValue({
       configured: true,
-      connections: [{ ...baseConnection, pending_label_sync_count: 1 }],
+      connections: [
+        {
+          ...baseConnection,
+          pending_label_sync_count: 1,
+          failed_label_sync_count: 1,
+        },
+      ],
     })
-    vi.mocked(retryGmailWorkflowLabels).mockResolvedValue({ message: 'Queued' })
     renderPage()
 
-    fireEvent.click(
-      await screen.findByText('Troubleshooting and manual recovery'),
-    )
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Retry workflow labels' }),
-    )
-    await waitFor(() =>
-      expect(retryGmailWorkflowLabels).toHaveBeenCalledWith(11),
-    )
+    expect(
+      await screen.findByRole('button', { name: 'Sync now' }),
+    ).toBeVisible()
+    expect(
+      screen.queryByRole('button', { name: 'Retry workflow labels' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByText(/1 pending.*1 need attention/)).toBeInTheDocument()
   })
 
   it('shows the dedicated duplicate-inbox OAuth message', async () => {

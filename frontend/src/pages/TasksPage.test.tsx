@@ -1,9 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useCurrentUser } from '../app/auth'
-import { getAgents, getTasks, reassignTask, updateTask } from '../lib/api'
+import { getAgents, getTasks, updateTask } from '../lib/api'
 import { authFixture } from '../test/fixtures'
 import { TasksPage } from './TasksPage'
 
@@ -11,13 +17,14 @@ vi.mock('../app/auth', () => ({ useCurrentUser: vi.fn() }))
 vi.mock('../lib/api', () => ({
   getAgents: vi.fn(),
   getTasks: vi.fn(),
-  reassignTask: vi.fn(),
   updateTask: vi.fn(),
 }))
 
 const mockedAuth = vi.mocked(useCurrentUser)
 const mockedGetTasks = vi.mocked(getTasks)
 const mockedUpdateTask = vi.mocked(updateTask)
+
+afterEach(cleanup)
 
 describe('TasksPage mutations', () => {
   it('sends an explicit task status update', async () => {
@@ -71,7 +78,7 @@ describe('TasksPage mutations', () => {
     )
   })
 
-  it('gives managers status controls for their own task and reassignment controls', async () => {
+  it('keeps even legacy manager-assigned tasks operationally read-only', async () => {
     const manager = authFixture('MANAGER')
     mockedAuth.mockReturnValue({ data: manager } as ReturnType<
       typeof useCurrentUser
@@ -105,7 +112,6 @@ describe('TasksPage mutations', () => {
       ],
       page: { page: 1, page_size: 100, total: 1, pages: 1 },
     })
-    vi.mocked(reassignTask).mockResolvedValue((await mockedGetTasks()).items[0])
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
@@ -114,16 +120,19 @@ describe('TasksPage mutations', () => {
         <TasksPage />
       </QueryClientProvider>,
     )
-    expect(await screen.findByLabelText('Reassign Agent decision')).toHaveValue(
-      String(manager.user.id),
-    )
+    await screen.findByText('Agent decision')
     expect(
-      screen.getByRole('option', { name: 'Morgan Reed (current — manager)' }),
-    ).toBeDisabled()
-    expect(screen.getByLabelText('Update Agent decision')).toBeInTheDocument()
+      screen.queryByRole('columnheader', { name: 'Controls' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('Update Agent decision'),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText('Reassign Agent decision'),
+    ).not.toBeInTheDocument()
   })
 
-  it('shows another assignee task status as read-only while preserving reassignment', async () => {
+  it('shows agent-owned task status as read-only without task reassignment', async () => {
     const manager = authFixture('MANAGER')
     const agent = authFixture('AGENT').user
     mockedAuth.mockReturnValue({ data: manager } as ReturnType<
@@ -158,14 +167,15 @@ describe('TasksPage mutations', () => {
         <TasksPage />
       </QueryClientProvider>,
     )
+    await screen.findByText('Assigned agent decision')
     expect(
-      await screen.findByText('Status managed by assignee'),
-    ).toBeInTheDocument()
+      screen.queryByRole('columnheader', { name: 'Controls' }),
+    ).not.toBeInTheDocument()
     expect(
       screen.queryByLabelText('Update Assigned agent decision'),
     ).not.toBeInTheDocument()
     expect(
-      screen.getByLabelText('Reassign Assigned agent decision'),
-    ).toBeInTheDocument()
+      screen.queryByLabelText('Reassign Assigned agent decision'),
+    ).not.toBeInTheDocument()
   })
 })

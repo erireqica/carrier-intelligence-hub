@@ -22,6 +22,7 @@ from app.integrations.pdf import extract_pdf
 from app.models.enums import (
     AttachmentStatus,
     AuditSeverity,
+    CaseAssignmentSource,
     GmailConnectionStatus,
     MessageClassification,
     PolicyStatus,
@@ -39,7 +40,7 @@ from app.models.operations import (
     ReviewItem,
     Task,
 )
-from app.models.organization import Agency, GmailConnection, GmailOAuthCredential
+from app.models.organization import Agency, GmailConnection, GmailOAuthCredential, User
 from app.processing.source import SourceBundle, build_source_bundle
 from app.processing.validation import (
     POLICY_CLASSIFICATIONS,
@@ -82,6 +83,9 @@ REVIEW_REASONS = {
         "This policy is currently owned through a different Gmail inbox and requires "
         "a safe ownership decision."
     ),
+    "OPERATIONAL_OWNER_REQUIRED": (
+        "This communication cannot create operational work until an active agent owns the case."
+    ),
     "INVALID_PREMIUM": "The proposed premium or currency is invalid.",
     "INVALID_DATE": "A proposed date is invalid.",
     "INVALID_DEADLINE": "The proposed deadline is invalid.",
@@ -120,8 +124,28 @@ def _connection(db: Session, message: CarrierMessage) -> GmailConnection | None:
     return db.scalar(
         select(GmailConnection)
         .where(GmailConnection.id == message.gmail_connection_id)
-        .options(joinedload(GmailConnection.oauth_credential))
+        .options(joinedload(GmailConnection.oauth_credential), joinedload(GmailConnection.owner))
     )
+
+
+def _active_agent_id(db: Session, user_id: int | None) -> int | None:
+    if user_id is None:
+        return None
+    user = db.get(User, user_id)
+    if user is None or user.role is not UserRole.AGENT or not user.is_active:
+        return None
+    return user.id
+
+
+def _connection_agent_id(db: Session, message: CarrierMessage) -> int | None:
+    connection = _connection(db, message)
+    if connection is None or connection.status is GmailConnectionStatus.DISCONNECTED:
+        return None
+    return _active_agent_id(db, connection.user_id)
+
+
+def _case_has_operational_agent(db: Session, case: PolicyCase | None) -> bool:
+    return case is not None and _active_agent_id(db, case.assigned_agent_id) is not None
 
 
 def claim_message(
@@ -461,8 +485,12 @@ def _reconcile_case_owner(
     connection = _connection(db, message)
     if connection is None or connection.status is GmailConnectionStatus.DISCONNECTED:
         return True
+    if case.assignment_source is CaseAssignmentSource.MANAGER:
+        return not _case_has_operational_agent(db, case)
     if case.assigned_agent_id == connection.user_id:
-        return False
+        return not _case_has_operational_agent(db, case)
+    if _active_agent_id(db, connection.user_id) is None:
+        return True
 
     former_owner_id = case.assigned_agent_id
     historical_connection_id = db.scalar(
@@ -499,6 +527,7 @@ def _reconcile_case_owner(
         )
     ).all()
     case.assigned_agent_id = connection.user_id
+    case.assignment_source = CaseAssignmentSource.GMAIL_HANDOFF
     for task in active_tasks:
         task.assigned_agent_id = connection.user_id
     for review in active_reviews:
@@ -562,10 +591,10 @@ def _review_for_flags(
     )
     connection = _connection(db, message)
     reviewer_id = (
-        existing_case.assigned_agent_id
-        if existing_case and existing_case.assigned_agent_id
-        else connection.user_id
-        if connection
+        _active_agent_id(db, existing_case.assigned_agent_id)
+        if existing_case is not None
+        else _active_agent_id(db, connection.user_id)
+        if connection is not None
         else None
     )
     if review is None:
@@ -640,10 +669,14 @@ def _finalize(
             connection = _connection(db, message)
             if connection is None:
                 raise RuntimeError("Message connection unavailable")
+            assigned_agent_id = _active_agent_id(db, connection.user_id)
+            if assigned_agent_id is None:
+                raise RuntimeError("No active agent is available for the case")
             case = PolicyCase(
                 agency_id=message.agency_id,
                 carrier_id=message.carrier_id,
-                assigned_agent_id=connection.user_id,
+                assigned_agent_id=assigned_agent_id,
+                assignment_source=CaseAssignmentSource.GMAIL,
                 client_name=result.client_name,
                 policy_number=result.policy_number,
                 current_policy_status=result.policy_status,
@@ -683,10 +716,7 @@ def _finalize(
 
     tasks_created = 0
     if case is not None:
-        connection = _connection(db, message)
-        assigned_agent_id = case.assigned_agent_id or (
-            connection.user_id if connection is not None else None
-        )
+        assigned_agent_id = _active_agent_id(db, case.assigned_agent_id)
         if assigned_agent_id is None:
             raise RuntimeError("No task assignee is available")
         for index, action in enumerate(result.action_items):
@@ -864,6 +894,11 @@ def process_claimed_message(
     owner_conflict = _reconcile_case_owner(db, message, case)
     if owner_conflict:
         flags.add("CASE_OWNER_CONFLICT")
+    elif validated.result.classification in POLICY_CLASSIFICATIONS and (
+        (case is not None and not _case_has_operational_agent(db, case))
+        or (case is None and _connection_agent_id(db, message) is None)
+    ):
+        flags.add("OPERATIONAL_OWNER_REQUIRED")
     if (
         case
         and validated.result.client_name
@@ -1119,6 +1154,11 @@ def apply_review(
     case = _case_for_result(db, message, validated.result)
     if _reconcile_case_owner(db, message, case):
         blocking.add("CASE_OWNER_CONFLICT")
+    elif validated.result.classification in POLICY_CLASSIFICATIONS and (
+        (case is not None and not _case_has_operational_agent(db, case))
+        or (case is None and _connection_agent_id(db, message) is None)
+    ):
+        blocking.add("OPERATIONAL_OWNER_REQUIRED")
     if (
         case
         and validated.result.client_name

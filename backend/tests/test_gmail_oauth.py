@@ -338,6 +338,14 @@ def test_oauth_start_requires_authentication_and_csrf(
     assert client.post("/api/v1/gmail/oauth/start", json={}).status_code == 401
     login(client, "agent.one@demo.local")
     assert client.post("/api/v1/gmail/oauth/start", json={}).status_code == 403
+    manager = login(client, "manager@demo.local")
+    forbidden = client.post(
+        "/api/v1/gmail/oauth/start",
+        json={},
+        headers={"X-CSRF-Token": manager["csrf_token"]},
+    )
+    assert forbidden.status_code == 403
+    assert forbidden.json()["detail"] == "Agent access required"
 
 
 def test_oauth_state_is_strong_unique_hashed_and_session_bound(
