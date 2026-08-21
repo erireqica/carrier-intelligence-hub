@@ -21,6 +21,8 @@ from app.api.schemas.domain import (
     MessageItem,
     PageInfo,
     ReviewDetailResponse,
+    ReviewIssue,
+    ReviewIssueValue,
     ReviewItemResponse,
     ReviewListResponse,
     ReviewUpdate,
@@ -28,6 +30,7 @@ from app.api.schemas.domain import (
     TaskListResponse,
     TaskUpdate,
 )
+from app.core.config import get_settings
 from app.core.time import utc_now
 from app.integrations.ai.schemas import AnalysisResult
 from app.models.audit import AuditEvent
@@ -48,6 +51,8 @@ from app.models.operations import (
     Task,
 )
 from app.models.organization import User
+from app.processing.conflicts import detect_source_conflicts
+from app.processing.source import build_source_bundle
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
 from app.services.gmail_labels import enqueue_for_message
@@ -600,9 +605,82 @@ def message_analysis_response(
 def get_review_detail(db: Session, current: AuthContext, review_id: int) -> ReviewDetailResponse:
     item = get_review_entity(db, current, review_id)
     base = review_item_response(item)
+    bundle = build_source_bundle(item.carrier_message, max_chars=get_settings().ai_max_source_chars)
+    source_conflicts = detect_source_conflicts(bundle)
+    issues = [
+        ReviewIssue(
+            code=conflict.code,
+            category="SOURCE_CONFLICT",
+            title=conflict.title,
+            message=f"{conflict.message} Confirm the correct value before applying.",
+            field_name=conflict.field_name,
+            human_resolvable=True,
+            values=[
+                ReviewIssueValue(
+                    source_id=value.source_id,
+                    source_label=value.source_label,
+                    value=value.value,
+                )
+                for value in conflict.values
+            ],
+        )
+        for conflict in source_conflicts
+    ]
+    if not issues and item.reason_code == "CASE_MATCH_CONFLICT":
+        from app.services.message_processing import _case_candidates
+
+        proposed = None
+        if item.carrier_message.analysis is not None:
+            try:
+                proposed = AnalysisResult.model_validate(
+                    item.carrier_message.analysis.model_result_json
+                )
+            except ValueError:
+                proposed = None
+        candidates = _case_candidates(db, item.carrier_message, proposed) if proposed else []
+        issues.append(
+            ReviewIssue(
+                code="CASE_MATCH_CONFLICT",
+                category="CASE_MATCH_CONFLICT",
+                title="Multiple cases match this message",
+                message=(
+                    "Carrier Hub found more than one agency case with the same reliable "
+                    "identity. Confirm the correct case before applying."
+                ),
+                field_name="case_id",
+                human_resolvable=True,
+                values=[
+                    ReviewIssueValue(
+                        source_id=f"case:{case.id}",
+                        source_label=f"Existing case {case.id}",
+                        value=f"{case.client_name} · {case.policy_number}",
+                    )
+                    for case in candidates
+                ],
+            )
+        )
+    if not issues:
+        ownership_issue = item.reason_code in {
+            "CASE_OWNER_CONFLICT",
+            "OPERATIONAL_OWNER_REQUIRED",
+        }
+        issues.append(
+            ReviewIssue(
+                code=item.reason_code,
+                category="OWNERSHIP" if ownership_issue else "CONTENT_VALIDATION",
+                title=(
+                    "Case ownership requires manager attention"
+                    if ownership_issue
+                    else "Carrier information needs confirmation"
+                ),
+                message=item.reason,
+                human_resolvable=not ownership_issue,
+            )
+        )
     return ReviewDetailResponse(
         **base.model_dump(),
         analysis=_message_analysis_response(db, item.carrier_message),
+        issues=issues,
     )
 
 

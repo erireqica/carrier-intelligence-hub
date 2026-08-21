@@ -54,6 +54,7 @@ from app.services.message_processing import (
     process_claimed_message,
     process_message,
     recover_stale_processing,
+    reevaluate_stored_review,
 )
 from app.services.operations import get_case_detail
 from app.workers.message_process import (
@@ -129,6 +130,60 @@ def analysis_result(
             ),
         ],
         overall_confidence=confidence,
+        uncertainties=([] if confidence >= 0.7 else ["Synthetic critical-value ambiguity"]),
+    )
+
+
+def policy_issued_result(
+    *,
+    client: str,
+    policy: str,
+    premium: str,
+    currency: str,
+    status: PolicyStatus = PolicyStatus.ISSUED,
+) -> AnalysisResult:
+    return AnalysisResult(
+        classification=MessageClassification.POLICY_ISSUED,
+        summary=f"The carrier issued policy {policy} for {client}.",
+        priority=Priority.NORMAL,
+        client_name=client,
+        policy_number=policy,
+        policy_status=status,
+        premium_amount=premium,
+        currency=currency,
+        effective_date="2026-08-28",
+        deadline=Deadline(
+            raw_text=None,
+            explicit_date=None,
+            relative_count=None,
+            relative_unit=None,
+        ),
+        requirements=[],
+        action_items=[],
+        evidence=[
+            Evidence(field_name="client_name", source_id="email", excerpt=f"Client Name: {client}"),
+            Evidence(
+                field_name="policy_number",
+                source_id="email",
+                excerpt=f"Policy Number: {policy}",
+            ),
+            Evidence(
+                field_name="policy_status",
+                source_id="email",
+                excerpt=f"Policy Status: {status.value.title()}",
+            ),
+            Evidence(
+                field_name="premium_amount",
+                source_id="email",
+                excerpt="Premium Amount: $1,250.00 USD",
+            ),
+            Evidence(
+                field_name="effective_date",
+                source_id="email",
+                excerpt="Effective Date: August 28, 2026",
+            ),
+        ],
+        overall_confidence=0.99,
         uncertainties=[],
     )
 
@@ -173,6 +228,28 @@ def create_received_message(
     db.add(message)
     db.commit()
     return message
+
+
+def add_policy_conflict_attachment(
+    db: Session, message: CarrierMessage, *, conflicting_policy: str
+) -> Attachment:
+    attachment = Attachment(
+        carrier_message_id=message.id,
+        external_id=f"conflict-{message.gmail_message_id}",
+        filename="conflicting-policy.pdf",
+        mime_type="application/pdf",
+        size_bytes=128,
+        processing_status=AttachmentStatus.EXTRACTED,
+        extracted_text=(
+            f"Client: {message.cleaned_content.split('Client: ', 1)[1].splitlines()[0]}\n"
+            f"Policy: {conflicting_policy}\nStatus: PENDING"
+        ),
+        extracted_at=datetime.now(UTC),
+        page_count=1,
+    )
+    db.add(attachment)
+    db.commit()
+    return attachment
 
 
 def auth_context(db: Session, user_id: int) -> AuthContext:
@@ -756,6 +833,17 @@ def test_case_linked_active_review_uses_case_owner_not_stale_reviewer(
     assert review.id in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
     assert client.get(f"/api/v1/reviews/{review.id}").status_code == 200
     assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 200
+    unresolved = client.post(
+        f"/api/v1/reviews/{review.id}/apply-analysis",
+        json=correction,
+        headers=case_headers,
+    )
+    assert unresolved.status_code == 422
+    assert unresolved.json()["detail"]["issues"][0]["code"] == "CASE_OWNER_CONFLICT"
+    seeded_db.refresh(existing)
+    seeded_db.refresh(review)
+    assert existing.assigned_agent_id == case_owner.id
+    assert review.status is ReviewStatus.OPEN
 
     manager_auth = login(client, "manager@demo.local")
     manager_headers = {"X-CSRF-Token": manager_auth["csrf_token"]}
@@ -798,6 +886,7 @@ def test_unlinked_active_review_uses_assigned_reviewer_without_widening_message_
         policy="UNLINKED-REVIEW-1",
         subject_suffix="unlinked-review-scope",
     )
+    add_policy_conflict_attachment(seeded_db, message, conflicting_policy="UNLINKED-REVIEW-2")
     result = process_message(
         seeded_db,
         message.id,
@@ -832,7 +921,7 @@ def test_unlinked_active_review_uses_assigned_reviewer_without_widening_message_
     assert dismissed.status_code == 200
 
 
-@pytest.mark.parametrize("confidence, expected_status", [(0.95, "RESOLVED"), (0.4, "OPEN")])
+@pytest.mark.parametrize("confidence, expected_status", [(0.95, "RESOLVED"), (0.4, "RESOLVED")])
 def test_manager_resave_reconciles_legacy_unlinked_owner_conflict_from_stored_analysis(
     client: TestClient,
     seeded_db: Session,
@@ -907,14 +996,6 @@ def test_manager_resave_reconciles_legacy_unlinked_owner_conflict_from_stored_an
         )
         assert label_sync is not None
         assert label_sync.status is GmailLabelSyncStatus.PENDING
-    else:
-        assert message.processing_status is ProcessingStatus.NEEDS_REVIEW
-        assert review.reason_code == "LOW_CONFIDENCE"
-        assert message.analysis.validation_flags == ["LOW_CONFIDENCE"]
-        login(client, gmail_owner.email)
-        assert client.get(f"/api/v1/reviews/{review.id}").status_code == 404
-        login(client, case_owner.email)
-        assert client.get(f"/api/v1/reviews/{review.id}").status_code == 200
 
 
 def test_manager_case_assignment_remains_authoritative_for_future_gmail_messages(
@@ -997,6 +1078,7 @@ def test_low_confidence_review_can_be_corrected_and_applied(seeded_db: Session) 
     message = create_received_message(
         seeded_db, client="Review Client", policy="TEST-REVIEW-1", subject_suffix="review"
     )
+    add_policy_conflict_attachment(seeded_db, message, conflicting_policy="TEST-REVIEW-2")
     proposed = analysis_result(client="Review Client", policy="TEST-REVIEW-1", confidence=0.4)
     result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
     review = seeded_db.get(ReviewItem, result.review_id)
@@ -1046,6 +1128,7 @@ def test_human_corrections_drop_stale_identity_and_action_evidence(
         policy="ORIGINAL-100",
         subject_suffix="corrected-evidence",
     )
+    add_policy_conflict_attachment(seeded_db, message, conflicting_policy="ORIGINAL-200")
     proposed = analysis_result(client="Original Client", policy="ORIGINAL-100", confidence=0.4)
     processed = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
     review = seeded_db.get(ReviewItem, processed.review_id)
@@ -1321,6 +1404,7 @@ def test_review_analysis_api_enforces_scope_and_applies_human_correction(
         policy="API-REVIEW-1",
         subject_suffix="api-review",
     )
+    add_policy_conflict_attachment(seeded_db, message, conflicting_policy="API-REVIEW-2")
     proposed = analysis_result(client="API Review Client", policy="API-REVIEW-1", confidence=0.4)
     result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
     assert result.review_id is not None
@@ -1332,7 +1416,7 @@ def test_review_analysis_api_enforces_scope_and_applies_human_correction(
     owner_auth = login(client, "agent.one@demo.local")
     detail = client.get(f"/api/v1/reviews/{result.review_id}/analysis")
     assert detail.status_code == 200
-    assert detail.json()["analysis"]["validation_flags"] == ["LOW_CONFIDENCE"]
+    assert "POLICY_NUMBER_CONFLICT" in detail.json()["analysis"]["validation_flags"]
     assert detail.json()["analysis"]["source_content"].startswith("Client: API Review Client")
     case_count = seeded_db.scalar(select(func.count()).select_from(PolicyCase))
     task_count = seeded_db.scalar(select(func.count()).select_from(Task))
@@ -1364,6 +1448,749 @@ def test_review_analysis_api_enforces_scope_and_applies_human_correction(
     assert message.analysis.model_result_json["summary"] == proposed.summary
 
 
+def test_human_review_confirms_evidence_mismatch_and_materializes_once(
+    client: TestClient, seeded_db: Session, login
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Evidence Confirmation Client",
+        policy="EVIDENCE-CONFIRM-1",
+        subject_suffix="evidence-confirmation",
+    )
+    add_policy_conflict_attachment(seeded_db, message, conflicting_policy="EVIDENCE-CONFIRM-2")
+    base = analysis_result(
+        client="Evidence Confirmation Client",
+        policy="EVIDENCE-CONFIRM-1",
+    )
+    proposed = base.model_copy(
+        update={
+            "evidence": [
+                *base.evidence,
+                Evidence(
+                    field_name="summary",
+                    source_id="email",
+                    excerpt="This excerpt is deliberately absent from the source.",
+                ),
+            ]
+        }
+    )
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+    review = seeded_db.get(ReviewItem, result.review_id)
+    assert review is not None and "POLICY_NUMBER_CONFLICT" in result.validation_flags
+    auth = login(client, "agent.one@demo.local")
+    correction = proposed.model_dump(
+        mode="json", exclude={"evidence", "overall_confidence", "uncertainties"}
+    )
+
+    applied = client.post(
+        f"/api/v1/reviews/{review.id}/apply-analysis",
+        json=correction,
+        headers={"X-CSRF-Token": auth["csrf_token"]},
+    )
+    assert applied.status_code == 200
+    seeded_db.refresh(message)
+    seeded_db.refresh(review)
+    assert message.processing_status is ProcessingStatus.PROCESSED
+    assert message.processed_at is not None
+    assert review.status is ReviewStatus.RESOLVED
+    assert review.resolved_at is not None
+    assert message.analysis.final_result_json["policy_number"] == "EVIDENCE-CONFIRM-1"
+    assert all(
+        item["excerpt"] != "This excerpt is deliberately absent from the source."
+        for item in message.analysis.final_result_json["evidence"]
+    )
+    assert message.analysis.finalized_by_user_id == auth["user"]["id"]
+    assert message.analysis.finalized_at is not None
+    assert message.analysis.validation_flags == []
+    tasks = seeded_db.scalars(
+        select(Task).where(Task.source_carrier_message_id == message.id)
+    ).all()
+    assert len(tasks) == 1
+    case = seeded_db.get(PolicyCase, message.case_id)
+    assert case is not None
+    assert tasks[0].assigned_agent_id == case.assigned_agent_id
+    sync = seeded_db.scalar(
+        select(GmailThreadLabelSync).where(
+            GmailThreadLabelSync.gmail_connection_id == message.gmail_connection_id,
+            GmailThreadLabelSync.gmail_thread_id == message.gmail_thread_id,
+        )
+    )
+    assert sync is not None and sync.status is GmailLabelSyncStatus.PENDING
+    assert seeded_db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.carrier_message_id == message.id,
+            AuditEvent.event_type == "AI_REVIEW_APPLIED",
+            AuditEvent.actor_user_id == auth["user"]["id"],
+        )
+    )
+
+    second = client.post(
+        f"/api/v1/reviews/{review.id}/apply-analysis",
+        json=correction,
+        headers={"X-CSRF-Token": auth["csrf_token"]},
+    )
+    assert second.status_code == 409
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(Task)
+            .where(Task.source_carrier_message_id == message.id)
+        )
+        == 1
+    )
+
+
+def test_human_correction_drops_unsupported_evidence_for_changed_value(
+    client: TestClient, seeded_db: Session, login
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Original Evidence Client",
+        policy="EVIDENCE-CORRECT-1",
+        subject_suffix="evidence-correction",
+    )
+    add_policy_conflict_attachment(seeded_db, message, conflicting_policy="EVIDENCE-CORRECT-2")
+    base = analysis_result(
+        client="Original Evidence Client",
+        policy="EVIDENCE-CORRECT-1",
+    )
+    proposed = base.model_copy(
+        update={
+            "evidence": [
+                *base.evidence,
+                Evidence(
+                    field_name="summary",
+                    source_id="email",
+                    excerpt="This excerpt is deliberately absent from the source.",
+                ),
+            ]
+        }
+    )
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+    review = seeded_db.get(ReviewItem, result.review_id)
+    assert review is not None and "POLICY_NUMBER_CONFLICT" in result.validation_flags
+    auth = login(client, "agent.one@demo.local")
+    correction = proposed.model_dump(
+        mode="json", exclude={"evidence", "overall_confidence", "uncertainties"}
+    )
+    correction["client_name"] = "Human Corrected Client"
+
+    applied = client.post(
+        f"/api/v1/reviews/{review.id}/apply-analysis",
+        json=correction,
+        headers={"X-CSRF-Token": auth["csrf_token"]},
+    )
+    assert applied.status_code == 200
+    seeded_db.refresh(message)
+    case = seeded_db.get(PolicyCase, message.case_id)
+    assert case is not None and case.client_name == "Human Corrected Client"
+    assert message.analysis.final_result_json["client_name"] == "Human Corrected Client"
+    assert message.analysis.finalized_by_user_id == auth["user"]["id"]
+    retained_client_evidence = seeded_db.scalars(
+        select(CaseEvidence).where(
+            CaseEvidence.carrier_message_id == message.id,
+            CaseEvidence.field_name == "client_name",
+        )
+    ).all()
+    assert retained_client_evidence == []
+
+
+def test_generic_model_uncertainty_without_competing_values_does_not_review(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Model Hesitation Client",
+        policy="MODEL-HESITATION-1",
+        subject_suffix="model-hesitation",
+    )
+    proposed = analysis_result(
+        client="Model Hesitation Client",
+        policy="MODEL-HESITATION-1",
+    ).model_copy(update={"uncertainties": ["Synthetic ambiguity without competing values"]})
+
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.review_id is None
+
+
+def test_consistent_source_status_corrects_model_enum_without_review(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Source Status Client",
+        policy="SOURCE-STATUS-1",
+        subject_suffix="source-status-grounding",
+    )
+    proposed = analysis_result(client="Source Status Client", policy="SOURCE-STATUS-1").model_copy(
+        update={"policy_status": PolicyStatus.ACTIVE}
+    )
+
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.review_id is None
+    assert message.analysis.final_result_json["policy_status"] == "PENDING"
+
+
+def test_human_review_cannot_redirect_work_to_another_agents_case(
+    client: TestClient, seeded_db: Session, login
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Collision Source Client",
+        policy="COLLISION-SOURCE-1",
+        subject_suffix="cross-owner-human-collision",
+    )
+    add_policy_conflict_attachment(seeded_db, message, conflicting_policy="COLLISION-SOURCE-2")
+    proposed = analysis_result(
+        client="Collision Source Client",
+        policy="COLLISION-SOURCE-1",
+        confidence=0.4,
+    )
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+    review = seeded_db.get(ReviewItem, result.review_id)
+    current_agent = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert current_agent is not None
+    other_agent = seeded_db.scalar(
+        select(User).where(
+            User.role == UserRole.AGENT,
+            User.id != current_agent.id,
+        )
+    )
+    assert other_agent is not None
+    other_case = PolicyCase(
+        agency_id=current_agent.agency_id,
+        carrier_id=message.carrier_id,
+        assigned_agent_id=other_agent.id,
+        assignment_source=CaseAssignmentSource.MANAGER,
+        client_name="Other Agent Collision Client",
+        policy_number="OTHER-AGENT-COLLISION-1",
+        current_policy_status=PolicyStatus.PENDING,
+        priority=Priority.HIGH,
+        summary="Synthetic cross-owner collision case.",
+    )
+    seeded_db.add(other_case)
+    seeded_db.commit()
+    assert review is not None and review.case_id is None and other_case is not None
+    original_owner_id = other_case.assigned_agent_id
+    correction = proposed.model_dump(
+        mode="json", exclude={"evidence", "overall_confidence", "uncertainties"}
+    )
+    correction["client_name"] = other_case.client_name
+    correction["policy_number"] = other_case.policy_number
+    auth = login(client, "agent.one@demo.local")
+
+    response = client.post(
+        f"/api/v1/reviews/{review.id}/apply-analysis",
+        json=correction,
+        headers={"X-CSRF-Token": auth["csrf_token"]},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["issues"][0]["code"] == "CASE_OWNER_CONFLICT"
+    seeded_db.refresh(other_case)
+    seeded_db.refresh(review)
+    assert other_case.assigned_agent_id == original_owner_id
+    assert review.status is ReviewStatus.OPEN
+
+
+def test_grounded_moderate_confidence_message_processes_without_review(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Grounded Confidence Client",
+        policy="GROUNDED-74",
+        subject_suffix="grounded-confidence",
+    )
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(
+            analysis_result(
+                client="Grounded Confidence Client",
+                policy="GROUNDED-74",
+                confidence=0.4,
+            ).model_copy(update={"uncertainties": []})
+        ),
+    )
+
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.review_id is None
+
+
+@pytest.mark.parametrize("model_premium", ["$1,250.00 USD", "USD 1,250.00"])
+def test_clean_issued_policy_human_money_format_processes_straight_through(
+    seeded_db: Session, model_premium: str
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Emily Parker",
+        policy="QA-AUTO-001",
+        subject_suffix=f"qa-auto-{model_premium[:3]}",
+    )
+    message.cleaned_content = (
+        "Client Name: Emily Parker\n"
+        "Policy Number: QA-AUTO-001\n"
+        "Notice Type: Policy Issued\n"
+        "Policy Status: Issued\n"
+        "Premium Amount: $1,250.00 USD\n"
+        "Effective Date: August 28, 2026"
+    )
+    message.raw_content = message.cleaned_content
+    seeded_db.commit()
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(
+            policy_issued_result(
+                client="Emily Parker",
+                policy="QA-AUTO-001",
+                premium=model_premium,
+                currency="USD",
+            )
+        ),
+    )
+
+    case = seeded_db.get(PolicyCase, result.case_id)
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.review_id is None
+    assert case is not None and case.premium_amount == Decimal("1250.00")
+    assert case.currency == "USD"
+    assert message.analysis.final_result_json["premium_amount"] == "1250.00"
+
+
+def test_inline_and_structured_currency_conflict_remains_reviewable(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Currency Conflict Client",
+        policy="CURRENCY-CONFLICT-1",
+        subject_suffix="currency-conflict",
+    )
+    message.cleaned_content = (
+        "Client Name: Currency Conflict Client\n"
+        "Policy Number: CURRENCY-CONFLICT-1\n"
+        "Notice Type: Policy Issued\n"
+        "Policy Status: Issued\n"
+        "Premium Amount: $1,250.00 USD\n"
+        "Effective Date: August 28, 2026"
+    )
+    message.raw_content = message.cleaned_content
+    seeded_db.commit()
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(
+            policy_issued_result(
+                client="Currency Conflict Client",
+                policy="CURRENCY-CONFLICT-1",
+                premium="$1,250.00 USD",
+                currency="EUR",
+            )
+        ),
+    )
+
+    assert result.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert "CURRENCY_CONFLICT" in result.validation_flags
+
+
+def test_explicit_issued_pending_source_contradiction_remains_review(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Olivia Thompson",
+        policy="QA-CONFLICT-001",
+        subject_suffix="qa-conflict",
+    )
+    message.cleaned_content = (
+        "Client Name: Olivia Thompson\n"
+        "Policy Number: QA-CONFLICT-001\n"
+        "Notice Type: Policy Issued\n"
+        "Policy Status: Pending\n"
+        "Premium Amount: $1,250.00 USD\n"
+        "Effective Date: August 28, 2026"
+    )
+    message.raw_content = message.cleaned_content
+    seeded_db.commit()
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(
+            policy_issued_result(
+                client="Olivia Thompson",
+                policy="QA-CONFLICT-001",
+                premium="1250.00",
+                currency="USD",
+                status=PolicyStatus.PENDING,
+            ).model_copy(
+                update={"uncertainties": ["The source says issued while requiring Pending status."]}
+            )
+        ),
+    )
+
+    assert result.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert "POLICY_STATUS_CONFLICT" in result.validation_flags
+
+
+def test_missing_requirements_create_follow_up_task_without_review(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Missing Requirements Client",
+        policy="MISSING-REQ-1",
+        subject_suffix="missing-requirements",
+    )
+    proposed = analysis_result(
+        client="Missing Requirements Client", policy="MISSING-REQ-1"
+    ).model_copy(
+        update={
+            "requirements": [],
+            "uncertainties": ["The carrier did not provide the requirements list."],
+        }
+    )
+
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.review_id is None
+    titles = set(seeded_db.scalars(select(Task.title).where(Task.case_id == result.case_id)).all())
+    assert "Contact carrier for outstanding requirements" in titles
+
+
+def test_stored_missing_requirements_review_is_reevaluated_without_model_call(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Stored Missing Client",
+        policy="STORED-MISSING-1",
+        subject_suffix="stored-missing-requirements",
+    )
+    proposed = analysis_result(
+        client="Stored Missing Client", policy="STORED-MISSING-1"
+    ).model_copy(
+        update={
+            "requirements": [],
+            "action_items": [
+                ActionItem(
+                    title="Contact carrier for outstanding requirements",
+                    description="Ask the carrier for the omitted requirements list.",
+                    priority=Priority.HIGH,
+                    explicit_due_date=None,
+                    due_text=None,
+                )
+            ],
+            "evidence": [
+                item
+                for item in analysis_result(
+                    client="Stored Missing Client", policy="STORED-MISSING-1"
+                ).evidence
+                if not item.field_name.startswith("action_item:")
+            ],
+            "uncertainties": ["The carrier did not provide the requirements list."],
+        }
+    )
+    message.processing_status = ProcessingStatus.NEEDS_REVIEW
+    connection = seeded_db.get(GmailConnection, message.gmail_connection_id)
+    assert connection is not None
+    analysis = MessageAnalysis(
+        carrier_message_id=message.id,
+        model_name="stored-test-model",
+        schema_version="stage4-v1",
+        prompt_version="stage4-v4",
+        overall_confidence=Decimal("0.99"),
+        model_result_json=proposed.model_dump(mode="json"),
+        validation_flags=["MODEL_UNCERTAINTY"],
+    )
+    review = ReviewItem(
+        agency_id=message.agency_id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=connection.user_id,
+        status=ReviewStatus.OPEN,
+        reason_code="MODEL_UNCERTAINTY",
+        reason="The model reported missing requirements.",
+    )
+    seeded_db.add_all([analysis, review])
+    seeded_db.commit()
+
+    result = reevaluate_stored_review(seeded_db, review.id)
+
+    seeded_db.refresh(review)
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert review.status is ReviewStatus.RESOLVED
+    tasks = seeded_db.scalars(select(Task).where(Task.case_id == result.case_id)).all()
+    assert [task.title for task in tasks] == ["Contact carrier for outstanding requirements"]
+
+
+def test_issued_policy_missing_premium_and_effective_date_creates_tasks(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Issued Missing Client",
+        policy="ISSUED-MISSING-1",
+        subject_suffix="issued-missing-details",
+    )
+    message.cleaned_content = message.cleaned_content.replace("Status: PENDING", "Status: ISSUED")
+    message.raw_content = message.cleaned_content
+    seeded_db.commit()
+    base = analysis_result(client="Issued Missing Client", policy="ISSUED-MISSING-1")
+    proposed = base.model_copy(
+        update={
+            "classification": MessageClassification.POLICY_ISSUED,
+            "summary": "The policy was issued without premium or effective-date details.",
+            "policy_status": PolicyStatus.ISSUED,
+            "deadline": Deadline(
+                raw_text=None,
+                explicit_date=None,
+                relative_count=None,
+                relative_unit=None,
+            ),
+            "requirements": [],
+            "action_items": [],
+            "evidence": [
+                Evidence(
+                    field_name="client_name",
+                    source_id="email",
+                    excerpt="Client: Issued Missing Client",
+                ),
+                Evidence(
+                    field_name="policy_number",
+                    source_id="email",
+                    excerpt="Policy: ISSUED-MISSING-1",
+                ),
+                Evidence(
+                    field_name="policy_status",
+                    source_id="email",
+                    excerpt="Status: ISSUED",
+                ),
+            ],
+        }
+    )
+
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.review_id is None
+    titles = set(seeded_db.scalars(select(Task.title).where(Task.case_id == result.case_id)).all())
+    assert {"Obtain premium amount from carrier", "Obtain policy effective date"} <= titles
+
+
+def test_missing_policy_number_uses_one_exact_client_case_and_creates_task(
+    seeded_db: Session,
+) -> None:
+    existing = seeded_db.scalar(
+        select(PolicyCase).where(PolicyCase.policy_number == "AMR-98765432")
+    )
+    assert existing is not None
+    owner = seeded_db.get(User, existing.assigned_agent_id)
+    assert owner is not None
+    message = create_received_message(
+        seeded_db,
+        client=existing.client_name,
+        policy="OMITTED",
+        subject_suffix="missing-policy-safe-match",
+        owner=owner,
+    )
+    message.cleaned_content = message.cleaned_content.replace("Policy: OMITTED\n", "")
+    message.raw_content = message.cleaned_content
+    seeded_db.commit()
+    proposed = analysis_result(client=existing.client_name, policy="OMITTED")
+    proposed = proposed.model_copy(
+        update={
+            "policy_number": None,
+            "evidence": [item for item in proposed.evidence if item.field_name != "policy_number"],
+        }
+    )
+
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.case_id == existing.id
+    assert result.review_id is None
+    assert seeded_db.scalar(
+        select(Task).where(
+            Task.case_id == existing.id,
+            Task.title == "Obtain policy number from carrier",
+        )
+    )
+
+
+def test_missing_policy_number_creates_one_provisional_case_when_unambiguous(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Provisional Identity Client",
+        policy="OMITTED",
+        subject_suffix="provisional-missing-policy",
+    )
+    message.cleaned_content = message.cleaned_content.replace("Policy: OMITTED\n", "")
+    message.raw_content = message.cleaned_content
+    seeded_db.commit()
+    proposed = analysis_result(client="Provisional Identity Client", policy="OMITTED")
+    proposed = proposed.model_copy(
+        update={
+            "policy_number": None,
+            "evidence": [item for item in proposed.evidence if item.field_name != "policy_number"],
+        }
+    )
+
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+
+    case = seeded_db.get(PolicyCase, result.case_id)
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.review_id is None
+    assert case is not None and case.policy_number is None
+    assert seeded_db.scalar(
+        select(Task).where(
+            Task.case_id == case.id,
+            Task.title == "Obtain policy number from carrier",
+        )
+    )
+
+
+def test_body_pdf_policy_conflict_routes_to_explanatory_review(
+    client: TestClient, seeded_db: Session, login
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Conflict Client",
+        policy="CONFLICT-100",
+        subject_suffix="source-policy-conflict",
+    )
+    attachment = Attachment(
+        carrier_message_id=message.id,
+        external_id="conflict-pdf",
+        filename="policy.pdf",
+        mime_type="application/pdf",
+        size_bytes=128,
+        processing_status=AttachmentStatus.EXTRACTED,
+        extracted_text=("Client: Conflict Client\nPolicy: CONFLICT-200\nStatus: PENDING"),
+        extracted_at=datetime.now(UTC),
+        page_count=1,
+    )
+    seeded_db.add(attachment)
+    seeded_db.commit()
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(analysis_result(client="Conflict Client", policy="CONFLICT-100")),
+    )
+
+    assert result.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert "POLICY_NUMBER_CONFLICT" in result.validation_flags
+    login(client, "agent.one@demo.local")
+    detail = client.get(f"/api/v1/reviews/{result.review_id}/analysis")
+    assert detail.status_code == 200
+    issue = next(
+        item for item in detail.json()["issues"] if item["code"] == "POLICY_NUMBER_CONFLICT"
+    )
+    assert issue["title"] == "Policy number conflict"
+    assert {value["source_label"] for value in issue["values"]} == {
+        "Email body",
+        f"PDF attachment {attachment.id}",
+    }
+
+
+def test_missing_policy_with_two_exact_client_cases_routes_to_case_match_review(
+    seeded_db: Session,
+) -> None:
+    owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    carrier = seeded_db.scalar(select(Carrier).where(Carrier.name == "Americo"))
+    assert owner is not None and carrier is not None
+    for policy in ("DUPLICATE-CLIENT-A", "DUPLICATE-CLIENT-B"):
+        seeded_db.add(
+            PolicyCase(
+                agency_id=owner.agency_id,
+                carrier_id=carrier.id,
+                assigned_agent_id=owner.id,
+                assignment_source=CaseAssignmentSource.GMAIL,
+                client_name="Ambiguous Client",
+                policy_number=policy,
+                current_policy_status=PolicyStatus.PENDING,
+                priority=Priority.NORMAL,
+                summary="Synthetic ambiguous identity fixture.",
+            )
+        )
+    seeded_db.commit()
+    message = create_received_message(
+        seeded_db,
+        client="Ambiguous Client",
+        policy="OMITTED",
+        subject_suffix="ambiguous-client-cases",
+        owner=owner,
+    )
+    message.cleaned_content = message.cleaned_content.replace("Policy: OMITTED\n", "")
+    message.raw_content = message.cleaned_content
+    seeded_db.commit()
+    proposed = analysis_result(client="Ambiguous Client", policy="OMITTED")
+    proposed = proposed.model_copy(
+        update={
+            "policy_number": None,
+            "evidence": [item for item in proposed.evidence if item.field_name != "policy_number"],
+        }
+    )
+
+    result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+
+    assert result.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert result.case_id is None
+    assert "CASE_MATCH_CONFLICT" in result.validation_flags
+    assert message.case_id is None
+
+
+def test_missing_info_task_is_not_duplicated_by_later_message_for_same_case(
+    seeded_db: Session,
+) -> None:
+    owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert owner is not None
+    first = create_received_message(
+        seeded_db,
+        client="Repeat Missing Client",
+        policy="REPEAT-MISSING-1",
+        subject_suffix="repeat-missing-first",
+        owner=owner,
+    )
+    second = create_received_message(
+        seeded_db,
+        client="Repeat Missing Client",
+        policy="REPEAT-MISSING-1",
+        subject_suffix="repeat-missing-second",
+        owner=owner,
+    )
+    proposed = analysis_result(
+        client="Repeat Missing Client", policy="REPEAT-MISSING-1"
+    ).model_copy(update={"requirements": []})
+
+    first_result = process_message(seeded_db, first.id, analyzer=FakeAnalyzer(proposed))
+    second_result = process_message(seeded_db, second.id, analyzer=FakeAnalyzer(proposed))
+
+    assert first_result.case_id == second_result.case_id
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(Task)
+            .where(
+                Task.case_id == first_result.case_id,
+                Task.title == "Contact carrier for outstanding requirements",
+            )
+        )
+        == 1
+    )
+
+
 def test_review_without_structured_proposal_can_be_dismissed(
     client: TestClient, seeded_db: Session, login
 ) -> None:
@@ -1373,6 +2200,7 @@ def test_review_without_structured_proposal_can_be_dismissed(
         policy="NO-PROPOSAL-1",
         subject_suffix="no-proposal",
     )
+    add_policy_conflict_attachment(seeded_db, message, conflicting_policy="NO-PROPOSAL-2")
     result = process_message(
         seeded_db,
         message.id,

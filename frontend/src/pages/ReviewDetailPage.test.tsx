@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -124,6 +130,29 @@ describe('ReviewDetailPage', () => {
       created_at: '2026-08-20T12:00:00Z',
       resolved_at: null,
       analysis_confidence: 0.62,
+      issues: [
+        {
+          code: 'POLICY_NUMBER_CONFLICT',
+          category: 'SOURCE_CONFLICT',
+          title: 'Policy number conflict',
+          message:
+            'The email and policy PDF contain different policy numbers. Confirm the correct value before applying.',
+          field_name: 'policy_number',
+          human_resolvable: true,
+          values: [
+            {
+              source_id: 'email',
+              source_label: 'Email body',
+              value: 'REVIEW-100',
+            },
+            {
+              source_id: 'attachment:4',
+              source_label: 'PDF attachment 4',
+              value: 'REVIEW-101',
+            },
+          ],
+        },
+      ],
       analysis: {
         message_id: 12,
         carrier_name: 'Americo',
@@ -173,6 +202,9 @@ describe('ReviewDetailPage', () => {
     expect(
       await screen.findByText('Check against the carrier message'),
     ).toBeInTheDocument()
+    expect(screen.getByText('Policy number conflict')).toBeInTheDocument()
+    expect(screen.getByText('PDF attachment 4')).toBeInTheDocument()
+    expect(screen.getByText('REVIEW-101')).toBeInTheDocument()
     expect(screen.getByText('“Policy REVIEW-100”')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Client name'), {
       target: { value: 'Corrected Client' },
@@ -309,5 +341,47 @@ describe('ReviewDetailPage', () => {
     expect(screen.queryByLabelText('Client name')).not.toBeInTheDocument()
     expect(screen.getByText('Confirmed analysis')).toBeInTheDocument()
     expect(screen.getAllByText('Review Client').length).toBeGreaterThan(0)
+  })
+
+  it('keeps an unresolved ownership conflict read-only for the Agent', async () => {
+    vi.mocked(getReviewAnalysis).mockResolvedValue({
+      ...noProposalReview,
+      id: 10,
+      message_id: 15,
+      case_id: 44,
+      reason_code: 'CASE_OWNER_CONFLICT',
+      reason: 'A manager must confirm operational ownership.',
+      analysis: {
+        ...noProposalReview.analysis,
+        message_id: 15,
+        case_id: 44,
+        review_id: 10,
+        proposed_result: proposal,
+      },
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+
+    const rendered = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/reviews/10']}>
+          <Routes>
+            <Route path="/reviews/:reviewId" element={<ReviewDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(
+      await screen.findByText(/Case ownership must be resolved before/),
+    ).toBeInTheDocument()
+    const view = within(rendered.container)
+    expect(view.getByText('Confirmed analysis')).toBeInTheDocument()
+    expect(view.queryByLabelText('Client name')).not.toBeInTheDocument()
+    expect(
+      view.queryByRole('button', { name: 'Confirm & apply' }),
+    ).not.toBeInTheDocument()
+    expect(applyReviewAnalysis).not.toHaveBeenCalled()
   })
 })

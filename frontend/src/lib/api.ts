@@ -67,8 +67,13 @@ async function apiRequest<T>(
   if (!response.ok) {
     let message = 'The request could not be completed.'
     try {
-      const body = (await response.json()) as { detail?: string }
-      if (body.detail) message = body.detail
+      const body = (await response.json()) as {
+        detail?: string | { message?: string }
+      }
+      if (typeof body.detail === 'string') message = body.detail
+      else if (body.detail) {
+        if (body.detail.message) message = body.detail.message
+      }
     } catch {
       // The safe generic message is used for non-JSON errors.
     }

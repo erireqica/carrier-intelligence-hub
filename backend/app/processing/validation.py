@@ -27,6 +27,18 @@ CRITICAL_EVIDENCE_FIELDS = {
     "deadline",
 }
 
+# These flags explain why automation deferred to a person. An authorized Agent's
+# explicit confirmation may resolve them, while every unknown or structural flag
+# remains blocking by default.
+HUMAN_REVIEW_RESOLVABLE_FLAGS = frozenset(
+    {
+        "CLASSIFICATION_STATUS_MISMATCH",
+        "EVIDENCE_MISMATCH",
+        "LOW_CONFIDENCE",
+        "MODEL_UNCERTAINTY",
+    }
+)
+
 
 @dataclass(frozen=True)
 class VerifiedEvidence:
@@ -47,6 +59,11 @@ class ValidatedAnalysis:
     @property
     def safe_to_apply(self) -> bool:
         return not self.flags
+
+
+def post_human_review_blocking_flags(flags: tuple[str, ...]) -> set[str]:
+    """Keep structural and unknown validation failures hard after human review."""
+    return set(flags) - HUMAN_REVIEW_RESOLVABLE_FLAGS
 
 
 def normalize_excerpt(value: str) -> str:
@@ -106,16 +123,36 @@ def resolve_deadline(
     return local_due.astimezone(UTC), None
 
 
-def _parse_premium(value: str | None) -> tuple[Decimal | None, str | None]:
+_MONEY_PATTERN = re.compile(
+    r"^\s*(?:(?P<prefix>[A-Za-z]{3})\s+)?(?P<symbol>\$)?\s*"
+    r"(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)"
+    r"(?:\s+(?P<suffix>[A-Za-z]{3}))?\s*$"
+)
+
+
+def parse_premium(
+    value: str | None, currency: str | None = None
+) -> tuple[Decimal | None, str | None, str | None]:
     if value is None:
-        return None, None
+        return None, currency.upper() if currency else None, None
+    match = _MONEY_PATTERN.fullmatch(value)
+    if match is None:
+        return None, currency.upper() if currency else None, "INVALID_PREMIUM"
+    currency_hints = {
+        item.upper() for item in (currency, match.group("prefix"), match.group("suffix")) if item
+    }
+    if match.group("symbol"):
+        currency_hints.add("USD")
+    if len(currency_hints) > 1:
+        return None, None, "CURRENCY_CONFLICT"
+    normalized_currency = next(iter(currency_hints), None)
     try:
-        parsed = Decimal(value).quantize(Decimal("0.01"))
+        parsed = Decimal(match.group("amount").replace(",", "")).quantize(Decimal("0.01"))
     except InvalidOperation:
-        return None, "INVALID_PREMIUM"
+        return None, normalized_currency, "INVALID_PREMIUM"
     if parsed < 0 or parsed > Decimal("9999999999.99"):
-        return None, "INVALID_PREMIUM"
-    return parsed, None
+        return None, normalized_currency, "INVALID_PREMIUM"
+    return parsed, normalized_currency, None
 
 
 def _parse_date(value: str | None) -> tuple[date | None, str | None]:
@@ -127,10 +164,15 @@ def _parse_date(value: str | None) -> tuple[date | None, str | None]:
         return None, "INVALID_DATE"
 
 
-def _normalize_result(result: AnalysisResult) -> AnalysisResult:
+def normalize_analysis_result(result: AnalysisResult) -> AnalysisResult:
     client_name = " ".join(result.client_name.split()) if result.client_name else None
     policy_number = " ".join(result.policy_number.split()).upper() if result.policy_number else None
-    currency = result.currency.upper() if result.currency else None
+    premium, currency, premium_error = parse_premium(result.premium_amount, result.currency)
+    if premium_error:
+        premium_amount = result.premium_amount
+        currency = result.currency.upper() if result.currency else None
+    else:
+        premium_amount = f"{premium:.2f}" if premium is not None else None
     priority = result.priority
     evidence = []
     for item in result.evidence:
@@ -149,6 +191,7 @@ def _normalize_result(result: AnalysisResult) -> AnalysisResult:
         update={
             "client_name": client_name,
             "policy_number": policy_number,
+            "premium_amount": premium_amount,
             "currency": currency,
             "priority": priority,
             "evidence": evidence,
@@ -165,7 +208,7 @@ def validate_analysis(
     source_flags: set[str] | None = None,
     require_evidence: bool = True,
 ) -> ValidatedAnalysis:
-    normalized = _normalize_result(result)
+    normalized = normalize_analysis_result(result)
     flags = set(source_flags or set())
     if normalized.overall_confidence < confidence_threshold:
         flags.add("LOW_CONFIDENCE")
@@ -182,7 +225,11 @@ def validate_analysis(
     if expected is not None and normalized.policy_status not in expected:
         flags.add("CLASSIFICATION_STATUS_MISMATCH")
 
-    premium, premium_error = _parse_premium(normalized.premium_amount)
+    premium, normalized_currency, premium_error = parse_premium(
+        normalized.premium_amount, normalized.currency
+    )
+    if premium_error is None and normalized_currency != normalized.currency:
+        normalized = normalized.model_copy(update={"currency": normalized_currency})
     effective_date, date_error = _parse_date(normalized.effective_date)
     deadline_at, deadline_error = resolve_deadline(normalized, bundle.received_at, agency_timezone)
     flags.update(item for item in (premium_error, date_error, deadline_error) if item)
@@ -239,7 +286,7 @@ def validate_analysis(
                 required.add(field)
         required.update(f"action_item:{index}" for index in range(len(normalized.action_items)))
         if not required.issubset(evidenced_fields):
-            flags.add("EVIDENCE_MISMATCH")
+            flags.add("EVIDENCE_INCOMPLETE")
 
     return ValidatedAnalysis(
         result=normalized,

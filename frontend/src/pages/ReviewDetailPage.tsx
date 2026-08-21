@@ -235,6 +235,8 @@ export function ReviewDetailPage() {
   const analysis = review.analysis
   const form = editedForm ?? (proposal ? toHumanInput(proposal) : null)
   const isFinalized = ['RESOLVED', 'DISMISSED'].includes(review.status)
+  const isOwnershipBlocked =
+    !isFinalized && review.reason_code === 'CASE_OWNER_CONFLICT'
   const update = <K extends keyof HumanAnalysisInput>(
     key: K,
     value: HumanAnalysisInput[K],
@@ -266,14 +268,53 @@ export function ReviewDetailPage() {
         <h2 className="font-semibold text-amber-950">
           What needs your attention
         </h2>
-        <p className="mt-2 max-w-4xl text-sm leading-6 text-amber-950">
-          {reviewExplanation(review.reason_code, review.reason)}
-        </p>
+        <div className="mt-3 space-y-4">
+          {review.issues && review.issues.length > 0 ? (
+            review.issues.map((issue) => (
+              <div key={issue.code}>
+                <h3 className="text-sm font-semibold text-amber-950">
+                  {issue.title}
+                </h3>
+                <p className="mt-1 max-w-4xl text-sm leading-6 text-amber-950">
+                  {issue.message}
+                </p>
+                {issue.values.length > 0 && (
+                  <dl className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {issue.values.map((value, index) => (
+                      <div
+                        className="border border-amber-200 bg-white p-3 text-sm"
+                        key={`${value.source_id}-${index}`}
+                      >
+                        <dt className="text-amber-800">{value.source_label}</dt>
+                        <dd className="mt-1 font-medium text-slate-950">
+                          {value.value}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+              </div>
+            ))
+          ) : (
+            <p className="max-w-4xl text-sm leading-6 text-amber-950">
+              {reviewExplanation(review.reason_code, review.reason)}
+            </p>
+          )}
+        </div>
       </section>
       {isManager && !isFinalized && (
         <p className="border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
           <strong>Manager view —</strong> review decisions are completed by the
           assigned agent.
+        </p>
+      )}
+      {isOwnershipBlocked && !isManager && (
+        <p className="border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <strong>
+            Case ownership must be resolved before this review can be applied.
+          </strong>{' '}
+          Ask a manager to confirm the Case assignment. Editing extracted fields
+          cannot resolve an ownership conflict.
         </p>
       )}
       {proposal && (
@@ -361,7 +402,7 @@ export function ReviewDetailPage() {
         </div>
 
         {proposal && form ? (
-          isManager || isFinalized ? (
+          isManager || isFinalized || isOwnershipBlocked ? (
             <ReadOnlyProposal
               proposal={proposal}
               status={review.status}

@@ -11,6 +11,7 @@ from app.integrations.ai.errors import AnalysisProviderError
 from app.integrations.ai.prompt import ANALYSIS_INSTRUCTIONS
 from app.integrations.ai.schemas import ActionItem, AnalysisResult, Deadline, Evidence
 from app.models.enums import MessageClassification, PolicyStatus, Priority
+from app.processing.conflicts import detect_source_conflicts
 from app.processing.source import SourceBundle, SourceDocument
 from app.processing.validation import validate_analysis
 
@@ -87,6 +88,99 @@ def test_validation_normalizes_identity_and_resolves_business_deadline() -> None
     assert validated.result.policy_number == "TEST-10001"
     assert validated.deadline_at == datetime(2026, 8, 24, 22, tzinfo=UTC)
     assert len(validated.verified_evidence) == 5
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("$412.50 USD", "412.50"),
+        ("USD 1,250.00", "1250.00"),
+        ("1,250.00", "1250.00"),
+    ],
+)
+def test_validation_normalizes_common_human_money_formats(raw: str, expected: str) -> None:
+    validated = validate_analysis(
+        strong_result(premium_amount=raw, currency=None),
+        source_bundle(),
+        agency_timezone="UTC",
+        confidence_threshold=0.8,
+        require_evidence=False,
+    )
+
+    assert "INVALID_PREMIUM" not in validated.flags
+    assert validated.result.premium_amount == expected
+    expected_currency = "USD" if "USD" in raw or "$" in raw else None
+    assert validated.result.currency == expected_currency
+
+
+def test_validation_routes_inline_and_structured_currency_conflict() -> None:
+    validated = validate_analysis(
+        strong_result(premium_amount="$412.50 USD", currency="EUR"),
+        source_bundle(),
+        agency_timezone="UTC",
+        confidence_threshold=0.8,
+        require_evidence=False,
+    )
+
+    assert "CURRENCY_CONFLICT" in validated.flags
+
+
+def test_source_conflicts_ignore_formatting_but_detect_material_differences() -> None:
+    email = "Client: SOPHIE BENNETT\nPolicy: abc-123\nPremium: $412.50 USD\nStatus: ACTIVE"
+    matching_pdf = (
+        "Client Name: Sophie Bennett\nPolicy Number: ABC-123\n"
+        "Premium Amount: USD 412.50\nPolicy Status: ACTIVE"
+    )
+    conflicting_pdf = matching_pdf.replace("ABC-123", "ABC-128").replace("USD 412.50", "EUR 475.00")
+    base = dict(
+        carrier_name="Americo",
+        subject="Policy update",
+        received_at=datetime(2026, 8, 20, 12, tzinfo=UTC),
+        rendered="",
+        truncated=False,
+    )
+
+    matching = detect_source_conflicts(
+        SourceBundle(
+            **base,
+            documents=(
+                SourceDocument("email", "EMAIL", email),
+                SourceDocument("attachment:1", "PDF", matching_pdf, 1),
+            ),
+        )
+    )
+    conflicting = detect_source_conflicts(
+        SourceBundle(
+            **base,
+            documents=(
+                SourceDocument("email", "EMAIL", email),
+                SourceDocument("attachment:1", "PDF", conflicting_pdf, 1),
+            ),
+        )
+    )
+
+    assert matching == ()
+    assert {item.code for item in conflicting} == {
+        "CURRENCY_CONFLICT",
+        "POLICY_NUMBER_CONFLICT",
+        "PREMIUM_CONFLICT",
+    }
+
+
+def test_source_classification_status_contradiction_is_a_real_conflict() -> None:
+    content = "Notice Type: POLICY ISSUED\nPolicy Status: PENDING"
+    bundle = SourceBundle(
+        carrier_name="Americo",
+        subject="Contradictory notice",
+        received_at=datetime(2026, 8, 20, 12, tzinfo=UTC),
+        documents=(SourceDocument("email", "EMAIL", content),),
+        rendered=content,
+        truncated=False,
+    )
+
+    conflicts = detect_source_conflicts(bundle)
+
+    assert [item.code for item in conflicts] == ["POLICY_STATUS_CONFLICT"]
 
 
 def test_validation_routes_low_confidence_contradiction_and_hallucinated_evidence() -> None:

@@ -223,8 +223,25 @@ class MessageAnalysisResponse(BaseModel):
     attachments: list[AttachmentItem]
 
 
+class ReviewIssueValue(BaseModel):
+    source_id: str
+    source_label: str
+    value: str
+
+
+class ReviewIssue(BaseModel):
+    code: str
+    category: str
+    title: str
+    message: str
+    field_name: str | None = None
+    human_resolvable: bool
+    values: list[ReviewIssueValue] = Field(default_factory=list)
+
+
 class ReviewDetailResponse(ReviewItemResponse):
     analysis: MessageAnalysisResponse
+    issues: list[ReviewIssue] = Field(default_factory=list)
 
 
 class ReviewListResponse(BaseModel):

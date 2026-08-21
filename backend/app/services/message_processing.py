@@ -15,7 +15,11 @@ from app.core.config import Settings, get_settings
 from app.core.time import utc_now
 from app.integrations.ai import AnalysisProviderError, AnalysisResult, Analyzer, OpenAIAnalyzer
 from app.integrations.ai.prompt import ANALYSIS_PROMPT_VERSION
-from app.integrations.ai.schemas import ANALYSIS_SCHEMA_VERSION, HumanAnalysisInput
+from app.integrations.ai.schemas import (
+    ANALYSIS_SCHEMA_VERSION,
+    ActionItem,
+    HumanAnalysisInput,
+)
 from app.integrations.gmail.client import GmailMailbox, mailbox_from_credential
 from app.integrations.gmail.errors import GmailReauthorizationRequired, GmailTransientError
 from app.integrations.pdf import extract_pdf
@@ -26,6 +30,7 @@ from app.models.enums import (
     GmailConnectionStatus,
     MessageClassification,
     PolicyStatus,
+    Priority,
     ProcessingStatus,
     ReviewStatus,
     TaskStatus,
@@ -41,11 +46,15 @@ from app.models.operations import (
     Task,
 )
 from app.models.organization import Agency, GmailConnection, GmailOAuthCredential, User
+from app.processing.conflicts import detect_source_conflicts, unique_source_values
 from app.processing.source import SourceBundle, build_source_bundle
 from app.processing.validation import (
     POLICY_CLASSIFICATIONS,
     ValidatedAnalysis,
     evidence_supports_proposed_value,
+    normalize_analysis_result,
+    parse_premium,
+    post_human_review_blocking_flags,
     validate_analysis,
 )
 from app.services.audit import record_audit_event
@@ -83,6 +92,7 @@ REVIEW_REASONS = {
     "UNKNOWN_POLICY_STATUS": "The policy status could not be determined.",
     "CLASSIFICATION_STATUS_MISMATCH": "The communication type conflicts with its policy status.",
     "EVIDENCE_MISMATCH": "One or more proposed facts are not supported by verified source text.",
+    "EVIDENCE_INCOMPLETE": "Some proposed facts do not include verifiable source evidence.",
     "PDF_NEEDS_OCR": "A PDF contains little or no extractable text and needs manual review.",
     "PDF_EXTRACTION_FAILED": "A PDF could not be extracted safely.",
     "SOURCE_TRUNCATED": "The source exceeded the configured analysis limit.",
@@ -102,8 +112,48 @@ REVIEW_REASONS = {
     "ACTION_WITHOUT_CASE": "Actionable work could not be linked to a reliable policy case.",
     "AI_INVALID_RESPONSE": "The structured model response could not be validated.",
     "AI_REFUSAL": "The model did not return a usable structured analysis.",
+    "POLICY_NUMBER_CONFLICT": "The carrier sources contain different policy numbers.",
+    "CLIENT_IDENTITY_CONFLICT": "The carrier sources identify different clients.",
+    "PREMIUM_CONFLICT": "The carrier sources contain different premium amounts.",
+    "CURRENCY_CONFLICT": "The carrier sources contain different premium currencies.",
+    "POLICY_STATUS_CONFLICT": "The carrier sources contain incompatible policy statuses.",
+    "EFFECTIVE_DATE_CONFLICT": "The carrier sources contain different effective dates.",
+    "CASE_MATCH_CONFLICT": "The incoming message matches more than one existing case.",
 }
 
+MISSING_INFO_TASK_TITLES = frozenset(
+    {
+        "Obtain premium amount from carrier",
+        "Obtain policy effective date",
+        "Request policy document from carrier",
+        "Contact carrier for outstanding requirements",
+        "Obtain policy number from carrier",
+        "Obtain client name from carrier",
+        "Confirm current policy status with carrier",
+    }
+)
+
+VALIDATION_FIELDS = {
+    "INVALID_PREMIUM": "premium_amount",
+    "CURRENCY_CONFLICT": "currency",
+    "INVALID_DATE": "effective_date",
+    "INVALID_DEADLINE": "deadline",
+    "CLIENT_MISMATCH": "client_name",
+    "POLICY_NUMBER_CONFLICT": "policy_number",
+    "CLIENT_IDENTITY_CONFLICT": "client_name",
+    "PREMIUM_CONFLICT": "premium_amount",
+    "POLICY_STATUS_CONFLICT": "policy_status",
+    "EFFECTIVE_DATE_CONFLICT": "effective_date",
+}
+
+GENERIC_MACHINE_SIGNALS = frozenset(
+    {
+        "LOW_CONFIDENCE",
+        "MODEL_UNCERTAINTY",
+        "EVIDENCE_INCOMPLETE",
+        "EVIDENCE_MISMATCH",
+    }
+)
 RETRYABLE_PROCESSING_CODES = {
     "AI_RATE_LIMITED",
     "AI_TIMEOUT",
@@ -469,18 +519,187 @@ def _process_attachments(
     return extracted, flags
 
 
+def _case_candidates(
+    db: Session, message: CarrierMessage, result: AnalysisResult
+) -> list[PolicyCase]:
+    query = select(PolicyCase).where(
+        PolicyCase.agency_id == message.agency_id,
+        PolicyCase.carrier_id == message.carrier_id,
+    )
+    if result.policy_number:
+        query = query.where(func.upper(PolicyCase.policy_number) == result.policy_number.upper())
+    elif result.client_name:
+        query = query.where(
+            func.lower(func.trim(PolicyCase.client_name)) == _client_key(result.client_name)
+        )
+    else:
+        return []
+    return list(db.scalars(query.limit(3)).all())
+
+
 def _case_for_result(
     db: Session, message: CarrierMessage, result: AnalysisResult
 ) -> PolicyCase | None:
-    if not result.policy_number:
-        return None
-    return db.scalar(
-        select(PolicyCase).where(
-            PolicyCase.agency_id == message.agency_id,
-            PolicyCase.carrier_id == message.carrier_id,
-            func.upper(PolicyCase.policy_number) == result.policy_number.upper(),
+    candidates = _case_candidates(db, message, result)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _missing_information_actions(
+    validated: ValidatedAnalysis,
+) -> tuple[ValidatedAnalysis, set[str]]:
+    result = validated.result
+    task_titles: list[tuple[str, str]] = []
+    flags = set(validated.flags)
+    missing_flags = {
+        "MISSING_POLICY_NUMBER",
+        "MISSING_CLIENT_NAME",
+        "UNKNOWN_POLICY_STATUS",
+        "PDF_NEEDS_OCR",
+        "PDF_EXTRACTION_FAILED",
+    }
+    if "MISSING_POLICY_NUMBER" in flags:
+        task_titles.append(
+            ("Obtain policy number from carrier", "Request the missing policy number.")
         )
+    if "MISSING_CLIENT_NAME" in flags:
+        task_titles.append(("Obtain client name from carrier", "Confirm the insured's name."))
+    if "UNKNOWN_POLICY_STATUS" in flags:
+        task_titles.append(
+            ("Confirm current policy status with carrier", "Obtain the current policy status.")
+        )
+    if flags & {"PDF_NEEDS_OCR", "PDF_EXTRACTION_FAILED"}:
+        task_titles.append(
+            (
+                "Request policy document from carrier",
+                "Obtain a readable copy of the referenced policy document.",
+            )
+        )
+    if result.classification is MessageClassification.POLICY_ISSUED:
+        if result.premium_amount is None:
+            task_titles.append(
+                ("Obtain premium amount from carrier", "Confirm the policy premium amount.")
+            )
+        if result.effective_date is None:
+            task_titles.append(
+                ("Obtain policy effective date", "Confirm the policy effective date.")
+            )
+    if (
+        result.classification is MessageClassification.PENDING_REQUIREMENTS
+        and not result.requirements
+    ):
+        task_titles.append(
+            (
+                "Contact carrier for outstanding requirements",
+                "Ask the carrier to identify the outstanding underwriting requirements.",
+            )
+        )
+    existing = {action.title.casefold() for action in result.action_items}
+    additions = [
+        ActionItem(
+            title=title,
+            description=description,
+            priority=Priority.HIGH,
+            explicit_due_date=None,
+            due_text=None,
+        )
+        for title, description in task_titles
+        if title.casefold() not in existing
+    ]
+    flags.difference_update(missing_flags)
+    return (
+        ValidatedAnalysis(
+            result=result.model_copy(update={"action_items": [*result.action_items, *additions]}),
+            flags=tuple(sorted(flags)),
+            verified_evidence=validated.verified_evidence,
+            premium_amount=validated.premium_amount,
+            effective_date=validated.effective_date,
+            deadline_at=validated.deadline_at,
+        ),
+        missing_flags & set(validated.flags),
     )
+
+
+def _drop_incomplete_evidence_when_source_is_deterministic(
+    validated: ValidatedAnalysis, bundle: SourceBundle
+) -> ValidatedAnalysis:
+    if "EVIDENCE_INCOMPLETE" not in validated.flags:
+        return validated
+    result = validated.result
+    evidenced = {item.proposal.field_name for item in validated.verified_evidence}
+    deterministic = set(unique_source_values(bundle))
+    critical = {
+        field_name
+        for field_name, value in {
+            "client_name": result.client_name,
+            "policy_number": result.policy_number,
+            "policy_status": (
+                result.policy_status if result.policy_status is not PolicyStatus.UNKNOWN else None
+            ),
+            "premium_amount": result.premium_amount,
+            "effective_date": result.effective_date,
+            "deadline": result.deadline.raw_text,
+        }.items()
+        if value is not None
+    }
+    actions_grounded = all(
+        f"action_item:{index}" in evidenced for index in range(len(result.action_items))
+    )
+    if not actions_grounded or not all(
+        field_name in evidenced or field_name in deterministic for field_name in critical
+    ):
+        return validated
+    flags = set(validated.flags)
+    flags.discard("EVIDENCE_INCOMPLETE")
+    return ValidatedAnalysis(
+        result=validated.result,
+        flags=tuple(sorted(flags)),
+        verified_evidence=validated.verified_evidence,
+        premium_amount=validated.premium_amount,
+        effective_date=validated.effective_date,
+        deadline_at=validated.deadline_at,
+    )
+
+
+def _apply_semantic_routing_policy(
+    validated: ValidatedAnalysis,
+) -> ValidatedAnalysis:
+    """Keep Review flags tied to a concrete choice or hard operational invariant."""
+    flags = set(validated.flags)
+    flags.difference_update(GENERIC_MACHINE_SIGNALS)
+    if "CLASSIFICATION_STATUS_MISMATCH" in flags and "POLICY_STATUS_CONFLICT" not in flags:
+        flags.discard("CLASSIFICATION_STATUS_MISMATCH")
+    return ValidatedAnalysis(
+        result=validated.result,
+        flags=tuple(sorted(flags)),
+        verified_evidence=validated.verified_evidence,
+        premium_amount=validated.premium_amount,
+        effective_date=validated.effective_date,
+        deadline_at=validated.deadline_at,
+    )
+
+
+def _ground_result_from_consistent_sources(
+    result: AnalysisResult, bundle: SourceBundle
+) -> AnalysisResult:
+    values = unique_source_values(bundle)
+    updates: dict[str, object] = {}
+    _, _, money_error = parse_premium(result.premium_amount, result.currency)
+    for field_name in (
+        "client_name",
+        "policy_number",
+        "premium_amount",
+        "currency",
+        "effective_date",
+    ):
+        if field_name in values and not (
+            money_error == "CURRENCY_CONFLICT" and field_name in {"premium_amount", "currency"}
+        ):
+            updates[field_name] = values[field_name]
+    if "policy_status" in values:
+        updates["policy_status"] = PolicyStatus(values["policy_status"])
+    if "classification" in values:
+        updates["classification"] = MessageClassification(values["classification"])
+    return result.model_copy(update=updates) if updates else result
 
 
 def _reconcile_case_owner(
@@ -677,15 +896,21 @@ def _finalize(
     *,
     actor_user_id: int | None,
     review: ReviewItem | None = None,
+    case_override: PolicyCase | None = None,
 ) -> ProcessingResult:
     result = validated.result
     agency = db.get(Agency, message.agency_id)
     assert agency is not None
-    case = _case_for_result(db, message, result)
+    case = case_override or _case_for_result(db, message, result)
+    if case is not None and (
+        case.agency_id != message.agency_id or case.carrier_id != message.carrier_id
+    ):
+        raise RuntimeError("Case association does not match the source message")
     created = False
     if result.classification in POLICY_CLASSIFICATIONS:
-        assert result.client_name and result.policy_number
         if case is None:
+            if not result.client_name:
+                raise RuntimeError("Insufficient identity to create a policy case")
             connection = _connection(db, message)
             if connection is None:
                 raise RuntimeError("Message connection unavailable")
@@ -706,6 +931,9 @@ def _finalize(
             db.add(case)
             db.flush()
             created = True
+        elif case_override is not None:
+            case.client_name = result.client_name
+            case.policy_number = result.policy_number
         case.summary = result.summary
         case.priority = result.priority
         if result.policy_status is not PolicyStatus.UNKNOWN:
@@ -746,6 +974,14 @@ def _finalize(
                     Task.source_action_index == index,
                 )
             )
+            if task is None and action.title in MISSING_INFO_TASK_TITLES:
+                task = db.scalar(
+                    select(Task).where(
+                        Task.case_id == case.id,
+                        Task.title == action.title,
+                        Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+                    )
+                )
             if task is None:
                 task = Task(
                     agency_id=message.agency_id,
@@ -904,6 +1140,7 @@ def reconcile_case_owner_conflicts(
         review.assigned_reviewer_id = case.assigned_agent_id
         bundle = build_source_bundle(message, max_chars=get_settings().ai_max_source_chars)
         retained_flags = set(analysis.validation_flags) - {"CASE_OWNER_CONFLICT"}
+        result = _ground_result_from_consistent_sources(result, bundle)
         validated = validate_analysis(
             result,
             bundle,
@@ -911,7 +1148,11 @@ def reconcile_case_owner_conflicts(
             confidence_threshold=get_settings().ai_auto_apply_confidence_threshold,
             source_flags=retained_flags,
         )
+        conflicts = detect_source_conflicts(bundle)
+        validated = _drop_incomplete_evidence_when_source_is_deterministic(validated, bundle)
+        validated, _missing_flags = _missing_information_actions(validated)
         flags = set(validated.flags)
+        flags.update(conflict.code for conflict in conflicts)
         if result.client_name and _client_key(case.client_name) != _client_key(result.client_name):
             flags.add("CLIENT_MISMATCH")
         if flags != set(validated.flags):
@@ -923,6 +1164,8 @@ def reconcile_case_owner_conflicts(
                 effective_date=validated.effective_date,
                 deadline_at=validated.deadline_at,
             )
+        validated = _apply_semantic_routing_policy(validated)
+        validated = _retain_only_verified_human_evidence(validated)
         analysis.validation_flags = list(validated.flags)
         if validated.safe_to_apply:
             _finalize(
@@ -1008,6 +1251,70 @@ def reconcile_case_operational_ownership(
     )
 
 
+def _prepare_analysis_routing(
+    db: Session,
+    message: CarrierMessage,
+    result: AnalysisResult,
+    bundle: SourceBundle,
+    *,
+    confidence_threshold: float,
+    source_flags: set[str] | None = None,
+) -> tuple[ValidatedAnalysis, PolicyCase | None]:
+    agency = db.get(Agency, message.agency_id)
+    assert agency is not None
+    normalized = normalize_analysis_result(result)
+    grounded = _ground_result_from_consistent_sources(normalized, bundle)
+    validated = validate_analysis(
+        grounded,
+        bundle,
+        agency_timezone=agency.timezone,
+        confidence_threshold=confidence_threshold,
+        source_flags=source_flags,
+    )
+    conflicts = detect_source_conflicts(bundle)
+    validated = _drop_incomplete_evidence_when_source_is_deterministic(validated, bundle)
+    validated, _missing_flags = _missing_information_actions(validated)
+    flags = set(validated.flags)
+    flags.update(conflict.code for conflict in conflicts)
+    candidates = _case_candidates(db, message, validated.result)
+    if len(candidates) > 1:
+        flags.add("CASE_MATCH_CONFLICT")
+    case = candidates[0] if len(candidates) == 1 else None
+    owner_conflict = _reconcile_case_owner(db, message, case)
+    if owner_conflict:
+        flags.add("CASE_OWNER_CONFLICT")
+    elif validated.result.classification in POLICY_CLASSIFICATIONS and (
+        (case is not None and not _case_has_operational_agent(db, case))
+        or (case is None and _connection_agent_id(db, message) is None)
+    ):
+        flags.add("OPERATIONAL_OWNER_REQUIRED")
+    if (
+        case
+        and validated.result.client_name
+        and _client_key(case.client_name) != _client_key(validated.result.client_name)
+    ):
+        flags.add("CLIENT_MISMATCH")
+    if (
+        case is None
+        and validated.result.classification not in POLICY_CLASSIFICATIONS
+        and validated.result.action_items
+    ):
+        flags.add("ACTION_WITHOUT_CASE")
+    if flags != set(validated.flags):
+        validated = ValidatedAnalysis(
+            result=validated.result,
+            flags=tuple(sorted(flags)),
+            verified_evidence=validated.verified_evidence,
+            premium_amount=validated.premium_amount,
+            effective_date=validated.effective_date,
+            deadline_at=validated.deadline_at,
+        )
+    return (
+        _retain_only_verified_human_evidence(_apply_semantic_routing_policy(validated)),
+        case,
+    )
+
+
 def process_claimed_message(
     db: Session,
     message_id: int,
@@ -1068,46 +1375,14 @@ def process_claimed_message(
 
     message = _load_message(db, message_id)
     assert message is not None
-    agency = db.get(Agency, message.agency_id)
-    assert agency is not None
-    validated = validate_analysis(
+    validated, case = _prepare_analysis_routing(
+        db,
+        message,
         result,
         bundle,
-        agency_timezone=agency.timezone,
         confidence_threshold=active.ai_auto_apply_confidence_threshold,
         source_flags=source_flags,
     )
-    flags = set(validated.flags)
-    case = _case_for_result(db, message, validated.result)
-    owner_conflict = _reconcile_case_owner(db, message, case)
-    if owner_conflict:
-        flags.add("CASE_OWNER_CONFLICT")
-    elif validated.result.classification in POLICY_CLASSIFICATIONS and (
-        (case is not None and not _case_has_operational_agent(db, case))
-        or (case is None and _connection_agent_id(db, message) is None)
-    ):
-        flags.add("OPERATIONAL_OWNER_REQUIRED")
-    if (
-        case
-        and validated.result.client_name
-        and _client_key(case.client_name) != _client_key(validated.result.client_name)
-    ):
-        flags.add("CLIENT_MISMATCH")
-    if (
-        case is None
-        and validated.result.classification not in POLICY_CLASSIFICATIONS
-        and validated.result.action_items
-    ):
-        flags.add("ACTION_WITHOUT_CASE")
-    if flags != set(validated.flags):
-        validated = ValidatedAnalysis(
-            result=validated.result,
-            flags=tuple(sorted(flags)),
-            verified_evidence=validated.verified_evidence,
-            premium_amount=validated.premium_amount,
-            effective_date=validated.effective_date,
-            deadline_at=validated.deadline_at,
-        )
     analysis = _upsert_analysis(db, message, result, validated, analyzer.model_name)
     record_audit_event(
         db,
@@ -1140,7 +1415,14 @@ def process_claimed_message(
             validation_flags=validated.flags,
         )
     try:
-        finalized = _finalize(db, message, analysis, validated, bundle, actor_user_id=None)
+        finalized = _finalize(
+            db,
+            message,
+            analysis,
+            validated,
+            bundle,
+            actor_user_id=None,
+        )
     except Exception:
         return mark_failed(db, message_id, "MATERIALIZATION_FAILED", settings=active)
     return ProcessingResult(
@@ -1282,6 +1564,122 @@ def _evidence_for_human_correction(
     return retained
 
 
+def _human_review_case(
+    db: Session,
+    current: AuthContext,
+    review: ReviewItem,
+    message: CarrierMessage,
+    result: AnalysisResult,
+) -> tuple[PolicyCase | None, set[str]]:
+    """Resolve a human-reviewed result without applying Gmail handoff semantics."""
+    blockers: set[str] = set()
+    linked_case = review.case
+    matched_case = _case_for_result(db, message, result)
+
+    if linked_case is not None:
+        if (
+            linked_case.agency_id != message.agency_id
+            or linked_case.carrier_id != message.carrier_id
+            or linked_case.assigned_agent_id != current.user.id
+        ):
+            blockers.add("CASE_OWNER_CONFLICT")
+            return linked_case, blockers
+        if matched_case is not None and matched_case.id != linked_case.id:
+            blockers.add("CASE_OWNER_CONFLICT")
+        return linked_case, blockers
+
+    if matched_case is not None:
+        if not _case_has_operational_agent(db, matched_case):
+            blockers.add("OPERATIONAL_OWNER_REQUIRED")
+        elif matched_case.assigned_agent_id != current.user.id:
+            blockers.add("CASE_OWNER_CONFLICT")
+        elif result.client_name and _client_key(matched_case.client_name) != _client_key(
+            result.client_name
+        ):
+            blockers.add("CLIENT_MISMATCH")
+        if not blockers:
+            review.case_id = matched_case.id
+            review.assigned_reviewer_id = matched_case.assigned_agent_id
+            message.case_id = matched_case.id
+        return matched_case, blockers
+
+    if result.classification in POLICY_CLASSIFICATIONS:
+        connection_agent_id = _connection_agent_id(db, message)
+        if connection_agent_id is None:
+            blockers.add("OPERATIONAL_OWNER_REQUIRED")
+        elif connection_agent_id != current.user.id:
+            blockers.add("CASE_OWNER_CONFLICT")
+    elif result.action_items:
+        blockers.add("ACTION_WITHOUT_CASE")
+    return None, blockers
+
+
+def _retain_only_verified_human_evidence(validated: ValidatedAnalysis) -> ValidatedAnalysis:
+    """Keep final human-reviewed evidence limited to source-verified excerpts."""
+    return ValidatedAnalysis(
+        result=validated.result.model_copy(
+            update={"evidence": [item.proposal for item in validated.verified_evidence]}
+        ),
+        flags=validated.flags,
+        verified_evidence=validated.verified_evidence,
+        premium_amount=validated.premium_amount,
+        effective_date=validated.effective_date,
+        deadline_at=validated.deadline_at,
+    )
+
+
+def reevaluate_stored_review(db: Session, review_id: int) -> ProcessingResult:
+    """Re-run deterministic routing for a Review without calling the model provider."""
+    review = db.get(ReviewItem, review_id)
+    if review is None:
+        raise LookupError("Review item not found")
+    if review.status not in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW}:
+        raise ValueError("Review is already finalized")
+    message = _load_message(db, review.carrier_message_id)
+    if message is None or message.analysis is None:
+        raise ValueError("Stored analysis is unavailable")
+    try:
+        result = AnalysisResult.model_validate(message.analysis.model_result_json)
+    except ValueError as error:
+        raise ValueError("Stored analysis is invalid") from error
+    settings = get_settings()
+    bundle = build_source_bundle(message, max_chars=settings.ai_max_source_chars)
+    validated, case = _prepare_analysis_routing(
+        db,
+        message,
+        result,
+        bundle,
+        confidence_threshold=settings.ai_auto_apply_confidence_threshold,
+    )
+    message.analysis.validation_flags = list(validated.flags)
+    if not validated.safe_to_apply:
+        active_review = _review_for_flags(
+            db,
+            message,
+            validated.flags,
+            existing_case=case,
+            model_name=message.analysis.model_name,
+            confidence=float(message.analysis.overall_confidence),
+        )
+        return ProcessingResult(
+            message_id=message.id,
+            processing_status=ProcessingStatus.NEEDS_REVIEW,
+            case_id=case.id if case else None,
+            review_id=active_review.id,
+            analysis_confidence=float(message.analysis.overall_confidence),
+            validation_flags=validated.flags,
+        )
+    return _finalize(
+        db,
+        message,
+        message.analysis,
+        validated,
+        bundle,
+        actor_user_id=None,
+        review=review,
+    )
+
+
 def apply_review(
     db: Session,
     current: AuthContext,
@@ -1338,25 +1736,36 @@ def apply_review(
         confidence_threshold=0,
         require_evidence=False,
     )
-    blocking = set(validated.flags) - {"MODEL_UNCERTAINTY", "LOW_CONFIDENCE"}
-    case = _case_for_result(db, message, validated.result)
-    if _reconcile_case_owner(db, message, case):
+    validated = _retain_only_verified_human_evidence(validated)
+    blocking = post_human_review_blocking_flags(validated.flags)
+    case, ownership_blockers = _human_review_case(db, current, review, message, validated.result)
+    blocking.update(ownership_blockers)
+    if original is not None and "CASE_OWNER_CONFLICT" in original.validation_flags:
         blocking.add("CASE_OWNER_CONFLICT")
-    elif validated.result.classification in POLICY_CLASSIFICATIONS and (
-        (case is not None and not _case_has_operational_agent(db, case))
-        or (case is None and _connection_agent_id(db, message) is None)
-    ):
-        blocking.add("OPERATIONAL_OWNER_REQUIRED")
-    if (
-        case
-        and validated.result.client_name
-        and _client_key(case.client_name) != _client_key(validated.result.client_name)
-    ):
-        blocking.add("CLIENT_MISMATCH")
     if blocking:
+        issues = [
+            {
+                "code": code,
+                "message": REVIEW_REASONS.get(
+                    code, "This issue must be resolved before the review can be applied."
+                ),
+                "field_name": VALIDATION_FIELDS.get(code),
+                "category": (
+                    "OWNERSHIP"
+                    if code in {"CASE_OWNER_CONFLICT", "OPERATIONAL_OWNER_REQUIRED"}
+                    else "VALIDATION"
+                ),
+                "human_resolvable": code
+                not in {"CASE_OWNER_CONFLICT", "OPERATIONAL_OWNER_REQUIRED"},
+            }
+            for code in sorted(blocking)
+        ]
         raise HTTPException(
             status_code=422,
-            detail=f"Correct the remaining validation issue: {sorted(blocking)[0]}",
+            detail={
+                "message": "Resolve the listed issues before applying this review.",
+                "issues": issues,
+            },
         )
     if original is None:
         original = MessageAnalysis(
@@ -1377,6 +1786,7 @@ def apply_review(
         bundle,
         actor_user_id=current.user.id,
         review=review,
+        case_override=case,
     )
 
 

@@ -225,7 +225,20 @@ export type MessageAnalysis = {
   attachments: CaseDetail['attachments']
 }
 
-export type ReviewDetail = ReviewItem & { analysis: MessageAnalysis }
+export type ReviewIssue = {
+  code: string
+  category: string
+  title: string
+  message: string
+  field_name: string | null
+  human_resolvable: boolean
+  values: Array<{ source_id: string; source_label: string; value: string }>
+}
+
+export type ReviewDetail = ReviewItem & {
+  analysis: MessageAnalysis
+  issues?: ReviewIssue[]
+}
 
 export type MessageProcessingResult = {
   message_id: number
