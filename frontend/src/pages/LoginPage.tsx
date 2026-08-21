@@ -3,6 +3,7 @@ import { type FormEvent, useState } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 
 import { authQueryKey, useCurrentUser } from '../app/auth'
+import { clearSessionState } from '../app/queryClient'
 import { Button, Input } from '../components/ui'
 import { ApiError, login } from '../lib/api'
 
@@ -15,6 +16,7 @@ export function LoginPage() {
   const loginMutation = useMutation({
     mutationFn: () => login(email, password),
     onSuccess: async (response) => {
+      await clearSessionState(queryClient)
       queryClient.setQueryData(authQueryKey, response)
       await navigate('/dashboard', { replace: true })
     },
@@ -43,8 +45,8 @@ export function LoginPage() {
           </p>
         </div>
         <p className="max-w-lg text-sm leading-6 text-slate-400">
-          Application sign-in is separate from Gmail authorization. Gmail
-          connections will use Google OAuth in a later stage.
+          Sign in with your agency account, then connect Gmail securely with
+          Google OAuth to begin automatic carrier monitoring.
         </p>
       </section>
 

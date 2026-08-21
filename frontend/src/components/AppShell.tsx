@@ -1,7 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 
-import { authQueryKey, useCurrentUser } from '../app/auth'
+import { useCurrentUser } from '../app/auth'
+import { clearSessionState } from '../app/queryClient'
 import { logout } from '../lib/api'
 import { Button } from './ui'
 
@@ -16,6 +17,7 @@ const agentNavigation = [
 
 const managerNavigation = [
   ['Analytics', '/manager/analytics'],
+  ['Activity', '/manager/activity'],
   ['Agents', '/manager/agents'],
   ['Carriers', '/manager/carriers'],
   ['System Logs', '/manager/system-logs'],
@@ -47,21 +49,24 @@ export function AppShell() {
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: async () => {
-      queryClient.removeQueries({ queryKey: authQueryKey })
+      await clearSessionState(queryClient)
       await navigate('/login', { replace: true })
     },
   })
 
   return (
-    <div className="min-h-screen bg-slate-100 lg:grid lg:grid-cols-[248px_1fr]">
-      <aside className="hidden min-h-screen bg-slate-900 text-white lg:flex lg:flex-col">
+    <div className="min-h-screen bg-slate-100 lg:grid lg:grid-cols-[248px_1fr] lg:items-start">
+      <aside className="hidden bg-slate-900 text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
         <div className="border-b border-slate-700 px-6 py-6">
           <p className="text-xs font-semibold tracking-[0.12em] text-slate-400 uppercase">
             Carrier
           </p>
           <p className="mt-1 text-lg font-semibold">Intelligence Hub</p>
         </div>
-        <nav className="flex-1 px-3 py-5" aria-label="Primary navigation">
+        <nav
+          className="min-h-0 flex-1 overflow-y-auto px-3 py-5"
+          aria-label="Primary navigation"
+        >
           {agentNavigation.map(([label, to]) => (
             <NavigationLink key={to} label={label} to={to} />
           ))}
@@ -96,7 +101,7 @@ export function AppShell() {
       </aside>
 
       <div className="min-w-0">
-        <header className="border-b border-slate-200 bg-white px-5 py-4 lg:px-8">
+        <header className="sticky top-0 z-20 border-b border-slate-200 bg-white px-5 py-4 lg:static lg:px-8">
           <div className="flex items-center justify-between">
             <p className="font-semibold text-slate-900 lg:hidden">
               Carrier Intelligence Hub

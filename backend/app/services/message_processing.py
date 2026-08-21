@@ -990,6 +990,11 @@ def apply_review(
 ) -> ProcessingResult:
     from app.services.operations import get_review_item
 
+    if current.user.role is UserRole.MANAGER:
+        raise HTTPException(
+            status_code=403,
+            detail="Review decisions are completed by the assigned agent",
+        )
     get_review_item(db, current, review_id)
     review = db.get(ReviewItem, review_id)
     assert review is not None
@@ -1073,6 +1078,11 @@ def dismiss_review(
 ) -> ProcessingResult:
     from app.services.operations import get_review_item
 
+    if current.user.role is UserRole.MANAGER:
+        raise HTTPException(
+            status_code=403,
+            detail="Review decisions are completed by the assigned agent",
+        )
     get_review_item(db, current, review_id)
     review = db.get(ReviewItem, review_id)
     assert review is not None

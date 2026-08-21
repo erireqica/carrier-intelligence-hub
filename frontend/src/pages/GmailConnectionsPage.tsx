@@ -41,6 +41,11 @@ const oauthMessages: Record<string, { tone: string; message: string }> = {
     tone: 'border-red-300 bg-red-50 text-red-950',
     message: 'The required Gmail workflow-label permission was not granted.',
   },
+  already_connected: {
+    tone: 'border-amber-300 bg-amber-50 text-amber-950',
+    message:
+      'This Gmail inbox is already connected to another agent in your agency.',
+  },
   failed: {
     tone: 'border-red-300 bg-red-50 text-red-950',
     message: 'Gmail authorization could not be completed. Please try again.',
@@ -151,17 +156,23 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
                 ) : ['RECEIVED', 'FAILED'].includes(
                     message.processing_status,
                   ) ? (
-                  <Button
-                    variant="secondary"
-                    onClick={() => process.mutate(message.id)}
-                    disabled={process.isPending}
-                  >
-                    {process.isPending && process.variables === message.id
-                      ? 'Analyzing…'
-                      : message.processing_status === 'FAILED'
-                        ? 'Retry analysis'
-                        : 'Analyze now'}
-                  </Button>
+                  <details>
+                    <summary className="cursor-pointer text-xs font-semibold text-slate-600">
+                      Manual recovery
+                    </summary>
+                    <Button
+                      className="mt-2"
+                      variant="secondary"
+                      onClick={() => process.mutate(message.id)}
+                      disabled={process.isPending}
+                    >
+                      {process.isPending && process.variables === message.id
+                        ? 'Analyzing…'
+                        : message.processing_status === 'FAILED'
+                          ? 'Retry analysis'
+                          : 'Analyze now'}
+                    </Button>
+                  </details>
                 ) : (
                   <span className="text-slate-500">Processing…</span>
                 )}
@@ -179,7 +190,13 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
   )
 }
 
-function ConnectionCard({ connection }: { connection: GmailConnection }) {
+function ConnectionCard({
+  connection,
+  isManager,
+}: {
+  connection: GmailConnection
+  isManager: boolean
+}) {
   const queryClient = useQueryClient()
   const [syncResult, setSyncResult] = useState<GmailSyncResult | null>(null)
   const refresh = async () => {
@@ -214,23 +231,23 @@ function ConnectionCard({ connection }: { connection: GmailConnection }) {
             <h2 className="font-semibold">{connection.gmail_address}</h2>
             <StatusBadge status={connection.status} />
           </div>
-          <p className="mt-1 text-sm text-slate-500">
-            Owner: {connection.owner.full_name} · Connected{' '}
-            {formatDate(connection.connected_at)}
-          </p>
+          {isManager ? (
+            <p className="mt-2 border-l-2 border-blue-500 pl-3 text-sm">
+              <span className="font-semibold text-slate-900">
+                Connected agent
+              </span>
+              <br />
+              {connection.owner.full_name} · {connection.owner.email}
+            </p>
+          ) : (
+            <p className="mt-1 text-sm text-slate-500">
+              Connected {formatDate(connection.connected_at)}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
-          {(connection.status === 'CONNECTED' ||
-            connection.status === 'ERROR') && (
-            <Button
-              variant="secondary"
-              onClick={() => sync.mutate()}
-              disabled={sync.isPending || disconnect.isPending}
-            >
-              {sync.isPending ? 'Syncing…' : 'Sync now'}
-            </Button>
-          )}
           {connection.is_owner &&
+            connection.status !== 'DISCONNECTED' &&
             (connection.status !== 'CONNECTED' ||
               !connection.can_apply_workflow_labels) && (
               <Button
@@ -245,23 +262,17 @@ function ConnectionCard({ connection }: { connection: GmailConnection }) {
                     : 'Upgrade permissions'}
               </Button>
             )}
-          {connection.can_apply_workflow_labels &&
-            (connection.pending_label_sync_count > 0 ||
-              connection.failed_label_sync_count > 0) && (
-              <Button
-                variant="secondary"
-                onClick={() => retryLabels.mutate()}
-                disabled={retryLabels.isPending}
-              >
-                {retryLabels.isPending
-                  ? 'Queuing labels…'
-                  : 'Retry workflow labels'}
-              </Button>
-            )}
           {connection.is_owner && connection.status !== 'DISCONNECTED' && (
             <Button
               variant="danger"
-              onClick={() => disconnect.mutate()}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    'Disconnect this inbox?\n\nCarrier Hub will stop monitoring new emails from this account. Existing cases, tasks, messages and audit history will be preserved.',
+                  )
+                )
+                  disconnect.mutate()
+              }}
               disabled={disconnect.isPending || sync.isPending}
             >
               {disconnect.isPending ? 'Disconnecting…' : 'Disconnect'}
@@ -269,6 +280,9 @@ function ConnectionCard({ connection }: { connection: GmailConnection }) {
           )}
         </div>
       </div>
+      <p className="mt-4 text-sm text-slate-600">
+        Monitoring and analysis run automatically for approved carrier messages.
+      </p>
       <dl className="mt-5 grid gap-4 text-sm sm:grid-cols-2">
         <div>
           <dt className="text-slate-500">Last successful sync</dt>
@@ -319,6 +333,36 @@ function ConnectionCard({ connection }: { connection: GmailConnection }) {
           {actionError.message}
         </p>
       )}
+      <details className="mt-4 border-t border-slate-200 pt-4">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-700">
+          Troubleshooting and manual recovery
+        </summary>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {(connection.status === 'CONNECTED' ||
+            connection.status === 'ERROR') && (
+            <Button
+              variant="secondary"
+              onClick={() => sync.mutate()}
+              disabled={sync.isPending || disconnect.isPending}
+            >
+              {sync.isPending ? 'Syncing…' : 'Sync now'}
+            </Button>
+          )}
+          {connection.can_apply_workflow_labels &&
+            (connection.pending_label_sync_count > 0 ||
+              connection.failed_label_sync_count > 0) && (
+              <Button
+                variant="secondary"
+                onClick={() => retryLabels.mutate()}
+                disabled={retryLabels.isPending}
+              >
+                {retryLabels.isPending
+                  ? 'Queuing labels…'
+                  : 'Retry workflow labels'}
+              </Button>
+            )}
+        </div>
+      </details>
       <RecentMessages connectionId={connection.id} />
     </article>
   )
@@ -349,12 +393,14 @@ export function GmailConnectionsPage() {
       />
     )
   const feedback = oauthResult ? oauthMessages[oauthResult] : null
+  const activeConnections = connections.data.connections.filter(
+    (connection) => connection.status !== 'DISCONNECTED',
+  )
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Mailbox monitoring"
         title="Gmail Connections"
-        description="Carrier Hub reads approved carrier communications and applies Carrier Hub workflow labels to Gmail threads. It does not send, delete, archive, or mark messages read."
+        description="Connect once. Carrier Hub automatically monitors approved carrier messages, creates work, and keeps Gmail workflow labels in sync."
         action={
           <Button
             onClick={() => connect.mutate()}
@@ -386,7 +432,7 @@ export function GmailConnectionsPage() {
           {connect.error.message}
         </p>
       )}
-      {connections.data.connections.length === 0 ? (
+      {activeConnections.length === 0 ? (
         <EmptyState
           title="No Gmail inbox connected"
           description={
@@ -397,8 +443,12 @@ export function GmailConnectionsPage() {
         />
       ) : (
         <div className="space-y-5">
-          {connections.data.connections.map((connection) => (
-            <ConnectionCard key={connection.id} connection={connection} />
+          {activeConnections.map((connection) => (
+            <ConnectionCard
+              key={connection.id}
+              connection={connection}
+              isManager={auth.data!.user.role === 'MANAGER'}
+            />
           ))}
         </div>
       )}

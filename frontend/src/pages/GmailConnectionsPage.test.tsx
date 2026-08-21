@@ -157,8 +157,8 @@ describe('GmailConnectionsPage', () => {
     expect(await screen.findByText('agent@gmail.com')).toBeInTheDocument()
     expect(screen.getByText('reauth@gmail.com')).toBeInTheDocument()
     expect(screen.getByText('error@gmail.com')).toBeInTheDocument()
-    expect(screen.getByText('disconnected@gmail.com')).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: 'Reconnect' })).toHaveLength(3)
+    expect(screen.queryByText('disconnected@gmail.com')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Reconnect' })).toHaveLength(2)
     expect(screen.getAllByRole('button', { name: 'Disconnect' })).toHaveLength(
       3,
     )
@@ -182,6 +182,9 @@ describe('GmailConnectionsPage', () => {
     )
     renderPage()
 
+    fireEvent.click(
+      await screen.findByText('Troubleshooting and manual recovery'),
+    )
     fireEvent.click(await screen.findByRole('button', { name: 'Sync now' }))
     expect(
       await screen.findByRole('button', { name: 'Syncing…' }),
@@ -231,8 +234,10 @@ describe('GmailConnectionsPage', () => {
 
     expect(await screen.findByText('Renewal notice')).toBeInTheDocument()
     expect(screen.getByText('RECEIVED')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Manual recovery'))
     fireEvent.click(screen.getByRole('button', { name: 'Analyze now' }))
     await waitFor(() => expect(processMessage).toHaveBeenCalledWith(21))
+    fireEvent.click(screen.getByText('Troubleshooting and manual recovery'))
     fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Gmail could not be reached.',
@@ -251,7 +256,8 @@ describe('GmailConnectionsPage', () => {
         'The required Gmail workflow-label permission was not granted.',
       ),
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Sync now' })).toBeInTheDocument()
+    expect(screen.getByText('Connected agent')).toBeInTheDocument()
+    expect(screen.getByText(/Avery Agent/)).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Reconnect' }),
     ).not.toBeInTheDocument()
@@ -300,10 +306,53 @@ describe('GmailConnectionsPage', () => {
     renderPage()
 
     fireEvent.click(
+      await screen.findByText('Troubleshooting and manual recovery'),
+    )
+    fireEvent.click(
       await screen.findByRole('button', { name: 'Retry workflow labels' }),
     )
     await waitFor(() =>
       expect(retryGmailWorkflowLabels).toHaveBeenCalledWith(11),
     )
+  })
+
+  it('shows the dedicated duplicate-inbox OAuth message', async () => {
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: true,
+      connections: [],
+    })
+    renderPage('/gmail-connections?oauth=already_connected')
+    expect(
+      await screen.findByText(
+        'This Gmail inbox is already connected to another agent in your agency.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('confirms disconnect and removes the active card after success', async () => {
+    vi.mocked(getGmailConnections)
+      .mockResolvedValueOnce({
+        configured: true,
+        connections: [baseConnection],
+      })
+      .mockResolvedValue({ configured: true, connections: [] })
+    vi.mocked(disconnectGmailConnection).mockResolvedValue({
+      message: 'Disconnected',
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
+    await waitFor(() =>
+      expect(disconnectGmailConnection).toHaveBeenCalledWith(11),
+    )
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'Existing cases, tasks, messages and audit history will be preserved.',
+      ),
+    )
+    expect(
+      await screen.findByText('No Gmail inbox connected'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('agent@gmail.com')).not.toBeInTheDocument()
   })
 })

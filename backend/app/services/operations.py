@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, status
 from sqlalchemy import Select, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.api.schemas.domain import (
@@ -11,6 +12,7 @@ from app.api.schemas.domain import (
     AgentBrief,
     AttachmentItem,
     CarrierBrief,
+    CaseCorrectionInput,
     CaseDetail,
     CaseListItem,
     CaseListResponse,
@@ -260,6 +262,7 @@ def list_tasks(
     priority: Priority | None,
     overdue: bool | None,
     assigned_agent_id: int | None,
+    task_view: str,
 ) -> TaskListResponse:
     query = select(Task).where(Task.agency_id == current.user.agency_id)
     if current.user.role is UserRole.AGENT:
@@ -268,6 +271,12 @@ def list_tasks(
         query = query.where(Task.assigned_agent_id == assigned_agent_id)
     if task_status:
         query = query.where(Task.status == task_status)
+    elif task_view == "TODO":
+        query = query.where(Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]))
+    elif task_view == "COMPLETED":
+        query = query.where(Task.status == TaskStatus.COMPLETED)
+    elif task_view == "DISMISSED":
+        query = query.where(Task.status == TaskStatus.DISMISSED)
     if priority:
         query = query.where(Task.priority == priority)
     if overdue is True:
@@ -300,6 +309,11 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
 
     if update.assigned_agent_id is not None and current.user.role is not UserRole.MANAGER:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Manager access required")
+    if update.status is not None and current.user.role is UserRole.MANAGER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Task status decisions are completed by the assigned agent",
+        )
 
     previous_status = task.status
     previous_assignee_id = task.assigned_agent_id
@@ -521,6 +535,11 @@ def get_review_detail(db: Session, current: AuthContext, review_id: int) -> Revi
 def update_review(
     db: Session, current: AuthContext, review_id: int, update: ReviewUpdate
 ) -> ReviewItemResponse:
+    if current.user.role is UserRole.MANAGER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Review decisions are completed by the assigned agent",
+        )
     get_review_item(db, current, review_id)
     item = db.get(ReviewItem, review_id)
     assert item is not None
@@ -540,3 +559,101 @@ def update_review(
     )
     db.commit()
     return get_review_item(db, current, review_id)
+
+
+def correct_case(
+    db: Session,
+    current: AuthContext,
+    case_id: int,
+    correction: CaseCorrectionInput,
+) -> CaseDetail:
+    if current.user.role is UserRole.MANAGER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Case corrections are completed by the assigned agent",
+        )
+    case = db.scalar(
+        select(PolicyCase).where(
+            PolicyCase.id == case_id,
+            PolicyCase.agency_id == current.user.agency_id,
+            PolicyCase.assigned_agent_id == current.user.id,
+        )
+    )
+    if case is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if correction.policy_number:
+        conflict = db.scalar(
+            select(PolicyCase.id).where(
+                PolicyCase.agency_id == case.agency_id,
+                PolicyCase.carrier_id == case.carrier_id,
+                PolicyCase.policy_number == correction.policy_number,
+                PolicyCase.id != case.id,
+            )
+        )
+        if conflict is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="That policy number is already used for this carrier",
+            )
+
+    changed_fields: list[str] = []
+    enum_changes: dict[str, dict[str, str]] = {}
+    values = {
+        "client_name": correction.client_name,
+        "policy_number": correction.policy_number,
+        "current_policy_status": correction.policy_status,
+        "priority": correction.priority,
+        "summary": correction.summary,
+        "premium_amount": correction.premium_amount,
+        "currency": correction.currency,
+        "effective_date": correction.effective_date,
+    }
+    for field_name, value in values.items():
+        previous = getattr(case, field_name)
+        if previous != value:
+            setattr(case, field_name, value)
+            public_name = "policy_status" if field_name == "current_policy_status" else field_name
+            changed_fields.append(public_name)
+            if field_name in {"current_policy_status", "priority"}:
+                enum_changes[public_name] = {
+                    "previous": previous.value,
+                    "new": value.value,
+                }
+
+    deadline = None
+    if correction.deadline is not None:
+        try:
+            agency_timezone = ZoneInfo(current.agency.timezone)
+        except ZoneInfoNotFoundError:
+            agency_timezone = UTC
+        deadline = datetime.combine(
+            correction.deadline, datetime.min.time(), tzinfo=agency_timezone
+        ).astimezone(UTC)
+    if business_date(case.current_deadline, current.agency.timezone) != correction.deadline:
+        case.current_deadline = deadline
+        changed_fields.append("deadline")
+
+    if not changed_fields:
+        return get_case_detail(db, current, case_id)
+    record_audit_event(
+        db,
+        agency_id=case.agency_id,
+        actor_user_id=current.user.id,
+        case_id=case.id,
+        event_type="CASE_CORRECTED",
+        description="Case information corrected by the assigned agent",
+        metadata={
+            "changed_fields": changed_fields,
+            "reason": correction.reason,
+            "enum_changes": enum_changes,
+        },
+    )
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="That policy number is already used for this carrier",
+        ) from error
+    return get_case_detail(db, current, case_id)

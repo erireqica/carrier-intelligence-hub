@@ -122,7 +122,10 @@ def gmail_oauth_callback(request: Request, db: DbSession) -> RedirectResponse:
     except GmailProfileError:
         logger.warning("Gmail OAuth callback failed stage=gmail_profile outcome=unknown")
         return _frontend_redirect("failed")
-    except FileExistsError, LookupError, ValueError:
+    except FileExistsError:
+        logger.warning("Gmail OAuth callback failed stage=connection_validation reason=duplicate")
+        return _frontend_redirect("already_connected")
+    except LookupError, ValueError:
         logger.warning("Gmail OAuth callback failed stage=connection_validation")
         return _frontend_redirect("failed")
     except GmailIntegrationNotConfigured:

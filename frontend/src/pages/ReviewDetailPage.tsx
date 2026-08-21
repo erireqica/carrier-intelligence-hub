@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
+import { useCurrentUser } from '../app/auth'
 import {
   Button,
   ErrorState,
@@ -44,6 +45,37 @@ const priorities: Priority[] = ['LOW', 'NORMAL', 'HIGH', 'URGENT']
 const fieldClass =
   'min-h-10 w-full border border-slate-300 bg-white px-3 py-2 text-sm'
 
+function humanize(value: string) {
+  return value
+    .replaceAll('_', ' ')
+    .toLowerCase()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function reviewExplanation(reasonCode: string, fallback: string) {
+  const explanations: Record<string, string> = {
+    LOW_CONFIDENCE:
+      'Carrier Hub was not confident enough to apply these details automatically. Compare the proposed information with the carrier message and correct anything that is wrong.',
+    MODEL_UNCERTAINTY:
+      'Some details in the message were ambiguous. Check the proposed information against the carrier message before applying it.',
+    CLIENT_MISMATCH:
+      'The client name in this message does not match the client currently attached to this policy. Confirm which information is correct.',
+    SOURCE_INCOMPLETE:
+      'Carrier Hub could not verify all required details from the available message and attachments.',
+    SOURCE_TRUNCATED:
+      'Part of the source was too long to analyze safely. Check the carrier message before deciding.',
+    MISSING_POLICY_NUMBER:
+      'Carrier Hub could not verify a policy number. Check the message and add it if available.',
+    MISSING_CLIENT_NAME:
+      'Carrier Hub could not verify the client name. Check the message and correct the proposal.',
+  }
+  return (
+    explanations[reasonCode] ??
+    fallback ??
+    'Carrier Hub could not safely apply this message automatically. Compare the proposed details with the carrier message.'
+  )
+}
+
 function toHumanInput(proposal: AnalysisResult): HumanAnalysisInput {
   return {
     classification: proposal.classification,
@@ -66,6 +98,8 @@ export function ReviewDetailPage() {
   const id = Number(reviewId)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const auth = useCurrentUser()
+  const isManager = auth.data?.user.role === 'MANAGER'
   const detail = useQuery({
     queryKey: ['review', id, 'analysis'],
     queryFn: () => getReviewAnalysis(id),
@@ -73,6 +107,7 @@ export function ReviewDetailPage() {
   })
   const [editedForm, setEditedForm] = useState<HumanAnalysisInput | null>(null)
   const [notes, setNotes] = useState('')
+  const [showDismiss, setShowDismiss] = useState(false)
 
   const refreshAfterDecision = async (caseId: number | null) => {
     await queryClient.invalidateQueries({ queryKey: ['reviews'] })
@@ -130,15 +165,63 @@ export function ReviewDetailPage() {
         ← Back to review queue
       </Link>
       <PageHeader
-        eyebrow={`${review.carrier_name} · ${review.reason_code.replaceAll('_', ' ')}`}
-        title={review.message_subject}
-        description={review.reason}
+        title="This email needs your review"
+        description={`${review.carrier_name} · ${review.message_subject}`}
         action={<StatusBadge status={review.status} />}
       />
+      <section className="border border-amber-200 bg-amber-50 p-5">
+        <h2 className="font-semibold text-amber-950">
+          What needs your attention
+        </h2>
+        <p className="mt-2 max-w-4xl text-sm leading-6 text-amber-950">
+          {reviewExplanation(review.reason_code, review.reason)}
+        </p>
+      </section>
+      {isManager && !isFinalized && (
+        <p className="border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+          <strong>Manager view —</strong> review decisions are completed by the
+          assigned agent.
+        </p>
+      )}
+      {proposal && (
+        <section className="border border-slate-200 bg-white p-5">
+          <h2 className="font-semibold">What Carrier Hub found</h2>
+          <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              ['Classification', humanize(proposal.classification)],
+              ['Client', proposal.client_name ?? 'Not found'],
+              ['Policy number', proposal.policy_number ?? 'Not found'],
+              ['Policy status', humanize(proposal.policy_status)],
+              ['Priority', humanize(proposal.priority)],
+              [
+                'Deadline',
+                proposal.deadline.explicit_date ??
+                  proposal.deadline.raw_text ??
+                  'Not found',
+              ],
+              [
+                'Premium',
+                proposal.premium_amount
+                  ? `${proposal.currency ?? ''} ${proposal.premium_amount}`.trim()
+                  : 'Not found',
+              ],
+              ['Effective date', proposal.effective_date ?? 'Not found'],
+            ].map(([label, value]) => (
+              <div key={label}>
+                <dt className="text-slate-500">{label}</dt>
+                <dd className="mt-1 font-medium text-slate-900">{value}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-4 text-sm leading-6 text-slate-700">
+            {proposal.summary}
+          </p>
+        </section>
+      )}
       <section className="grid gap-6 xl:grid-cols-2">
         <div className="space-y-5 border border-slate-200 bg-white p-5">
           <div>
-            <h2 className="font-semibold">Source and evidence</h2>
+            <h2 className="font-semibold">Check against the carrier message</h2>
             <p className="mt-1 text-sm text-slate-600">
               Compare every correction against the source before applying it.
             </p>
@@ -184,23 +267,10 @@ export function ReviewDetailPage() {
               apply.mutate()
             }}
           >
-            <fieldset className="space-y-5" disabled={isFinalized}>
+            <fieldset className="space-y-5" disabled={isFinalized || isManager}>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="font-semibold">Correct structured analysis</h2>
-                <span className="text-sm text-slate-600">
-                  Confidence:{' '}
-                  {analysis.overall_confidence === null
-                    ? '—'
-                    : `${Math.round(analysis.overall_confidence * 100)}%`}
-                </span>
+                <h2 className="font-semibold">Confirm or correct</h2>
               </div>
-              {analysis.validation_flags.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {analysis.validation_flags.map((flag) => (
-                    <StatusBadge key={flag} status={flag} />
-                  ))}
-                </div>
-              )}
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="text-sm font-medium">
                   Classification
@@ -215,7 +285,9 @@ export function ReviewDetailPage() {
                     }
                   >
                     {classifications.map((value) => (
-                      <option key={value}>{value}</option>
+                      <option key={value} value={value}>
+                        {humanize(value)}
+                      </option>
                     ))}
                   </select>
                 </label>
@@ -232,7 +304,9 @@ export function ReviewDetailPage() {
                     }
                   >
                     {policyStatuses.map((value) => (
-                      <option key={value}>{value}</option>
+                      <option key={value} value={value}>
+                        {humanize(value)}
+                      </option>
                     ))}
                   </select>
                 </label>
@@ -266,7 +340,9 @@ export function ReviewDetailPage() {
                     }
                   >
                     {priorities.map((value) => (
-                      <option key={value}>{value}</option>
+                      <option key={value} value={value}>
+                        {humanize(value)}
+                      </option>
                     ))}
                   </select>
                 </label>
@@ -424,34 +500,65 @@ export function ReviewDetailPage() {
                 ))}
               </div>
               <div className="border-t border-slate-200 pt-5">
-                <label className="block text-sm font-medium">
-                  Dismissal notes
-                  <Input
-                    className="mt-1"
-                    value={notes}
-                    onChange={(event) => setNotes(event.target.value)}
-                  />
-                </label>
+                <details className="mb-5 border border-slate-200 p-3">
+                  <summary className="cursor-pointer text-sm font-semibold text-slate-700">
+                    Technical details
+                  </summary>
+                  <p className="mt-3 text-sm text-slate-600">
+                    Confidence:{' '}
+                    {analysis.overall_confidence === null
+                      ? 'Unavailable'
+                      : `${Math.round(analysis.overall_confidence * 100)}%`}
+                  </p>
+                  {analysis.validation_flags.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {analysis.validation_flags.map((flag) => (
+                        <StatusBadge key={flag} status={flag} />
+                      ))}
+                    </div>
+                  )}
+                </details>
+                {showDismiss && !isManager && !isFinalized && (
+                  <div className="mb-4 border border-red-200 bg-red-50 p-4">
+                    <label className="block text-sm font-medium">
+                      Why is this message not actionable?
+                      <Input
+                        className="mt-1"
+                        value={notes}
+                        onChange={(event) => setNotes(event.target.value)}
+                      />
+                    </label>
+                    <Button
+                      className="mt-3"
+                      type="button"
+                      variant="danger"
+                      disabled={dismiss.isPending}
+                      onClick={() => dismiss.mutate()}
+                    >
+                      Dismiss message
+                    </Button>
+                  </div>
+                )}
                 {error && (
                   <p className="mt-3 text-sm text-red-700" role="alert">
                     {error.message}
                   </p>
                 )}
-                {!isFinalized && (
+                {!isFinalized && !isManager && (
                   <div className="mt-4 flex flex-wrap gap-3">
                     <Button
                       type="submit"
                       disabled={apply.isPending || dismiss.isPending}
                     >
-                      Approve &amp; Apply
+                      Confirm &amp; apply
                     </Button>
                     <Button
                       type="button"
-                      variant="danger"
+                      variant="secondary"
                       disabled={apply.isPending || dismiss.isPending}
-                      onClick={() => dismiss.mutate()}
+                      onClick={() => setShowDismiss((current) => !current)}
                     >
-                      Dismiss message
+                      Not actionable
                     </Button>
                   </div>
                 )}
@@ -483,12 +590,14 @@ export function ReviewDetailPage() {
                 <dd className="mt-1">{review.reason}</dd>
               </div>
             </dl>
-            {isFinalized ? (
+            {isFinalized || isManager ? (
               <div className="border-t border-slate-200 pt-5 text-sm text-slate-600">
                 <p className="font-semibold text-slate-900">Finalized review</p>
                 <p className="mt-1">
-                  {review.resolution_notes ??
-                    'This review is read-only because it has already been finalized.'}
+                  {isManager && !isFinalized
+                    ? 'Review decisions are completed by the assigned agent.'
+                    : (review.resolution_notes ??
+                      'This review is read-only because it has already been finalized.')}
                 </p>
               </div>
             ) : (

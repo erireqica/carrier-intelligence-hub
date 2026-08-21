@@ -108,6 +108,7 @@ def list_connections(db: Session, current: AuthContext) -> GmailConnectionsRespo
             joinedload(GmailConnection.oauth_credential),
         )
         .where(GmailConnection.agency_id == current.user.agency_id)
+        .where(GmailConnection.status != GmailConnectionStatus.DISCONNECTED)
     )
     if current.user.role is UserRole.AGENT:
         query = query.where(GmailConnection.user_id == current.user.id)
@@ -224,6 +225,7 @@ def complete_oauth(
         .where(
             GmailConnection.agency_id == current.user.agency_id,
             GmailConnection.gmail_address == gmail_address,
+            GmailConnection.status != GmailConnectionStatus.DISCONNECTED,
         )
     )
     target = (
@@ -234,6 +236,7 @@ def complete_oauth(
                 GmailConnection.id == state.reconnect_connection_id,
                 GmailConnection.agency_id == current.user.agency_id,
                 GmailConnection.user_id == current.user.id,
+                GmailConnection.status != GmailConnectionStatus.DISCONNECTED,
             )
         )
         if state.reconnect_connection_id is not None

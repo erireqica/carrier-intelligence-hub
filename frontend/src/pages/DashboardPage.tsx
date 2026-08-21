@@ -158,9 +158,17 @@ export function DashboardPage() {
           </div>
         </div>
         <div className="border border-slate-200 bg-white">
-          <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
-            Recent activity
-          </h2>
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+            <h2 className="font-semibold">Recent activity</h2>
+            {auth.data!.user.role === 'MANAGER' && (
+              <Link
+                className="text-sm font-semibold text-blue-700"
+                to="/manager/activity"
+              >
+                View all
+              </Link>
+            )}
+          </div>
           <div className="divide-y divide-slate-100">
             {data.recent_activity.map((event) => (
               <div key={event.id} className="px-5 py-4">

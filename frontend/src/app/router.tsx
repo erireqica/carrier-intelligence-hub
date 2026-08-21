@@ -8,6 +8,7 @@ import { DashboardPage } from '../pages/DashboardPage'
 import { GmailConnectionsPage } from '../pages/GmailConnectionsPage'
 import { LoginPage } from '../pages/LoginPage'
 import { AgentsPage } from '../pages/manager/AgentsPage'
+import { ActivityPage } from '../pages/manager/ActivityPage'
 import { AnalyticsPage } from '../pages/manager/AnalyticsPage'
 import { CarriersPage } from '../pages/manager/CarriersPage'
 import { SettingsPage } from '../pages/manager/SettingsPage'
@@ -19,6 +20,7 @@ import { TasksPage } from '../pages/TasksPage'
 
 export const managerRoutes = [
   { path: 'manager/analytics', element: <AnalyticsPage /> },
+  { path: 'manager/activity', element: <ActivityPage /> },
   { path: 'manager/agents', element: <AgentsPage /> },
   { path: 'manager/carriers', element: <CarriersPage /> },
   { path: 'manager/system-logs', element: <SystemLogsPage /> },

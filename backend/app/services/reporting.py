@@ -30,6 +30,14 @@ from app.models.organization import GmailConnection, User
 from app.services.auth import AuthContext
 from app.services.operations import agent_brief, case_item, page_info, scoped_cases_query
 
+ACTIVITY_GROUPS = {
+    "TASKS": {"TASK_STATUS_CHANGED", "TASK_ASSIGNED", "TASK_COMPLETED"},
+    "REVIEWS": {"CASE_REVIEWED", "AI_REVIEW_DISMISSED", "AI_REVIEW_APPLIED"},
+    "CASES": {"CASE_CORRECTED", "CASE_CREATED"},
+    "GMAIL": {"GMAIL_CONNECTED", "GMAIL_RECONNECTED", "GMAIL_DISCONNECTED"},
+    "ACCESS": {"USER_LOGIN", "USER_LOGOUT", "PROFILE_UPDATED", "PASSWORD_CHANGED"},
+}
+
 
 def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
     case_scope = scoped_cases_query(current)
@@ -437,9 +445,98 @@ def audit_logs(
                 event_type=event.event_type,
                 severity=event.severity,
                 actor_name=event.actor.full_name if event.actor else None,
+                actor_user_id=event.actor_user_id,
                 description=event.description,
                 case_id=event.case_id,
                 task_id=event.task_id,
+                metadata=event.event_metadata,
+                created_at=event.created_at,
+            )
+            for event in events
+        ],
+        page=page_info(page, page_size, total),
+    )
+
+
+def activity_logs(
+    db: Session,
+    current: AuthContext,
+    *,
+    page: int,
+    page_size: int,
+    actor_user_id: int | None,
+    action_group: str | None,
+    include_system: bool,
+) -> AuditLogResponse:
+    query = select(AuditEvent).where(AuditEvent.agency_id == current.user.agency_id)
+    if actor_user_id is not None:
+        valid_actor = db.scalar(
+            select(User.id).where(
+                User.id == actor_user_id,
+                User.agency_id == current.user.agency_id,
+            )
+        )
+        if valid_actor is None:
+            query = query.where(AuditEvent.id == -1)
+        else:
+            query = query.where(AuditEvent.actor_user_id == actor_user_id)
+    elif not include_system:
+        query = query.where(AuditEvent.actor_user_id.is_not(None))
+    if action_group:
+        event_types = ACTIVITY_GROUPS.get(action_group.upper())
+        if event_types:
+            query = query.where(AuditEvent.event_type.in_(event_types))
+        else:
+            query = query.where(AuditEvent.id == -1)
+
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    events = db.scalars(
+        query.options(joinedload(AuditEvent.actor))
+        .order_by(AuditEvent.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    case_ids = {event.case_id for event in events if event.case_id is not None}
+    task_ids = {event.task_id for event in events if event.task_id is not None}
+    case_labels = (
+        {
+            case.id: f"{case.client_name} · {case.policy_number or 'Policy number pending'}"
+            for case in db.scalars(
+                select(PolicyCase).where(
+                    PolicyCase.id.in_(case_ids),
+                    PolicyCase.agency_id == current.user.agency_id,
+                )
+            ).all()
+        }
+        if case_ids
+        else {}
+    )
+    task_titles = (
+        {
+            task.id: task.title
+            for task in db.scalars(
+                select(Task).where(
+                    Task.id.in_(task_ids),
+                    Task.agency_id == current.user.agency_id,
+                )
+            ).all()
+        }
+        if task_ids
+        else {}
+    )
+    return AuditLogResponse(
+        items=[
+            AuditLogItem(
+                id=event.id,
+                event_type=event.event_type,
+                severity=event.severity,
+                actor_name=event.actor.full_name if event.actor else None,
+                actor_user_id=event.actor_user_id,
+                description=event.description,
+                case_id=event.case_id,
+                case_label=case_labels.get(event.case_id),
+                task_id=event.task_id,
+                task_title=task_titles.get(event.task_id),
                 metadata=event.event_metadata,
                 created_at=event.created_at,
             )

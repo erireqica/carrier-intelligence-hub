@@ -25,7 +25,9 @@ from app.integrations.gmail.oauth import (
     GoogleOAuthClient,
     OAuthTokenSet,
 )
-from app.models.enums import GmailConnectionStatus
+from app.models.carriers import Carrier
+from app.models.enums import GmailConnectionStatus, ProcessingStatus
+from app.models.operations import CarrierMessage
 from app.models.organization import (
     GmailConnection,
     GmailOAuthCredential,
@@ -468,7 +470,7 @@ def test_missing_scope_is_rejected_without_persisting_credentials(
     assert db.scalar(select(func.count()).select_from(GmailOAuthCredential)) == 0
 
 
-def test_reconnect_preserves_refresh_token_and_duplicate_owner_conflicts(
+def test_reconnect_preserves_refresh_token_and_disconnected_address_can_be_reused(
     client: TestClient, db: Session, login, configured_google, monkeypatch
 ) -> None:
     fake = FakeOAuthClient(gmail_address="reconnect@gmail.test")
@@ -519,6 +521,26 @@ def test_reconnect_preserves_refresh_token_and_duplicate_owner_conflicts(
         )
     )
     db.commit()
+    historical_connection = db.scalar(
+        select(GmailConnection).where(GmailConnection.gmail_address == "owned@gmail.test")
+    )
+    carrier = db.scalar(select(Carrier).where(Carrier.name == "Americo"))
+    assert historical_connection is not None and carrier is not None
+    db.add(
+        CarrierMessage(
+            agency_id=other_owner.agency_id,
+            carrier_id=carrier.id,
+            gmail_connection_id=historical_connection.id,
+            gmail_message_id="historical-owned-message",
+            sender="alerts@americo.com",
+            subject="Historical mailbox message",
+            received_at=utc_now(),
+            processing_status=ProcessingStatus.RECEIVED,
+            raw_content="Historical synthetic content.",
+            cleaned_content="Historical synthetic content.",
+        )
+    )
+    db.commit()
     fake.tokens = OAuthTokenSet(
         access_token="access",
         refresh_token="refresh",
@@ -526,10 +548,59 @@ def test_reconnect_preserves_refresh_token_and_duplicate_owner_conflicts(
         granted_scopes=[GMAIL_MODIFY_SCOPE],
         gmail_address="owned@gmail.test",
     )
-    conflict_state = start_oauth(client, auth, fake)
-    conflict = client.get(
+    reuse_state = start_oauth(client, auth, fake)
+    reuse = client.get(
         "/api/v1/gmail/oauth/callback",
-        params={"state": conflict_state, "code": "synthetic-code"},
+        params={"state": reuse_state, "code": "synthetic-code"},
         follow_redirects=False,
     )
-    assert conflict.headers["location"].endswith("oauth=failed")
+    assert reuse.headers["location"].endswith("oauth=success")
+    reused_connections = db.scalars(
+        select(GmailConnection)
+        .where(GmailConnection.gmail_address == "owned@gmail.test")
+        .order_by(GmailConnection.id)
+    ).all()
+    assert len(reused_connections) == 2
+    assert reused_connections[0].status is GmailConnectionStatus.DISCONNECTED
+    assert reused_connections[0].user_id == other_owner.id
+    assert reused_connections[1].status is GmailConnectionStatus.CONNECTED
+    assert reused_connections[1].user_id == auth["user"]["id"]
+    assert (
+        client.get(f"/api/v1/gmail-connections/{reused_connections[0].id}/messages").status_code
+        == 404
+    )
+    assert client.get(f"/api/v1/gmail-connections/{reused_connections[1].id}/messages").json() == []
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(CarrierMessage)
+            .where(CarrierMessage.gmail_message_id == "historical-owned-message")
+        )
+        == 1
+    )
+
+
+def test_active_duplicate_oauth_returns_safe_dedicated_result(
+    client: TestClient, db: Session, login, configured_google, monkeypatch
+) -> None:
+    owner = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert owner is not None
+    db.add(
+        GmailConnection(
+            agency_id=owner.agency_id,
+            user_id=owner.id,
+            gmail_address="active-owned@gmail.test",
+            status=GmailConnectionStatus.CONNECTED,
+        )
+    )
+    db.commit()
+    fake = FakeOAuthClient(gmail_address="active-owned@gmail.test")
+    patch_oauth(monkeypatch, fake)
+    auth = login(client, "agent.two@demo.local")
+    raw_state = start_oauth(client, auth, fake)
+    response = client.get(
+        "/api/v1/gmail/oauth/callback",
+        params={"state": raw_state, "code": "synthetic-code"},
+        follow_redirects=False,
+    )
+    assert response.headers["location"].endswith("oauth=already_connected")

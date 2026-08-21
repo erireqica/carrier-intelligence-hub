@@ -6,12 +6,20 @@ from app.api.schemas.auth import (
     AuthResponse,
     LoginRequest,
     MessageResponse,
+    PasswordChangeRequest,
+    ProfileUpdateRequest,
     UserSummary,
 )
 from app.core.config import get_settings
 from app.core.time import utc_now
 from app.services.audit import record_audit_event
-from app.services.auth import authenticate_user, create_session, revoke_session
+from app.services.auth import (
+    authenticate_user,
+    change_password,
+    create_session,
+    revoke_session,
+    update_profile,
+)
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -72,6 +80,31 @@ def login(data: LoginRequest, response: Response, db: DbSession) -> AuthResponse
 @router.get("/me", response_model=AuthResponse)
 def me(current: CurrentUser) -> AuthResponse:
     return auth_response(current.user, current.csrf_token)
+
+
+@router.patch("/profile", response_model=AuthResponse)
+def patch_profile(data: ProfileUpdateRequest, current: CsrfUser, db: DbSession) -> AuthResponse:
+    user = update_profile(
+        db,
+        current,
+        full_name=data.full_name,
+        email=data.email,
+        current_password=data.current_password,
+    )
+    return auth_response(user, current.csrf_token)
+
+
+@router.post("/change-password", response_model=MessageResponse)
+def post_change_password(
+    data: PasswordChangeRequest, current: CsrfUser, db: DbSession
+) -> MessageResponse:
+    change_password(
+        db,
+        current,
+        current_password=data.current_password,
+        new_password=data.new_password,
+    )
+    return MessageResponse(message="Password changed")
 
 
 @router.post("/logout", response_model=MessageResponse)

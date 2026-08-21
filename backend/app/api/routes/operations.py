@@ -1,9 +1,10 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 
 from app.api.dependencies import CsrfUser, CurrentUser, DbSession
 from app.api.schemas.domain import (
+    CaseCorrectionInput,
     CaseDetail,
     CaseListResponse,
     DashboardResponse,
@@ -60,6 +61,13 @@ def get_case(case_id: int, current: CurrentUser, db: DbSession) -> CaseDetail:
     return operations_service.get_case_detail(db, current, case_id)
 
 
+@router.patch("/cases/{case_id}/correction", response_model=CaseDetail)
+def correct_case(
+    case_id: int, data: CaseCorrectionInput, current: CsrfUser, db: DbSession
+) -> CaseDetail:
+    return operations_service.correct_case(db, current, case_id, data)
+
+
 @router.get("/tasks", response_model=TaskListResponse)
 def get_tasks(
     current: CurrentUser,
@@ -70,6 +78,9 @@ def get_tasks(
     priority: Priority | None = None,
     overdue: bool | None = None,
     assigned_agent_id: int | None = None,
+    task_view: Annotated[
+        Literal["TODO", "COMPLETED", "DISMISSED", "ALL"], Query(alias="view")
+    ] = "TODO",
 ) -> TaskListResponse:
     return operations_service.list_tasks(
         db,
@@ -80,6 +91,7 @@ def get_tasks(
         priority=priority,
         overdue=overdue,
         assigned_agent_id=assigned_agent_id,
+        task_view=task_view,
     )
 
 

@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { useCurrentUser } from '../app/auth'
-import { getAgents, getTasks, updateTask } from '../lib/api'
+import { getAgents, getTasks, reassignTask, updateTask } from '../lib/api'
 import { authFixture } from '../test/fixtures'
 import { TasksPage } from './TasksPage'
 
@@ -11,6 +11,7 @@ vi.mock('../app/auth', () => ({ useCurrentUser: vi.fn() }))
 vi.mock('../lib/api', () => ({
   getAgents: vi.fn(),
   getTasks: vi.fn(),
+  reassignTask: vi.fn(),
   updateTask: vi.fn(),
 }))
 
@@ -59,11 +60,68 @@ describe('TasksPage mutations', () => {
         <TasksPage />
       </QueryClientProvider>,
     )
+    expect(mockedGetTasks).toHaveBeenCalledWith(
+      expect.stringContaining('view=TODO'),
+    )
     expect(await screen.findByText('Aug 28, 2026')).toBeInTheDocument()
     const status = await screen.findByLabelText('Update Contact client')
     fireEvent.change(status, { target: { value: 'COMPLETED' } })
     await waitFor(() =>
       expect(mockedUpdateTask).toHaveBeenCalledWith(7, 'COMPLETED'),
     )
+  })
+
+  it('gives managers reassignment controls without task status controls', async () => {
+    const manager = authFixture('MANAGER')
+    mockedAuth.mockReturnValue({ data: manager } as ReturnType<
+      typeof useCurrentUser
+    >)
+    const agent = {
+      ...authFixture('AGENT').user,
+      open_tasks: 1,
+      urgent_cases: 0,
+      gmail_connections: 1,
+    }
+    vi.mocked(getAgents).mockResolvedValue([agent])
+    mockedGetTasks.mockResolvedValue({
+      items: [
+        {
+          id: 8,
+          case_id: 3,
+          client_name: 'Managed Client',
+          policy_number: 'M-8',
+          title: 'Agent decision',
+          description: null,
+          priority: 'NORMAL',
+          due_at: null,
+          status: 'OPEN',
+          completed_at: null,
+          assigned_agent: {
+            id: manager.user.id,
+            full_name: manager.user.full_name,
+            email: manager.user.email,
+          },
+        },
+      ],
+      page: { page: 1, page_size: 100, total: 1, pages: 1 },
+    })
+    vi.mocked(reassignTask).mockResolvedValue((await mockedGetTasks()).items[0])
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TasksPage />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByLabelText('Reassign Agent decision')).toHaveValue(
+      String(manager.user.id),
+    )
+    expect(
+      screen.getByRole('option', { name: 'Morgan Reed (current — manager)' }),
+    ).toBeDisabled()
+    expect(
+      screen.queryByLabelText('Update Agent decision'),
+    ).not.toBeInTheDocument()
   })
 })

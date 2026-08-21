@@ -99,6 +99,41 @@ class TaskUpdate(BaseModel):
         return self
 
 
+class CaseCorrectionInput(BaseModel):
+    client_name: str = Field(min_length=1, max_length=200)
+    policy_number: str | None = Field(default=None, max_length=100)
+    policy_status: PolicyStatus
+    priority: Priority
+    summary: str = Field(min_length=1, max_length=5_000)
+    premium_amount: Decimal | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    effective_date: date | None = None
+    deadline: date | None = None
+    reason: str = Field(min_length=3, max_length=1_000)
+
+    @field_validator("client_name", "summary", "reason")
+    @classmethod
+    def strip_required_text(cls, value: str, info) -> str:
+        normalized = value.strip()
+        minimum = 3 if info.field_name == "reason" else 1
+        if len(normalized) < minimum:
+            raise ValueError(f"{info.field_name.replace('_', ' ').title()} is too short")
+        return normalized
+
+    @field_validator("policy_number")
+    @classmethod
+    def normalize_policy_number(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str | None) -> str | None:
+        return value.upper() if value else None
+
+
 class MessageItem(BaseModel):
     id: int
     sender: str
@@ -389,9 +424,12 @@ class AuditLogItem(BaseModel):
     event_type: str
     severity: AuditSeverity
     actor_name: str | None
+    actor_user_id: int | None
     description: str
     case_id: int | None
+    case_label: str | None = None
     task_id: int | None
+    task_title: str | None = None
     metadata: dict[str, object]
     created_at: datetime
 

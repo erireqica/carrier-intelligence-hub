@@ -148,3 +148,24 @@ def audit_events(
         event_type=event_type,
         severity=severity,
     )
+
+
+@router.get("/activity", response_model=AuditLogResponse)
+def activity(
+    current: ManagerUser,
+    db: DbSession,
+    page: Page = 1,
+    page_size: PageSize = 50,
+    actor_user_id: int | None = None,
+    action_group: str | None = None,
+    include_system: bool = False,
+) -> AuditLogResponse:
+    return reporting.activity_logs(
+        db,
+        current,
+        page=page,
+        page_size=page_size,
+        actor_user_id=actor_user_id,
+        action_group=action_group,
+        include_system=include_system,
+    )

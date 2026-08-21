@@ -1,16 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type FormEvent, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
+import { useCurrentUser } from '../app/auth'
 import {
+  Button,
   ErrorState,
+  Input,
   LoadingState,
   PageHeader,
   PriorityBadge,
   StatusBadge,
 } from '../components/ui'
 import { formatBusinessDate, formatDate } from '../lib/format'
-import { getCase, updateTask } from '../lib/api'
-import type { TaskStatus } from '../lib/types'
+import { correctCase, getCase, updateTask } from '../lib/api'
+import type {
+  CaseCorrectionInput,
+  CaseDetail,
+  PolicyStatus,
+  Priority,
+  TaskStatus,
+} from '../lib/types'
 
 function pendingAnalysisLabel(processingStatus: string) {
   switch (processingStatus) {
@@ -38,9 +48,200 @@ function pendingAnalysisSummary(processingStatus: string) {
   }
 }
 
+function CaseCorrectionForm({
+  item,
+  onCancel,
+  onSaved,
+}: {
+  item: CaseDetail
+  onCancel: () => void
+  onSaved: () => Promise<void>
+}) {
+  const [form, setForm] = useState<CaseCorrectionInput>({
+    client_name: item.client_name,
+    policy_number: item.policy_number,
+    policy_status: item.policy_status as PolicyStatus,
+    priority: item.priority,
+    summary: item.summary,
+    premium_amount: item.premium_amount,
+    currency: item.currency,
+    effective_date: item.effective_date,
+    deadline: item.deadline,
+    reason: '',
+  })
+  const mutation = useMutation({
+    mutationFn: () => correctCase(item.id, form),
+    onSuccess: onSaved,
+  })
+  const fieldClass =
+    'mt-1 min-h-10 w-full border border-slate-300 bg-white px-3 py-2 text-sm'
+  return (
+    <form
+      className="space-y-4 border border-blue-200 bg-blue-50 p-5"
+      onSubmit={(event: FormEvent) => {
+        event.preventDefault()
+        mutation.mutate()
+      }}
+    >
+      <div>
+        <h2 className="font-semibold">Correct case information</h2>
+        <p className="mt-1 text-sm text-slate-600">
+          This updates the current case only. The original carrier message,
+          evidence, and analysis remain unchanged.
+        </p>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="text-sm font-medium">
+          Client name
+          <Input
+            className="mt-1"
+            value={form.client_name}
+            onChange={(event) =>
+              setForm({ ...form, client_name: event.target.value })
+            }
+            required
+          />
+        </label>
+        <label className="text-sm font-medium">
+          Policy number
+          <Input
+            className="mt-1"
+            value={form.policy_number ?? ''}
+            onChange={(event) =>
+              setForm({ ...form, policy_number: event.target.value || null })
+            }
+          />
+        </label>
+        <label className="text-sm font-medium">
+          Policy status
+          <select
+            className={fieldClass}
+            value={form.policy_status}
+            onChange={(event) =>
+              setForm({
+                ...form,
+                policy_status: event.target.value as PolicyStatus,
+              })
+            }
+          >
+            {[
+              'ISSUED',
+              'PENDING',
+              'LAPSED',
+              'DECLINED',
+              'ACTIVE',
+              'GRACE_PERIOD',
+              'UNKNOWN',
+            ].map((value) => (
+              <option key={value} value={value}>
+                {value.replaceAll('_', ' ')}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm font-medium">
+          Priority
+          <select
+            className={fieldClass}
+            value={form.priority}
+            onChange={(event) =>
+              setForm({ ...form, priority: event.target.value as Priority })
+            }
+          >
+            {['LOW', 'NORMAL', 'HIGH', 'URGENT'].map((value) => (
+              <option key={value}>{value}</option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm font-medium">
+          Premium amount
+          <Input
+            className="mt-1"
+            inputMode="decimal"
+            value={form.premium_amount ?? ''}
+            onChange={(event) =>
+              setForm({ ...form, premium_amount: event.target.value || null })
+            }
+          />
+        </label>
+        <label className="text-sm font-medium">
+          Currency
+          <Input
+            className="mt-1"
+            maxLength={3}
+            value={form.currency ?? ''}
+            onChange={(event) =>
+              setForm({ ...form, currency: event.target.value || null })
+            }
+          />
+        </label>
+        <label className="text-sm font-medium">
+          Effective date
+          <Input
+            className="mt-1"
+            type="date"
+            value={form.effective_date ?? ''}
+            onChange={(event) =>
+              setForm({ ...form, effective_date: event.target.value || null })
+            }
+          />
+        </label>
+        <label className="text-sm font-medium">
+          Current deadline
+          <Input
+            className="mt-1"
+            type="date"
+            value={form.deadline ?? ''}
+            onChange={(event) =>
+              setForm({ ...form, deadline: event.target.value || null })
+            }
+          />
+        </label>
+      </div>
+      <label className="block text-sm font-medium">
+        Summary
+        <textarea
+          className={`${fieldClass} min-h-24`}
+          value={form.summary}
+          onChange={(event) =>
+            setForm({ ...form, summary: event.target.value })
+          }
+          required
+        />
+      </label>
+      <label className="block text-sm font-medium">
+        Reason for correction
+        <Input
+          className="mt-1"
+          value={form.reason}
+          onChange={(event) => setForm({ ...form, reason: event.target.value })}
+          minLength={3}
+          required
+        />
+      </label>
+      {mutation.error && (
+        <p className="text-sm text-red-700" role="alert">
+          {mutation.error.message}
+        </p>
+      )}
+      <div className="flex gap-3">
+        <Button type="submit" disabled={mutation.isPending}>
+          {mutation.isPending ? 'Saving…' : 'Save correction'}
+        </Button>
+        <Button type="button" variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  )
+}
+
 export function CaseDetailPage() {
   const { caseId = '' } = useParams()
   const queryClient = useQueryClient()
+  const auth = useCurrentUser()
+  const isManager = auth.data?.user.role === 'MANAGER'
+  const [correcting, setCorrecting] = useState(false)
   const detail = useQuery({
     queryKey: ['case', caseId],
     queryFn: () => getCase(caseId),
@@ -74,14 +275,38 @@ export function CaseDetailPage() {
         title={item.client_name}
         description={item.summary}
         action={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <PriorityBadge priority={item.priority} />
             <StatusBadge status={item.policy_status} />
+            {!isManager && (
+              <Button variant="secondary" onClick={() => setCorrecting(true)}>
+                Correct case information
+              </Button>
+            )}
           </div>
         }
       />
+      <p className="text-sm text-slate-500">
+        Policy status is based on the latest carrier information.
+      </p>
+      {correcting && (
+        <CaseCorrectionForm
+          item={item}
+          onCancel={() => setCorrecting(false)}
+          onSaved={async () => {
+            setCorrecting(false)
+            await queryClient.invalidateQueries({ queryKey: ['case', caseId] })
+            await queryClient.invalidateQueries({ queryKey: ['cases'] })
+            await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+            await queryClient.invalidateQueries({
+              queryKey: ['manager', 'activity'],
+            })
+          }}
+        />
+      )}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[
+          ['Policy Status', item.policy_status.replaceAll('_', ' ')],
           ['Assigned agent', item.assigned_agent?.full_name ?? 'Unassigned'],
           ['Key deadline', formatBusinessDate(item.deadline)],
           [
@@ -126,26 +351,28 @@ export function CaseDetailPage() {
                     <label className="sr-only" htmlFor={`case-task-${task.id}`}>
                       Update {task.title}
                     </label>
-                    <select
-                      id={`case-task-${task.id}`}
-                      className="mt-2 block border border-slate-300 bg-white px-2 py-1.5 text-sm"
-                      value={task.status}
-                      disabled={taskMutation.isPending}
-                      onChange={(event) =>
-                        taskMutation.mutate({
-                          id: task.id,
-                          status: event.target.value as TaskStatus,
-                        })
-                      }
-                    >
-                      {['OPEN', 'IN_PROGRESS', 'COMPLETED', 'DISMISSED'].map(
-                        (status) => (
-                          <option key={status} value={status}>
-                            {status.replaceAll('_', ' ')}
-                          </option>
-                        ),
-                      )}
-                    </select>
+                    {!isManager && (
+                      <select
+                        id={`case-task-${task.id}`}
+                        className="mt-2 block border border-slate-300 bg-white px-2 py-1.5 text-sm"
+                        value={task.status}
+                        disabled={taskMutation.isPending}
+                        onChange={(event) =>
+                          taskMutation.mutate({
+                            id: task.id,
+                            status: event.target.value as TaskStatus,
+                          })
+                        }
+                      >
+                        {['OPEN', 'IN_PROGRESS', 'COMPLETED', 'DISMISSED'].map(
+                          (status) => (
+                            <option key={status} value={status}>
+                              {status.replaceAll('_', ' ')}
+                            </option>
+                          ),
+                        )}
+                      </select>
+                    )}
                   </div>
                 </div>
               ))}
@@ -217,7 +444,7 @@ export function CaseDetailPage() {
                 {item.attachments.map((attachment) => (
                   <div
                     key={attachment.id}
-                    className="flex justify-between px-5 py-4"
+                    className="flex items-start justify-between gap-4 px-5 py-4"
                   >
                     <div>
                       <p className="font-medium">{attachment.filename}</p>
@@ -253,7 +480,9 @@ export function CaseDetailPage() {
                         </details>
                       )}
                     </div>
-                    <StatusBadge status={attachment.processing_status} />
+                    <span className="inline-flex h-fit shrink-0 self-start">
+                      <StatusBadge status={attachment.processing_status} />
+                    </span>
                   </div>
                 ))}
               </div>

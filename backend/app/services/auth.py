@@ -1,13 +1,16 @@
 from dataclasses import dataclass
 from datetime import timedelta
 
+from fastapi import HTTPException, status
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import get_settings
 from app.core.security import (
     csrf_token_for_session,
     dummy_password_hash,
+    hash_password,
     new_session_token,
     normalize_email,
     token_hash,
@@ -15,6 +18,7 @@ from app.core.security import (
 )
 from app.core.time import utc_now
 from app.models.organization import Agency, AuthSession, User
+from app.services.audit import record_audit_event
 
 SESSION_TOUCH_INTERVAL = timedelta(minutes=5)
 
@@ -88,3 +92,89 @@ def resolve_session(db: Session, raw_token: str) -> AuthContext | None:
 
 def revoke_session(session: AuthSession) -> None:
     session.revoked_at = utc_now()
+
+
+def update_profile(
+    db: Session,
+    current: AuthContext,
+    *,
+    full_name: str,
+    email: str,
+    current_password: str | None,
+) -> User:
+    normalized_email = normalize_email(email)
+    email_changed = normalized_email != current.user.email
+    if email_changed and (
+        current_password is None
+        or not verify_password(current_password, current.user.password_hash)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect",
+        )
+    duplicate = db.scalar(
+        select(User.id).where(User.email == normalized_email, User.id != current.user.id)
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="That login email is already in use")
+
+    changed_fields: list[str] = []
+    if current.user.full_name != full_name:
+        current.user.full_name = full_name
+        changed_fields.append("full_name")
+    if email_changed:
+        current.user.email = normalized_email
+        changed_fields.append("email")
+    if not changed_fields:
+        return current.user
+
+    record_audit_event(
+        db,
+        agency_id=current.user.agency_id,
+        actor_user_id=current.user.id,
+        event_type="PROFILE_UPDATED",
+        description=f"{current.user.full_name} updated their profile",
+        metadata={"changed_fields": changed_fields},
+    )
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That login email is already in use") from error
+    db.refresh(current.user)
+    return current.user
+
+
+def change_password(
+    db: Session,
+    current: AuthContext,
+    *,
+    current_password: str,
+    new_password: str,
+) -> None:
+    if not verify_password(current_password, current.user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect",
+        )
+    if verify_password(new_password, current.user.password_hash):
+        raise HTTPException(status_code=422, detail="Choose a different new password")
+    current.user.password_hash = hash_password(new_password)
+    now = utc_now()
+    db.execute(
+        update(AuthSession)
+        .where(
+            AuthSession.user_id == current.user.id,
+            AuthSession.id != current.session.id,
+            AuthSession.revoked_at.is_(None),
+        )
+        .values(revoked_at=now)
+    )
+    record_audit_event(
+        db,
+        agency_id=current.user.agency_id,
+        actor_user_id=current.user.id,
+        event_type="PASSWORD_CHANGED",
+        description=f"{current.user.full_name} changed their password",
+    )
+    db.commit()

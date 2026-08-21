@@ -1,9 +1,16 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useCurrentUser } from '../app/auth'
+import { logout } from '../lib/api'
 import { authFixture } from '../test/fixtures'
 import { AppShell } from './AppShell'
 
@@ -14,22 +21,26 @@ vi.mock('../app/auth', () => ({
 vi.mock('../lib/api', () => ({ logout: vi.fn() }))
 const mockedAuth = vi.mocked(useCurrentUser)
 
+afterEach(cleanup)
+
 function renderShell(role: 'AGENT' | 'MANAGER') {
   mockedAuth.mockReturnValue({ data: authFixture(role) } as ReturnType<
     typeof useCurrentUser
   >)
   const client = new QueryClient()
-  return render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={['/dashboard']}>
         <Routes>
           <Route path="/" element={<AppShell />}>
             <Route path="dashboard" element={<p>Workspace content</p>} />
           </Route>
+          <Route path="login" element={<p>Login screen</p>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   )
+  return { ...rendered, client }
 }
 
 describe('AppShell navigation', () => {
@@ -43,5 +54,17 @@ describe('AppShell navigation', () => {
     renderShell('MANAGER')
     expect(screen.getAllByText('System Logs').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Carriers').length).toBeGreaterThan(0)
+  })
+
+  it('clears all user-scoped cache before completing sign out', async () => {
+    vi.mocked(logout).mockResolvedValue()
+    const { client } = renderShell('AGENT')
+    client.setQueryData(['cases'], [{ client_name: 'Private client' }])
+    client.setQueryData(['tasks'], [{ title: 'Private task' }])
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Sign out' })[0])
+
+    expect(await screen.findByText('Login screen')).toBeInTheDocument()
+    await waitFor(() => expect(client.getQueryCache().getAll()).toHaveLength(0))
   })
 })

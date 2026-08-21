@@ -1,3 +1,4 @@
+import { clearSessionState } from '../app/queryClient'
 import type {
   AgentItem,
   Analytics,
@@ -5,6 +6,7 @@ import type {
   AuthResponse,
   CarrierItem,
   CaseDetail,
+  CaseCorrectionInput,
   CaseItem,
   Dashboard,
   GmailConnectionsResponse,
@@ -76,6 +78,7 @@ async function apiRequest<T>(
       window.location.pathname !== '/login'
     ) {
       setCsrfToken(null)
+      await clearSessionState()
       window.location.replace('/login')
     }
     throw new ApiError(message, response.status)
@@ -104,12 +107,37 @@ export async function logout() {
   setCsrfToken(null)
 }
 
+export const updateProfile = (data: {
+  full_name: string
+  email: string
+  current_password?: string
+}) =>
+  apiRequest<AuthResponse>('/auth/profile', {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+
+export const changePassword = (data: {
+  current_password: string
+  new_password: string
+  confirm_new_password: string
+}) =>
+  apiRequest<{ message: string }>('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+
 export const getDashboard = () => apiRequest<Dashboard>('/dashboard')
 export const getCases = (params = '') =>
   apiRequest<{ items: CaseItem[]; page: PageInfo }>(
     `/cases${params ? `?${params}` : ''}`,
   )
 export const getCase = (id: string) => apiRequest<CaseDetail>(`/cases/${id}`)
+export const correctCase = (id: number, data: CaseCorrectionInput) =>
+  apiRequest<CaseDetail>(`/cases/${id}/correction`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
 export const getTasks = (params = '') =>
   apiRequest<{ items: TaskItem[]; page: PageInfo }>(
     `/tasks${params ? `?${params}` : ''}`,
@@ -118,6 +146,11 @@ export const updateTask = (id: number, status: TaskStatus) =>
   apiRequest<TaskItem>(`/tasks/${id}`, {
     method: 'PATCH',
     body: JSON.stringify({ status }),
+  })
+export const reassignTask = (id: number, assignedAgentId: number) =>
+  apiRequest<TaskItem>(`/tasks/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ assigned_agent_id: assignedAgentId }),
   })
 export const getReviews = (params = '') =>
   apiRequest<{ items: ReviewItem[]; page: PageInfo }>(
@@ -188,6 +221,10 @@ export const getAnalytics = () => apiRequest<Analytics>('/manager/analytics')
 export const getAuditLogs = (params = '') =>
   apiRequest<{ items: AuditLog[]; page: PageInfo }>(
     `/manager/audit-events${params ? `?${params}` : ''}`,
+  )
+export const getActivity = (params = '') =>
+  apiRequest<{ items: AuditLog[]; page: PageInfo }>(
+    `/manager/activity${params ? `?${params}` : ''}`,
   )
 
 export const createCarrier = (data: {

@@ -300,3 +300,88 @@ def test_offline_pipeline_is_automatic_idempotent_and_whitelist_first(
     assert first_counts[Task] == initial_counts[Task] + 1
     assert first_counts[CaseEvidence] == initial_counts[CaseEvidence] + 5
     assert first_counts[ReviewItem] == initial_counts[ReviewItem]
+
+
+def test_combined_pipeline_processes_multiple_eligible_connections(
+    seeded_db: Session,
+) -> None:
+    owners = seeded_db.scalars(
+        select(User).where(User.role == UserRole.AGENT).order_by(User.id)
+    ).all()
+    assert len(owners) == 2
+    connections: list[GmailConnection] = []
+    mailboxes: dict[int, PipelineMailbox] = {}
+    for index, owner in enumerate(owners, start=1):
+        connection = GmailConnection(
+            agency_id=owner.agency_id,
+            user_id=owner.id,
+            gmail_address=f"pipeline-{index}@gmail.test",
+            status=GmailConnectionStatus.CONNECTED,
+        )
+        seeded_db.add(connection)
+        seeded_db.flush()
+        seeded_db.add(
+            GmailOAuthCredential(
+                gmail_connection_id=connection.id,
+                encrypted_access_token="encrypted-access",
+                encrypted_refresh_token="encrypted-refresh",
+                granted_scopes=[GMAIL_MODIFY_SCOPE],
+            )
+        )
+        body = (
+            "Client Name: Stage Five Offline\n"
+            "Policy Number: OFFLINE-5001\n"
+            "Policy Status: PENDING\n"
+            "Obtain the signed authorization form and submit it to Americo by August 28, 2026."
+        )
+        mailboxes[connection.id] = PipelineMailbox(
+            [gmail_message(f"multi-{index}", "alerts@americo.com", body)]
+        )
+        connections.append(connection)
+    seeded_db.commit()
+    analyzer = FakeAnalyzer()
+
+    def poll():
+        return [
+            sync_connection(
+                seeded_db,
+                connection.id,
+                mailbox_factory=lambda credential, current=connection: (
+                    mailboxes[current.id],
+                    False,
+                ),
+            )
+            for connection in connections
+        ]
+
+    def process():
+        results = []
+        while (claim := claim_message(seeded_db)) is not None:
+            results.append(process_claimed_message(seeded_db, claim, analyzer=analyzer))
+        return results
+
+    def labels():
+        results = []
+        while (claim := claim_label_sync(seeded_db)) is not None:
+            results.append(
+                process_claimed_label_sync(
+                    seeded_db,
+                    claim,
+                    mailbox_factory=lambda credential: (
+                        mailboxes[credential.gmail_connection_id],
+                        False,
+                    ),
+                )
+            )
+        return results
+
+    summary = pipeline_once(
+        poll_function=poll,
+        process_function=process,
+        label_function=labels,
+    )
+    assert summary.gmail_connections == 2
+    assert summary.messages_ingested == 2
+    assert summary.messages_processed == 2
+    assert summary.label_syncs_applied == 2
+    assert analyzer.calls == 2

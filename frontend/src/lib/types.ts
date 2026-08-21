@@ -61,7 +61,7 @@ export type CaseItem = {
   id: number
   client_name: string
   policy_number: string | null
-  policy_status: string
+  policy_status: PolicyStatus
   priority: Priority
   summary: string
   deadline: string | null
@@ -130,6 +130,19 @@ export type CaseDetail = CaseItem & {
     excerpt: string
   }>
   activity: ActivityItem[]
+}
+
+export type CaseCorrectionInput = {
+  client_name: string
+  policy_number: string | null
+  policy_status: PolicyStatus
+  priority: Priority
+  summary: string
+  premium_amount: string | null
+  currency: string | null
+  effective_date: string | null
+  deadline: string | null
+  reason: string
 }
 
 export type ReviewItem = {
@@ -333,9 +346,12 @@ export type AuditLog = {
   event_type: string
   severity: 'INFO' | 'WARNING' | 'ERROR'
   actor_name: string | null
+  actor_user_id: number | null
   description: string
   case_id: number | null
+  case_label: string | null
   task_id: number | null
+  task_title: string | null
   metadata: Record<string, unknown>
   created_at: string
 }

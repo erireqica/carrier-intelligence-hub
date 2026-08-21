@@ -198,13 +198,22 @@ def test_manager_carrier_whitelist_and_review_workflows(
 
     review = db.scalar(select(ReviewItem).where(ReviewItem.status == "OPEN"))
     assert review is not None
-    in_review = client.patch(
+    manager_denied = client.patch(
         f"/api/v1/reviews/{review.id}",
         json={
             "status": "IN_REVIEW",
             "resolution_notes": "Reviewed against the source email.",
         },
         headers=headers,
+    )
+    assert manager_denied.status_code == 403
+    assigned = review.assigned_reviewer
+    assert assigned is not None
+    agent_auth = login(client, assigned.email)
+    in_review = client.patch(
+        f"/api/v1/reviews/{review.id}",
+        json={"status": "IN_REVIEW", "resolution_notes": "Reviewed against the source email."},
+        headers={"X-CSRF-Token": agent_auth["csrf_token"]},
     )
     assert in_review.status_code == 200
     assert in_review.json()["status"] == "IN_REVIEW"
@@ -213,11 +222,12 @@ def test_manager_carrier_whitelist_and_review_workflows(
         rejected = client.patch(
             f"/api/v1/reviews/{review.id}",
             json={"status": terminal, "resolution_notes": "Bypass attempt."},
-            headers=headers,
+            headers={"X-CSRF-Token": agent_auth["csrf_token"]},
         )
         assert rejected.status_code == 422
     db.refresh(review)
     assert review.status.value == "IN_REVIEW"
+    login(client, "manager@demo.local")
     logs = client.get("/api/v1/manager/audit-events?page_size=100")
     assert logs.status_code == 200
     event_types = {item["event_type"] for item in logs.json()["items"]}
@@ -413,59 +423,37 @@ def test_dashboard_gmail_health_respects_agent_scope(
 def test_task_patch_validation_and_change_specific_audits(
     client: TestClient, db: Session, login
 ) -> None:
-    auth = login(client, "manager@demo.local")
-    headers = {"X-CSRF-Token": auth["csrf_token"]}
     task = db.scalar(select(Task).where(Task.status == TaskStatus.OPEN))
     target_agent = db.scalar(select(User).where(User.email == "agent.two@demo.local"))
     original_agent = (
         db.scalar(select(User).where(User.id == task.assigned_agent_id)) if task else None
     )
     assert task is not None and target_agent is not None and original_agent is not None
+    manager = login(client, "manager@demo.local")
+    manager_headers = {"X-CSRF-Token": manager["csrf_token"]}
 
-    assert client.patch(f"/api/v1/tasks/{task.id}", json={}, headers=headers).status_code == 422
+    assert (
+        client.patch(f"/api/v1/tasks/{task.id}", json={}, headers=manager_headers).status_code
+        == 422
+    )
     assert (
         client.patch(
             f"/api/v1/tasks/{task.id}",
             json={"status": None, "assigned_agent_id": None},
-            headers=headers,
+            headers=manager_headers,
         ).status_code
         == 422
     )
-
-    no_op = client.patch(
-        f"/api/v1/tasks/{task.id}",
-        json={"status": task.status.value, "assigned_agent_id": task.assigned_agent_id},
-        headers=headers,
-    )
-    assert no_op.status_code == 200
-    assert (
-        db.scalar(select(func.count()).select_from(AuditEvent).where(AuditEvent.task_id == task.id))
-        == 0
-    )
-
-    completed = client.patch(
+    manager_status = client.patch(
         f"/api/v1/tasks/{task.id}",
         json={"status": "COMPLETED"},
-        headers=headers,
+        headers=manager_headers,
     )
-    assert completed.status_code == 200
-    assert completed.json()["completed_at"] is not None
-    status_event = db.scalar(
-        select(AuditEvent).where(
-            AuditEvent.task_id == task.id,
-            AuditEvent.event_type == "TASK_STATUS_CHANGED",
-        )
-    )
-    assert status_event is not None
-    assert status_event.event_metadata == {
-        "previous_status": "OPEN",
-        "new_status": "COMPLETED",
-    }
-
+    assert manager_status.status_code == 403
     reassigned = client.patch(
         f"/api/v1/tasks/{task.id}",
         json={"assigned_agent_id": target_agent.id},
-        headers=headers,
+        headers=manager_headers,
     )
     assert reassigned.status_code == 200
     assignment_event = db.scalar(
@@ -480,29 +468,32 @@ def test_task_patch_validation_and_change_specific_audits(
         "new_assignee_id": target_agent.id,
     }
 
-    combined = client.patch(
-        f"/api/v1/tasks/{task.id}",
-        json={"status": "IN_PROGRESS", "assigned_agent_id": original_agent.id},
-        headers=headers,
-    )
-    assert combined.status_code == 200
-    assert combined.json()["completed_at"] is None
-    event_counts = dict(
-        db.execute(
-            select(AuditEvent.event_type, func.count())
-            .where(AuditEvent.task_id == task.id)
-            .group_by(AuditEvent.event_type)
-        ).all()
-    )
-    assert event_counts == {"TASK_ASSIGNED": 2, "TASK_STATUS_CHANGED": 2}
-
-    agent_auth = login(client, original_agent.email)
-    forbidden = client.patch(
+    agent_auth = login(client, target_agent.email)
+    agent_headers = {"X-CSRF-Token": agent_auth["csrf_token"]}
+    agent_reassign = client.patch(
         f"/api/v1/tasks/{task.id}",
         json={"assigned_agent_id": original_agent.id},
-        headers={"X-CSRF-Token": agent_auth["csrf_token"]},
+        headers=agent_headers,
     )
-    assert forbidden.status_code == 403
+    assert agent_reassign.status_code == 403
+    completed = client.patch(
+        f"/api/v1/tasks/{task.id}",
+        json={"status": "COMPLETED"},
+        headers=agent_headers,
+    )
+    assert completed.status_code == 200
+    assert completed.json()["completed_at"] is not None
+    status_event = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.task_id == task.id,
+            AuditEvent.event_type == "TASK_STATUS_CHANGED",
+        )
+    )
+    assert status_event is not None
+    assert status_event.event_metadata == {
+        "previous_status": "OPEN",
+        "new_status": "COMPLETED",
+    }
 
 
 def test_analytics_keeps_duplicate_display_names_separate(

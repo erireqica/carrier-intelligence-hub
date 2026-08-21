@@ -173,3 +173,6 @@ def test_disconnect_removes_local_credentials_even_when_revocation_is_best_effor
         == 0
     )
     assert fake.revoked == ["refresh-for-revocation"]
+    listed = client.get("/api/v1/gmail-connections")
+    assert listed.status_code == 200
+    assert connection.id not in {item["id"] for item in listed.json()["connections"]}

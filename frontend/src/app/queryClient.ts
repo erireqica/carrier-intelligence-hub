@@ -9,3 +9,8 @@ export const queryClient = new QueryClient({
     },
   },
 })
+
+export async function clearSessionState(client: QueryClient = queryClient) {
+  await client.cancelQueries()
+  client.clear()
+}

@@ -147,7 +147,7 @@ export function CasesPage() {
               <tr>
                 <th className="px-4 py-3">Client / policy</th>
                 <th className="px-4 py-3">Carrier</th>
-                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Policy Status</th>
                 <th className="px-4 py-3">Priority</th>
                 <th className="px-4 py-3">Assigned agent</th>
                 <th className="px-4 py-3">Updated</th>

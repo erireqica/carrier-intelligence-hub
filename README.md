@@ -23,7 +23,10 @@ python -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 & .\.venv\Scripts\python.exe -m alembic upgrade head
 & .\.venv\Scripts\python.exe -m app.db.seed
-& .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+cd ..\frontend
+npm install
+cd ..
+pwsh -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
 The seed command is explicit, development-only, and idempotent. It requires `DEMO_SEED_PASSWORD` in `backend/.env`, never prints that password, and creates these synthetic accounts:
@@ -34,14 +37,7 @@ The seed command is explicit, development-only, and idempotent. It requires `DEM
 
 All three use the locally supplied demo password. No Gmail connection or OAuth credential is seeded.
 
-In a second terminal:
-
-```powershell
-cd frontend
-Copy-Item .env.example .env
-npm install
-npm run dev
-```
+The launcher starts FastAPI, the combined automatic Gmail pipeline, and Vite together. Press Ctrl+C in that terminal to stop all three. Logs are written under the ignored `.runtime` directory. Individual process commands remain available below for focused debugging.
 
 Open `http://localhost:5173`. The API is at `http://localhost:8000`, with OpenAPI documentation at `http://localhost:8000/docs`.
 
@@ -77,7 +73,7 @@ GMAIL_LABEL_STALE_AFTER_SECONDS=300
 
 `GOOGLE_TOKEN_ENCRYPTION_KEY` must be a dedicated Fernet key. Start the API and frontend as above, sign in to Carrier Hub, open **Gmail Connections**, and choose **Connect Gmail** or **Upgrade permissions**. Select the Google account manually and approve `gmail.modify`. This scope is broader than label-only access, but Carrier Hub's adapter exposes only message/attachment reads plus managed-label list, creation, thread inspection, and thread-label modification. It does not expose send, draft, delete, trash, archive, or read-state operations. The application never receives or stores the Gmail password.
 
-## Normal development workflow
+## Advanced manual development workflow
 
 Terminal 1 — FastAPI:
 
@@ -126,7 +122,7 @@ Backend integration tests refuse to run unless `TEST_DATABASE_URL` points to the
 
 ## Application behavior
 
-Agents see their assigned cases, tasks, and review work. Managers inherit those capabilities and can also inspect agency workload, manage carrier/domain/sender whitelists, view analytics, and review structured audit logs. The backend enforces every ownership and role boundary; frontend route guards are only a user-experience layer.
+Agents work their assigned cases, update their own task statuses, complete review decisions, correct current case information, and manage their Gmail connections. Managers have agency-wide read visibility, analytics and activity views, carrier configuration, task reassignment, Gmail health monitoring, and structured audit logs; they cannot make agents' task, review, or case-correction decisions. The backend enforces every ownership and role boundary; frontend controls are only a user-experience layer.
 
 Authentication uses an HttpOnly cookie containing an opaque random session token. PostgreSQL stores only its SHA-256 lookup hash, session state, and a CSRF-token hash. Passwords are stored only as Argon2id hashes. See [authentication](docs/authentication.md), [data model](docs/data-model.md), and [architecture](docs/architecture.md).
 

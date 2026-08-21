@@ -11,7 +11,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
-    UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -77,7 +77,13 @@ class GmailConnection(TimestampMixin, Base):
             "status IN ('CONNECTED', 'NEEDS_REAUTH', 'ERROR', 'DISCONNECTED')",
             name="ck_gmail_connections_status",
         ),
-        UniqueConstraint("agency_id", "gmail_address", name="uq_gmail_agency_address"),
+        Index(
+            "uq_gmail_agency_active_address",
+            "agency_id",
+            "gmail_address",
+            unique=True,
+            postgresql_where=text("status != 'DISCONNECTED'"),
+        ),
         Index("ix_gmail_connections_owner_status", "user_id", "status"),
     )
 

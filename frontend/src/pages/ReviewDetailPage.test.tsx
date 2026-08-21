@@ -6,13 +6,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   applyReviewAnalysis,
   dismissReviewAnalysis,
+  getMe,
   getReviewAnalysis,
 } from '../lib/api'
+import { authFixture } from '../test/fixtures'
 import { ReviewDetailPage } from './ReviewDetailPage'
 
 vi.mock('../lib/api', () => ({
   applyReviewAnalysis: vi.fn(),
   dismissReviewAnalysis: vi.fn(),
+  getMe: vi.fn(),
   getReviewAnalysis: vi.fn(),
 }))
 
@@ -99,7 +102,10 @@ const noProposalReview = {
 }
 
 describe('ReviewDetailPage', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getMe).mockResolvedValue(authFixture('AGENT'))
+  })
 
   it('shows grounded proposal fields and submits human corrections', async () => {
     vi.mocked(getReviewAnalysis).mockResolvedValue({
@@ -164,12 +170,14 @@ describe('ReviewDetailPage', () => {
       </QueryClientProvider>,
     )
 
-    expect(await screen.findByText('Source and evidence')).toBeInTheDocument()
+    expect(
+      await screen.findByText('Check against the carrier message'),
+    ).toBeInTheDocument()
     expect(screen.getByText('“Policy REVIEW-100”')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Client name'), {
       target: { value: 'Corrected Client' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Approve & Apply' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm & apply' }))
 
     await waitFor(() =>
       expect(applyReviewAnalysis).toHaveBeenCalledWith(
@@ -218,7 +226,7 @@ describe('ReviewDetailPage', () => {
     ).toBeInTheDocument()
     expect(screen.getByText(/scanned-notice\.pdf/)).toBeInTheDocument()
     expect(
-      screen.queryByRole('button', { name: 'Approve & Apply' }),
+      screen.queryByRole('button', { name: 'Confirm & apply' }),
     ).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Dismissal notes'), {
       target: { value: 'Not an actionable carrier notice.' },
@@ -264,5 +272,40 @@ describe('ReviewDetailPage', () => {
       screen.queryByRole('button', { name: 'Dismiss review' }),
     ).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Dismissal notes')).not.toBeInTheDocument()
+  })
+
+  it('keeps manager review detail explicitly read-only', async () => {
+    vi.mocked(getMe).mockResolvedValue(authFixture('MANAGER'))
+    vi.mocked(getReviewAnalysis).mockResolvedValue({
+      ...noProposalReview,
+      id: 9,
+      message_id: 14,
+      analysis: {
+        ...noProposalReview.analysis,
+        message_id: 14,
+        review_id: 9,
+        proposed_result: proposal,
+      },
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/reviews/9']}>
+          <Routes>
+            <Route path="/reviews/:reviewId" element={<ReviewDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByText(/Manager view/)).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Confirm & apply' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Not actionable' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Client name')).toBeDisabled()
   })
 })
