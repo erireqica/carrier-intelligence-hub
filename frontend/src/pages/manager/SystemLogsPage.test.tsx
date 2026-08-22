@@ -55,6 +55,7 @@ describe('SystemLogsPage', () => {
     expect(
       screen.getAllByRole('link', { name: 'Review Low Confidence' })[0],
     ).toHaveAttribute('href', '/reviews/7')
+    expect(screen.getByLabelText('Go to page')).toHaveValue(1)
     fireEvent.click(screen.getByRole('button', { name: 'Next' }))
     await waitFor(() =>
       expect(getAuditLogs).toHaveBeenLastCalledWith(

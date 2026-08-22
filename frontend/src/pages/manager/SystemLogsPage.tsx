@@ -8,6 +8,7 @@ import {
   ErrorState,
   LoadingState,
   PageHeader,
+  Pagination,
   StatusBadge,
 } from '../../components/ui'
 import { getAgents, getAuditLogs } from '../../lib/api'
@@ -247,26 +248,13 @@ export function SystemLogsPage() {
           </div>
         </>
       )}
-      <div className="flex items-center justify-between gap-3 text-sm">
-        <button
-          className="font-semibold text-blue-700 disabled:text-slate-400"
-          disabled={page <= 1}
-          onClick={() => setPage((value) => value - 1)}
-        >
-          Previous
-        </button>
-        <span className="text-center">
-          Page {logs.data.page.page} of {logs.data.page.pages} ·{' '}
-          {logs.data.page.total} events
-        </span>
-        <button
-          className="font-semibold text-blue-700 disabled:text-slate-400"
-          disabled={page >= logs.data.page.pages}
-          onClick={() => setPage((value) => value + 1)}
-        >
-          Next
-        </button>
-      </div>
+      <Pagination
+        page={logs.data.page.page}
+        pages={logs.data.page.pages}
+        onPageChange={setPage}
+        label="System log pagination"
+        summary={`${logs.data.page.total} events`}
+      />
     </div>
   )
 }

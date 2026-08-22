@@ -37,7 +37,7 @@ describe('ActivityPage', () => {
           created_at: '2026-08-20T10:00:00Z',
         },
       ],
-      page: { page: 1, page_size: 25, total: 1, pages: 1 },
+      page: { page: 1, page_size: 25, total: 26, pages: 2 },
     })
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -61,5 +61,6 @@ describe('ActivityPage', () => {
     const caseLink = screen.getByRole('link', { name: 'View case' })
     expect(caseLink).toHaveAttribute('href', '/cases/4')
     expect(caseLink).toHaveClass('text-sm')
+    expect(screen.getByLabelText('Go to page')).toHaveValue(1)
   })
 })
