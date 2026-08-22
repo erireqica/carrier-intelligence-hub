@@ -23,6 +23,7 @@ from app.integrations.ai.schemas import (
 from app.integrations.gmail.client import GmailMailbox, mailbox_from_credential
 from app.integrations.gmail.errors import GmailReauthorizationRequired, GmailTransientError
 from app.integrations.pdf import extract_pdf
+from app.models.audit import AuditEvent
 from app.models.enums import (
     AttachmentStatus,
     AuditSeverity,
@@ -84,6 +85,10 @@ class OperationalOwnershipReconciliation:
     active_reviews_reassigned: int
     source_messages_linked: int
     ownership_conflicts_reconciled: int
+
+
+class CompletedCaseReplayBlocked(RuntimeError):
+    """Prevent an old physical message from recreating active work on a closed Case."""
 
 
 REVIEW_REASONS = {
@@ -993,6 +998,50 @@ def _client_key(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
 
+def _message_was_materialized(db: Session, message: CarrierMessage) -> bool:
+    return (
+        db.scalar(
+            select(AuditEvent.id)
+            .where(
+                AuditEvent.carrier_message_id == message.id,
+                AuditEvent.event_type.in_(
+                    ["CASE_CREATED_FROM_MESSAGE", "CASE_UPDATED_FROM_MESSAGE"]
+                ),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _reactivate_for_new_operational_work(
+    db: Session, case: PolicyCase, message: CarrierMessage
+) -> bool:
+    """Reopen only for a physical message that has never been materialized before."""
+    if case.completed_at is None:
+        return True
+    if _message_was_materialized(db, message):
+        return False
+    previous_completed_at = case.completed_at
+    previous_completed_by_user_id = case.completed_by_user_id
+    case.completed_at = None
+    case.completed_by_user_id = None
+    record_audit_event(
+        db,
+        agency_id=case.agency_id,
+        case_id=case.id,
+        carrier_message_id=message.id,
+        event_type="CASE_REOPENED",
+        description="Carrier Hub reopened the case for new carrier work",
+        metadata={
+            "trigger": "NEW_CARRIER_COMMUNICATION",
+            "previous_completed_at": previous_completed_at.isoformat(),
+            "previous_completed_by_user_id": previous_completed_by_user_id,
+        },
+    )
+    return True
+
+
 def _upsert_analysis(
     db: Session,
     message: CarrierMessage,
@@ -1022,6 +1071,16 @@ def _review_for_flags(
     model_name: str,
     confidence: float | None,
 ) -> ReviewItem:
+    if existing_case is not None:
+        locked_case = db.scalar(
+            select(PolicyCase).where(PolicyCase.id == existing_case.id).with_for_update()
+        )
+        assert locked_case is not None
+        existing_case = locked_case
+        if existing_case.completed_at is not None and not _reactivate_for_new_operational_work(
+            db, existing_case, message
+        ):
+            raise CompletedCaseReplayBlocked
     primary = flags[0] if flags else "AI_INVALID_RESPONSE"
     review = db.scalar(
         select(ReviewItem).where(
@@ -1111,6 +1170,15 @@ def _finalize(
         case.agency_id != message.agency_id or case.carrier_id != message.carrier_id
     ):
         raise RuntimeError("Case association does not match the source message")
+    completed_replay = False
+    if case is not None:
+        locked_case = db.scalar(
+            select(PolicyCase).where(PolicyCase.id == case.id).with_for_update()
+        )
+        assert locked_case is not None
+        case = locked_case
+        if case.completed_at is not None and result.action_items:
+            completed_replay = not _reactivate_for_new_operational_work(db, case, message)
     created = False
     if result.classification in POLICY_CLASSIFICATIONS:
         if case is None:
@@ -1194,6 +1262,8 @@ def _finalize(
                     )
                 )
             if task is None:
+                if completed_replay:
+                    continue
                 task = Task(
                     agency_id=message.agency_id,
                     case_id=case.id,
@@ -1633,14 +1703,22 @@ def process_claimed_message(
             return mark_failed(db, message_id, error.code, settings=active)
         message = _load_message(db, message_id)
         assert message is not None
-        review = _review_for_flags(
-            db,
-            message,
-            (error.code,),
-            existing_case=message.case,
-            model_name=analyzer.model_name,
-            confidence=None,
-        )
+        try:
+            review = _review_for_flags(
+                db,
+                message,
+                (error.code,),
+                existing_case=message.case,
+                model_name=analyzer.model_name,
+                confidence=None,
+            )
+        except CompletedCaseReplayBlocked:
+            return mark_failed(
+                db,
+                message_id,
+                "COMPLETED_CASE_REPROCESSING_BLOCKED",
+                settings=active,
+            )
         return ProcessingResult(
             message.id,
             ProcessingStatus.NEEDS_REVIEW,
@@ -1674,14 +1752,22 @@ def process_claimed_message(
         },
     )
     if not validated.safe_to_apply:
-        review = _review_for_flags(
-            db,
-            message,
-            validated.flags,
-            existing_case=case,
-            model_name=analyzer.model_name,
-            confidence=result.overall_confidence,
-        )
+        try:
+            review = _review_for_flags(
+                db,
+                message,
+                validated.flags,
+                existing_case=case,
+                model_name=analyzer.model_name,
+                confidence=result.overall_confidence,
+            )
+        except CompletedCaseReplayBlocked:
+            return mark_failed(
+                db,
+                message_id,
+                "COMPLETED_CASE_REPROCESSING_BLOCKED",
+                settings=active,
+            )
         return ProcessingResult(
             message.id,
             ProcessingStatus.NEEDS_REVIEW,

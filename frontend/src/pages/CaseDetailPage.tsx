@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useState } from 'react'
 import {
   Activity,
   CalendarDays,
+  CheckCircle2,
   ClipboardCheck,
   DollarSign,
   Eye,
@@ -29,11 +30,13 @@ import { formatBusinessDate, formatDate } from '../lib/format'
 import { evidenceSourceLabel, humanFieldLabel } from '../lib/humanize'
 import {
   assignCase,
+  completeCase,
   correctCase,
   createManualTask,
   dismissCase,
   getAgents,
   getCase,
+  reopenCase,
   restoreCase,
   updateTask,
 } from '../lib/api'
@@ -394,6 +397,15 @@ export function CaseDetailPage() {
   const [correcting, setCorrecting] = useState(false)
   const [addingTask, setAddingTask] = useState(false)
   const [showDismissedTasks, setShowDismissedTasks] = useState(false)
+  const [showCompletionBlockers, setShowCompletionBlockers] = useState(false)
+  useEffect(() => {
+    if (!showCompletionBlockers) return
+    const timeout = window.setTimeout(
+      () => setShowCompletionBlockers(false),
+      4000,
+    )
+    return () => window.clearTimeout(timeout)
+  }, [showCompletionBlockers])
   const agents = useQuery({
     queryKey: ['manager', 'agents'],
     queryFn: getAgents,
@@ -438,6 +450,24 @@ export function CaseDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
     },
   })
+  const completionMutation = useMutation({
+    mutationFn: () =>
+      item.completed_at ? reopenCase(item.id) : completeCase(item.id),
+    onSuccess: async () => {
+      setAddingTask(false)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['case', caseId] }),
+        queryClient.invalidateQueries({ queryKey: ['cases'] }),
+        queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+        queryClient.invalidateQueries({ queryKey: ['reviews'] }),
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['activity'] }),
+        queryClient.invalidateQueries({
+          queryKey: ['manager', 'audit-events'],
+        }),
+      ])
+    },
+  })
   if (detail.isPending) return <LoadingState label="Loading case history…" />
   if (detail.isError)
     return (
@@ -447,17 +477,18 @@ export function CaseDetailPage() {
       />
     )
   const item = detail.data
-  const canAddTask =
-    !item.dismissed_at &&
-    !isManager &&
-    item.assigned_agent?.id === auth.data!.user.id
+  const isAssignedAgent =
+    !isManager && item.assigned_agent?.id === auth.data!.user.id
+  const canAddTask = !item.dismissed_at && !item.completed_at && isAssignedAgent
   const dismissedTaskCount = item.tasks.filter(
     (task) => task.status === 'DISMISSED',
   ).length
-  const activeTaskCount = item.tasks.length - dismissedTaskCount
-  const visibleTasks = showDismissedTasks
-    ? item.tasks
-    : item.tasks.filter((task) => task.status !== 'DISMISSED')
+  const activeTaskCount = item.tasks.filter(
+    (task) => task.status === 'OPEN' || task.status === 'IN_PROGRESS',
+  ).length
+  const visibleTasks = item.tasks.filter(
+    (task) => task.status !== 'DISMISSED' || showDismissedTasks,
+  )
   const eligibleAgents = agents.data?.filter(
     (agent) => agent.role === 'AGENT' && agent.is_active,
   )
@@ -490,6 +521,31 @@ export function CaseDetailPage() {
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
+            {!item.dismissed_at && item.can_reopen && (
+              <Button
+                variant="secondary"
+                disabled={completionMutation.isPending}
+                onClick={() => completionMutation.mutate()}
+              >
+                Reopen case
+              </Button>
+            )}
+            {!item.dismissed_at && !item.completed_at && isAssignedAgent && (
+              <Button
+                variant="success"
+                disabled={completionMutation.isPending}
+                onClick={() => {
+                  if (!item.can_complete) {
+                    setShowCompletionBlockers(true)
+                    return
+                  }
+                  completionMutation.mutate()
+                }}
+              >
+                <CheckCircle2 className="h-4 w-4" aria-hidden />
+                Mark as complete
+              </Button>
+            )}
             {!item.dismissed_at && item.can_manage_lifecycle && (
               <Button variant="secondary" onClick={() => setCorrecting(true)}>
                 Correct case information
@@ -587,9 +643,47 @@ export function CaseDetailPage() {
           case information.
         </p>
       )}
+      {!item.dismissed_at && item.completed_at && (
+        <div className="flex items-start gap-3 border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+          <CheckCircle2
+            className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700"
+            aria-hidden
+          />
+          <div>
+            <p className="font-semibold">Case completed</p>
+            <p className="mt-1 text-emerald-800">
+              {item.completed_by
+                ? `Completed by ${item.completed_by.full_name} · ${formatDate(item.completed_at)}`
+                : `Completed ${formatDate(item.completed_at)}`}
+            </p>
+          </div>
+        </div>
+      )}
+      {!item.dismissed_at &&
+        !item.completed_at &&
+        isAssignedAgent &&
+        showCompletionBlockers &&
+        item.completion_blockers.length > 0 && (
+          <div
+            className="completion-blocker-notice border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"
+            role="alert"
+          >
+            <p className="font-semibold">Case completion is not ready</p>
+            {item.completion_blockers.map((blocker) => (
+              <p key={blocker} className="mt-1 text-amber-800">
+                {blocker}
+              </p>
+            ))}
+          </div>
+        )}
       {lifecycleMutation.error && (
         <p className="text-sm text-red-700" role="alert">
           {lifecycleMutation.error.message}
+        </p>
+      )}
+      {completionMutation.error && (
+        <p className="text-sm text-red-700" role="alert">
+          {completionMutation.error.message}
         </p>
       )}
       {correcting && (
@@ -700,13 +794,27 @@ export function CaseDetailPage() {
                 }}
               />
             )}
+            {activeTaskCount === 0 && visibleTasks.length === 0 && (
+              <div className="px-5 py-8 text-center">
+                <CheckCircle2
+                  className="mx-auto h-6 w-6 text-emerald-600"
+                  aria-hidden
+                />
+                <p className="mt-2 text-sm font-semibold text-slate-900">
+                  No active actions remaining
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Historical actions remain available from the controls above.
+                </p>
+              </div>
+            )}
             <div className="divide-y divide-slate-100">
               {visibleTasks.map((task) => (
                 <div
                   key={task.id}
                   data-task-status={task.status}
                   className={`flex flex-col items-stretch justify-between gap-4 px-5 py-4 sm:flex-row sm:items-start ${
-                    task.status === 'DISMISSED'
+                    task.status === 'DISMISSED' || task.status === 'COMPLETED'
                       ? 'bg-slate-50/80 text-slate-500'
                       : ''
                   }`}
@@ -716,14 +824,17 @@ export function CaseDetailPage() {
                       className={`font-medium ${
                         task.status === 'DISMISSED'
                           ? 'line-through decoration-slate-400'
-                          : ''
+                          : task.status === 'COMPLETED'
+                            ? 'text-slate-600'
+                            : ''
                       }`}
                     >
                       {task.title}
                     </p>
                     <p
                       className={`mt-1 text-sm ${
-                        task.status === 'DISMISSED'
+                        task.status === 'DISMISSED' ||
+                        task.status === 'COMPLETED'
                           ? 'text-slate-500'
                           : 'text-slate-600'
                       }`}
@@ -754,6 +865,7 @@ export function CaseDetailPage() {
                       Update {task.title}
                     </label>
                     {!item.dismissed_at &&
+                    !item.completed_at &&
                     !isManager &&
                     task.assigned_agent.id === auth.data!.user.id ? (
                       <select
@@ -778,7 +890,9 @@ export function CaseDetailPage() {
                       </select>
                     ) : (
                       <p className="mt-2 text-xs text-slate-500 sm:max-w-40">
-                        Status managed by {task.assigned_agent.full_name}
+                        {item.completed_at
+                          ? 'Reopen the Case to update this action'
+                          : `Status managed by ${task.assigned_agent.full_name}`}
                       </p>
                     )}
                   </div>

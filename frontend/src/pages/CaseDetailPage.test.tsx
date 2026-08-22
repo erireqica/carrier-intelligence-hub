@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -11,11 +12,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   assignCase,
+  completeCase,
   correctCase,
   createManualTask,
   getAgents,
   getCase,
   getMe,
+  reopenCase,
   updateTask,
 } from '../lib/api'
 import { authFixture } from '../test/fixtures'
@@ -23,6 +26,7 @@ import { CaseDetailPage } from './CaseDetailPage'
 
 vi.mock('../lib/api', () => ({
   assignCase: vi.fn(),
+  completeCase: vi.fn(),
   correctCase: vi.fn(),
   createManualTask: vi.fn(),
   dismissCase: vi.fn(),
@@ -30,10 +34,14 @@ vi.mock('../lib/api', () => ({
   getCase: vi.fn(),
   getMe: vi.fn(),
   restoreCase: vi.fn(),
+  reopenCase: vi.fn(),
   updateTask: vi.fn(),
 }))
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 describe('CaseDetailPage carrier messages', () => {
   it('renders lifecycle text and filters dismissed tasks', async () => {
@@ -51,7 +59,14 @@ describe('CaseDetailPage carrier messages', () => {
       assigned_agent: null,
       needs_review: false,
       dismissed_at: '2026-08-21T10:00:00Z',
+      completed_at: null,
       can_manage_lifecycle: true,
+      completed_by: null,
+      can_complete: false,
+      can_reopen: false,
+      completion_blockers: [
+        'Complete all active tasks before completing this case.',
+      ],
       premium_amount: null,
       currency: null,
       effective_date: null,
@@ -89,6 +104,60 @@ describe('CaseDetailPage carrier messages', () => {
           is_manual: false,
           created_by: null,
           completed_by: null,
+          assigned_agent: {
+            id: 2,
+            full_name: 'Elena Torres',
+            email: 'agent.one@demo.local',
+          },
+        },
+        {
+          id: 9,
+          case_id: 1,
+          client_name: 'Synthetic Client',
+          policy_number: null,
+          title: 'Completed automated task',
+          description: 'Generated from a carrier message.',
+          priority: 'NORMAL',
+          due_at: null,
+          status: 'COMPLETED',
+          created_at: '2026-08-20T10:00:00Z',
+          completed_at: '2026-08-21T10:00:00Z',
+          is_manual: false,
+          created_by: null,
+          completed_by: {
+            id: 2,
+            full_name: 'Elena Torres',
+            email: 'agent.one@demo.local',
+          },
+          assigned_agent: {
+            id: 2,
+            full_name: 'Elena Torres',
+            email: 'agent.one@demo.local',
+          },
+        },
+        {
+          id: 10,
+          case_id: 1,
+          client_name: 'Synthetic Client',
+          policy_number: null,
+          title: 'Completed manual task',
+          description: 'Added by the assigned agent.',
+          priority: 'LOW',
+          due_at: null,
+          status: 'COMPLETED',
+          created_at: '2026-08-20T11:00:00Z',
+          completed_at: '2026-08-21T11:00:00Z',
+          is_manual: true,
+          created_by: {
+            id: 2,
+            full_name: 'Elena Torres',
+            email: 'agent.one@demo.local',
+          },
+          completed_by: {
+            id: 2,
+            full_name: 'Elena Torres',
+            email: 'agent.one@demo.local',
+          },
           assigned_agent: {
             id: 2,
             full_name: 'Elena Torres',
@@ -202,6 +271,14 @@ describe('CaseDetailPage carrier messages', () => {
       screen.queryByText('Dismissed automated task'),
     ).not.toBeInTheDocument()
     expect(screen.queryByText('Dismissed manual task')).not.toBeInTheDocument()
+    expect(screen.getByText('Completed automated task')).toBeInTheDocument()
+    expect(screen.getByText('Completed manual task')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /completed/i }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Dismissed automated task'),
+    ).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Show dismissed (2)' }))
 
@@ -218,6 +295,7 @@ describe('CaseDetailPage carrier messages', () => {
     expect(screen.getAllByText('DISMISSED')).toHaveLength(2)
     expect(screen.getByText('Submit authorization')).toBeInTheDocument()
     expect(screen.getByText('Other assignee task')).toBeInTheDocument()
+    expect(screen.getByText('Completed automated task')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide dismissed' }))
 
@@ -227,6 +305,7 @@ describe('CaseDetailPage carrier messages', () => {
     expect(screen.queryByText('Dismissed manual task')).not.toBeInTheDocument()
     expect(screen.getByText('Submit authorization')).toBeInTheDocument()
     expect(screen.getByText('Other assignee task')).toBeInTheDocument()
+    expect(screen.getByText('Completed automated task')).toBeInTheDocument()
     const restore = screen.getByRole('button', { name: 'Restore case' })
     expect(restore).toHaveClass('bg-emerald-700')
     expect(
@@ -253,7 +332,14 @@ describe('CaseDetailPage carrier messages', () => {
       },
       needs_review: false,
       dismissed_at: null,
+      completed_at: null,
       can_manage_lifecycle: true,
+      completed_by: null,
+      can_complete: false,
+      can_reopen: false,
+      completion_blockers: [
+        'Complete all active tasks before completing this case.',
+      ],
       premium_amount: null,
       currency: null,
       effective_date: null,
@@ -301,6 +387,29 @@ describe('CaseDetailPage carrier messages', () => {
       name: 'Correct case information',
     })
     const dismissButton = screen.getByRole('button', { name: 'Dismiss case' })
+    const completeButton = screen.getByRole('button', {
+      name: 'Mark as complete',
+    })
+    expect(
+      screen.queryByText(
+        'Complete all active tasks before completing this case.',
+      ),
+    ).not.toBeInTheDocument()
+    vi.useFakeTimers()
+    fireEvent.click(completeButton)
+    expect(
+      screen.getByText(
+        'Complete all active tasks before completing this case.',
+      ),
+    ).toBeInTheDocument()
+    expect(completeCase).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(4000))
+    expect(
+      screen.queryByText(
+        'Complete all active tasks before completing this case.',
+      ),
+    ).not.toBeInTheDocument()
+    vi.useRealTimers()
     expect(correctButton.parentElement).toBe(dismissButton.parentElement)
     expect(dismissButton).toHaveClass('bg-red-700')
     expect(screen.getAllByText('Pending carrier requirement.')).toHaveLength(1)
@@ -386,6 +495,13 @@ describe('CaseDetailPage carrier messages', () => {
       activity: [],
       dismissed_at: null,
       can_manage_lifecycle: true,
+      completed_at: null,
+      completed_by: null,
+      can_complete: false,
+      can_reopen: false,
+      completion_blockers: [
+        'Complete all active tasks before completing this case.',
+      ],
     }
     vi.mocked(getCase).mockResolvedValue(item)
     vi.mocked(assignCase).mockResolvedValue(item)
@@ -448,7 +564,12 @@ describe('CaseDetailPage carrier messages', () => {
       },
       needs_review: false,
       dismissed_at: null,
+      completed_at: null,
       can_manage_lifecycle: true,
+      completed_by: null,
+      can_complete: true,
+      can_reopen: false,
+      completion_blockers: [],
       premium_amount: null,
       currency: null,
       effective_date: null,
@@ -524,5 +645,75 @@ describe('CaseDetailPage carrier messages', () => {
     expect(
       screen.getByText(/Added manually by Elena Torres/),
     ).toBeInTheDocument()
+  })
+
+  it('lets the assigned agent explicitly complete and reopen ready Case work', async () => {
+    const auth = authFixture('AGENT')
+    const active = {
+      id: 5,
+      client_name: 'Ready Client',
+      policy_number: 'READY-5',
+      policy_status: 'ACTIVE' as const,
+      priority: 'NORMAL' as const,
+      summary: 'All operational work is finished.',
+      deadline: null,
+      updated_at: '2026-08-23T10:00:00Z',
+      carrier: { id: 1, name: 'Americo', code: 'AMR' },
+      assigned_agent: {
+        id: auth.user.id,
+        full_name: auth.user.full_name,
+        email: auth.user.email,
+      },
+      needs_review: false,
+      dismissed_at: null,
+      completed_at: null,
+      can_manage_lifecycle: true,
+      completed_by: null,
+      can_complete: true,
+      can_reopen: false,
+      completion_blockers: [],
+      premium_amount: null,
+      currency: null,
+      effective_date: null,
+      messages: [],
+      attachments: [],
+      tasks: [],
+      evidence: [],
+      activity: [],
+    }
+    const completed = {
+      ...active,
+      completed_at: '2026-08-23T10:30:00Z',
+      completed_by: active.assigned_agent,
+      can_complete: false,
+      can_reopen: true,
+    }
+    vi.mocked(getMe).mockResolvedValue(auth)
+    vi.mocked(getCase)
+      .mockResolvedValueOnce(active)
+      .mockResolvedValue(completed)
+    vi.mocked(completeCase).mockResolvedValue(completed)
+    vi.mocked(reopenCase).mockResolvedValue(active)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/cases/5']}>
+          <Routes>
+            <Route path="/cases/:caseId" element={<CaseDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Mark as complete' }),
+    )
+    await waitFor(() => expect(completeCase).toHaveBeenCalledWith(5))
+    expect(await screen.findByText('Case completed')).toBeInTheDocument()
+    expect(screen.getByText(/Completed by Elena Torres/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen case' }))
+    await waitFor(() => expect(reopenCase).toHaveBeenCalledWith(5))
   })
 })

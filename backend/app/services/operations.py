@@ -142,10 +142,20 @@ def case_item(case: PolicyCase, agency_timezone: str, current: AuthContext) -> C
             item.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW} for item in case.reviews
         ),
         dismissed_at=case.dismissed_at,
+        completed_at=case.completed_at,
         can_manage_lifecycle=(
             current.user.role is UserRole.MANAGER or case.assigned_agent_id == current.user.id
         ),
     )
+
+
+def case_completion_blockers(case: PolicyCase) -> list[str]:
+    blockers: list[str] = []
+    if any(task.status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS} for task in case.tasks):
+        blockers.append("Complete all active tasks before completing this case.")
+    if any(review.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW} for review in case.reviews):
+        blockers.append("Resolve the active review before completing this case.")
+    return blockers
 
 
 def attachment_item(attachment: Attachment) -> AttachmentItem:
@@ -182,11 +192,21 @@ def list_cases(
     policy_status: PolicyStatus | None,
     priority: Priority | None,
     assigned_agent_id: int | None,
-    include_dismissed: bool,
+    lifecycle: str,
 ) -> CaseListResponse:
     query = scoped_cases_query(current)
-    if not include_dismissed:
-        query = query.where(PolicyCase.dismissed_at.is_(None))
+    if lifecycle == "DISMISSED":
+        query = query.where(PolicyCase.dismissed_at.is_not(None))
+    elif lifecycle == "COMPLETED":
+        query = query.where(
+            PolicyCase.dismissed_at.is_(None),
+            PolicyCase.completed_at.is_not(None),
+        )
+    else:
+        query = query.where(
+            PolicyCase.dismissed_at.is_(None),
+            PolicyCase.completed_at.is_(None),
+        )
     if search:
         term = f"%{search.strip()}%"
         query = query.where(
@@ -207,6 +227,7 @@ def list_cases(
         query.options(
             joinedload(PolicyCase.carrier),
             joinedload(PolicyCase.assigned_agent),
+            joinedload(PolicyCase.completed_by),
             selectinload(PolicyCase.reviews),
         )
         .order_by(PolicyCase.updated_at.desc())
@@ -247,6 +268,86 @@ def set_case_dismissed(
         ),
     )
     db.commit()
+    db.expire_all()
+    return get_case_detail(db, current, case.id)
+
+
+def set_case_completed(
+    db: Session, current: AuthContext, case_id: int, *, completed: bool
+) -> CaseDetail:
+    if current.user.role is not UserRole.AGENT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Case completion is performed by the assigned agent",
+        )
+    case = db.scalar(
+        select(PolicyCase)
+        .where(
+            PolicyCase.id == case_id,
+            PolicyCase.agency_id == current.user.agency_id,
+            PolicyCase.assigned_agent_id == current.user.id,
+        )
+        .with_for_update()
+    )
+    if case is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if case.dismissed_at is not None:
+        raise HTTPException(status_code=409, detail="Restore this case before changing completion")
+
+    if completed:
+        if case.completed_at is not None:
+            return get_case_detail(db, current, case.id)
+        active_tasks = (
+            db.scalar(
+                select(func.count())
+                .select_from(Task)
+                .where(
+                    Task.case_id == case.id,
+                    Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+                )
+            )
+            or 0
+        )
+        active_reviews = (
+            db.scalar(
+                select(func.count())
+                .select_from(ReviewItem)
+                .where(
+                    ReviewItem.case_id == case.id,
+                    ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+                )
+            )
+            or 0
+        )
+        blockers: list[str] = []
+        if active_tasks:
+            blockers.append("Complete all active tasks before completing this case.")
+        if active_reviews:
+            blockers.append("Resolve the active review before completing this case.")
+        if blockers:
+            raise HTTPException(status_code=409, detail=" ".join(blockers))
+        case.completed_at = utc_now()
+        case.completed_by_user_id = current.user.id
+        event_type = "CASE_COMPLETED"
+        description = f"{current.user.full_name} completed the case"
+    else:
+        if case.completed_at is None:
+            return get_case_detail(db, current, case.id)
+        case.completed_at = None
+        case.completed_by_user_id = None
+        event_type = "CASE_REOPENED"
+        description = f"{current.user.full_name} reopened the case"
+
+    record_audit_event(
+        db,
+        agency_id=case.agency_id,
+        actor_user_id=current.user.id,
+        case_id=case.id,
+        event_type=event_type,
+        description=description,
+    )
+    db.commit()
+    db.expire_all()
     return get_case_detail(db, current, case.id)
 
 
@@ -257,6 +358,7 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
         .options(
             joinedload(PolicyCase.carrier),
             joinedload(PolicyCase.assigned_agent),
+            joinedload(PolicyCase.completed_by),
             selectinload(PolicyCase.reviews),
             selectinload(PolicyCase.messages).selectinload(CarrierMessage.attachments),
             selectinload(PolicyCase.messages).joinedload(CarrierMessage.analysis),
@@ -276,11 +378,26 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
         .limit(30)
     ).all()
     base = case_item(case, current.agency.timezone, current).model_dump()
+    completion_blockers = case_completion_blockers(case)
+    is_assigned_agent = (
+        current.user.role is UserRole.AGENT and case.assigned_agent_id == current.user.id
+    )
     return CaseDetail(
         **base,
         premium_amount=case.premium_amount,
         currency=case.currency,
         effective_date=case.effective_date,
+        completed_by=agent_brief(case.completed_by) if case.completed_by else None,
+        can_complete=(
+            is_assigned_agent
+            and case.dismissed_at is None
+            and case.completed_at is None
+            and not completion_blockers
+        ),
+        can_reopen=(
+            is_assigned_agent and case.dismissed_at is None and case.completed_at is not None
+        ),
+        completion_blockers=completion_blockers,
         messages=[
             MessageItem(
                 id=message.id,
@@ -476,16 +593,20 @@ def create_manual_task(
     if current.user.role is not UserRole.AGENT:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent access required")
     case = db.scalar(
-        select(PolicyCase).where(
+        select(PolicyCase)
+        .where(
             PolicyCase.id == case_id,
             PolicyCase.agency_id == current.user.agency_id,
             PolicyCase.assigned_agent_id == current.user.id,
         )
+        .with_for_update()
     )
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
     if case.dismissed_at is not None:
         raise HTTPException(status_code=409, detail="Restore this case before adding tasks")
+    if case.completed_at is not None:
+        raise HTTPException(status_code=409, detail="Reopen this case before adding tasks")
 
     task = Task(
         agency_id=case.agency_id,
@@ -540,6 +661,12 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
         )
     if task.case.dismissed_at is not None:
         raise HTTPException(status_code=409, detail="Restore this case before updating its tasks")
+    locked_case = db.scalar(
+        select(PolicyCase).where(PolicyCase.id == task.case_id).with_for_update()
+    )
+    assert locked_case is not None
+    if locked_case.completed_at is not None:
+        raise HTTPException(status_code=409, detail="Reopen this case before updating its tasks")
 
     previous_status = task.status
     status_changed = update.status != task.status
@@ -590,12 +717,24 @@ def list_reviews(
         query = query.where(ReviewItem.status == review_status)
         if review_status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW}:
             query = query.where(
-                or_(ReviewItem.case_id.is_(None), PolicyCase.dismissed_at.is_(None))
+                or_(
+                    ReviewItem.case_id.is_(None),
+                    and_(
+                        PolicyCase.dismissed_at.is_(None),
+                        PolicyCase.completed_at.is_(None),
+                    ),
+                )
             )
     elif review_view == "ACTIONABLE":
         query = query.where(
             ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
-            or_(ReviewItem.case_id.is_(None), PolicyCase.dismissed_at.is_(None)),
+            or_(
+                ReviewItem.case_id.is_(None),
+                and_(
+                    PolicyCase.dismissed_at.is_(None),
+                    PolicyCase.completed_at.is_(None),
+                ),
+            ),
         )
     elif review_view == "RESOLVED":
         query = query.where(ReviewItem.status == ReviewStatus.RESOLVED)
@@ -639,6 +778,8 @@ def scoped_reviews_query(current: AuthContext) -> Select[tuple[ReviewItem]]:
                 ReviewItem.status.in_(active_statuses),
                 ReviewItem.case_id.is_not(None),
                 PolicyCase.assigned_agent_id == current.user.id,
+                PolicyCase.dismissed_at.is_(None),
+                PolicyCase.completed_at.is_(None),
             ),
             and_(
                 ReviewItem.status.in_(active_statuses),
@@ -886,6 +1027,13 @@ def update_review(
     get_review_item(db, current, review_id)
     item = db.get(ReviewItem, review_id)
     assert item is not None
+    if item.case_id is not None and update.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW}:
+        case = db.scalar(select(PolicyCase).where(PolicyCase.id == item.case_id).with_for_update())
+        if case is not None and case.completed_at is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Reopen this case before returning its review to active work",
+            )
     item.status = update.status
     item.resolution_notes = update.resolution_notes
     item.resolved_at = (

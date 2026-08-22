@@ -27,6 +27,9 @@ Page = Annotated[int, Query(ge=1)]
 PageSize = Annotated[int, Query(ge=1, le=100)]
 TaskStatusFilter = Annotated[TaskStatus | None, Query(alias="status")]
 ReviewStatusFilter = Annotated[ReviewStatus | None, Query(alias="status")]
+CaseLifecycleFilter = Annotated[
+    Literal["ACTIVE", "COMPLETED", "DISMISSED"], Query(alias="lifecycle")
+]
 
 
 @router.get("/dashboard", response_model=DashboardResponse)
@@ -45,7 +48,7 @@ def get_cases(
     policy_status: PolicyStatus | None = None,
     priority: Priority | None = None,
     assigned_agent_id: int | None = None,
-    include_dismissed: bool = False,
+    lifecycle: CaseLifecycleFilter = "ACTIVE",
 ) -> CaseListResponse:
     return operations_service.list_cases(
         db,
@@ -57,7 +60,7 @@ def get_cases(
         policy_status=policy_status,
         priority=priority,
         assigned_agent_id=assigned_agent_id,
-        include_dismissed=include_dismissed,
+        lifecycle=lifecycle,
     )
 
 
@@ -74,6 +77,16 @@ def dismiss_case(case_id: int, current: CsrfUser, db: DbSession) -> CaseDetail:
 @router.post("/cases/{case_id}/restore", response_model=CaseDetail)
 def restore_case(case_id: int, current: CsrfUser, db: DbSession) -> CaseDetail:
     return operations_service.set_case_dismissed(db, current, case_id, dismissed=False)
+
+
+@router.post("/cases/{case_id}/complete", response_model=CaseDetail)
+def complete_case(case_id: int, current: CsrfUser, db: DbSession) -> CaseDetail:
+    return operations_service.set_case_completed(db, current, case_id, completed=True)
+
+
+@router.post("/cases/{case_id}/reopen", response_model=CaseDetail)
+def reopen_case(case_id: int, current: CsrfUser, db: DbSession) -> CaseDetail:
+    return operations_service.set_case_completed(db, current, case_id, completed=False)
 
 
 @router.patch("/cases/{case_id}/correction", response_model=CaseDetail)

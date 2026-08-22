@@ -32,6 +32,7 @@ export type PolicyStatus =
   | 'ACTIVE'
   | 'GRACE_PERIOD'
   | 'UNKNOWN'
+export type CaseLifecycle = 'ACTIVE' | 'COMPLETED' | 'DISMISSED'
 
 export type AgentBrief = {
   id: number
@@ -76,6 +77,7 @@ export type CaseItem = {
   assigned_agent: AgentBrief | null
   needs_review: boolean
   dismissed_at?: string | null
+  completed_at: string | null
   can_manage_lifecycle?: boolean
 }
 
@@ -116,6 +118,10 @@ export type CaseDetail = CaseItem & {
   premium_amount: string | null
   currency: string | null
   effective_date: string | null
+  completed_by: AgentBrief | null
+  can_complete: boolean
+  can_reopen: boolean
+  completion_blockers: string[]
   messages: Array<{
     id: number
     sender: string

@@ -112,7 +112,10 @@ def _category_clause(category: str):
 
 def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
     dashboard_now = utc_now()
-    case_scope = scoped_cases_query(current).where(PolicyCase.dismissed_at.is_(None))
+    case_scope = scoped_cases_query(current).where(
+        PolicyCase.dismissed_at.is_(None),
+        PolicyCase.completed_at.is_(None),
+    )
     task_filters = [Task.agency_id == current.user.agency_id]
     gmail_filters = [GmailConnection.agency_id == current.user.agency_id]
     if current.user.role is UserRole.AGENT:
@@ -135,6 +138,7 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
             .where(
                 *task_filters,
                 PolicyCase.dismissed_at.is_(None),
+                PolicyCase.completed_at.is_(None),
                 Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
             )
         )
@@ -148,6 +152,7 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
             .where(
                 *task_filters,
                 PolicyCase.dismissed_at.is_(None),
+                PolicyCase.completed_at.is_(None),
                 Task.status == TaskStatus.IN_PROGRESS,
             )
         )
@@ -161,6 +166,7 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
             .where(
                 *task_filters,
                 PolicyCase.dismissed_at.is_(None),
+                PolicyCase.completed_at.is_(None),
                 Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
                 Task.due_at >= dashboard_now,
                 Task.due_at <= dashboard_now + timedelta(days=7),
@@ -176,6 +182,7 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
             .where(
                 *task_filters,
                 PolicyCase.dismissed_at.is_(None),
+                PolicyCase.completed_at.is_(None),
                 Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
                 Task.due_at < dashboard_now,
             )
@@ -189,7 +196,10 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
         .where(
             ReviewItem.agency_id == current.user.agency_id,
             ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
-            or_(ReviewItem.case_id.is_(None), PolicyCase.dismissed_at.is_(None)),
+            or_(
+                ReviewItem.case_id.is_(None),
+                (PolicyCase.dismissed_at.is_(None) & PolicyCase.completed_at.is_(None)),
+            ),
         )
     )
     if current.user.role is UserRole.AGENT:
@@ -345,7 +355,10 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
         rows = db.execute(
             select(
                 User,
-                func.count(Task.id).filter(PolicyCase.dismissed_at.is_(None)),
+                func.count(Task.id).filter(
+                    PolicyCase.dismissed_at.is_(None),
+                    PolicyCase.completed_at.is_(None),
+                ),
             )
             .outerjoin(
                 Task,

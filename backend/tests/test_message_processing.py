@@ -371,6 +371,117 @@ def test_strong_analysis_creates_case_tasks_evidence_and_is_idempotent(
     assert analysis.model_result_json == analysis.final_result_json
 
 
+def test_new_actionable_message_reopens_completed_case_without_duplicate_case(
+    seeded_db: Session,
+) -> None:
+    policy_case = seeded_db.scalar(select(PolicyCase).where(PolicyCase.client_name == "John Doe"))
+    assert policy_case is not None and policy_case.assigned_agent_id is not None
+    for task in seeded_db.scalars(select(Task).where(Task.case_id == policy_case.id)).all():
+        task.status = TaskStatus.COMPLETED
+    for review in seeded_db.scalars(
+        select(ReviewItem).where(ReviewItem.case_id == policy_case.id)
+    ).all():
+        review.status = ReviewStatus.RESOLVED
+        review.resolved_at = datetime.now(UTC)
+    policy_case.completed_at = datetime.now(UTC)
+    policy_case.completed_by_user_id = policy_case.assigned_agent_id
+    seeded_db.commit()
+    original_case_count = seeded_db.scalar(select(func.count()).select_from(PolicyCase))
+    owner = seeded_db.get(User, policy_case.assigned_agent_id)
+    assert owner is not None
+    message = create_received_message(
+        seeded_db,
+        client="John Doe",
+        policy="AMR-98765432",
+        subject_suffix="completed-case-new-work",
+        owner=owner,
+    )
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(analysis_result(client="John Doe", policy="AMR-98765432")),
+    )
+
+    seeded_db.refresh(policy_case)
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert result.case_id == policy_case.id
+    assert policy_case.completed_at is None
+    assert policy_case.completed_by_user_id is None
+    assert seeded_db.scalar(select(func.count()).select_from(PolicyCase)) == original_case_count
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(Task)
+            .where(
+                Task.source_carrier_message_id == message.id,
+                Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+            )
+        )
+        == 1
+    )
+    reopened = seeded_db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.case_id == policy_case.id,
+            AuditEvent.carrier_message_id == message.id,
+            AuditEvent.event_type == "CASE_REOPENED",
+        )
+    )
+    assert reopened is not None
+    assert reopened.actor_user_id is None
+    assert reopened.event_metadata["trigger"] == "NEW_CARRIER_COMMUNICATION"
+
+
+def test_reprocessing_materialized_message_does_not_reopen_completed_case(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Replay Client",
+        policy="REPLAY-100",
+        subject_suffix="completed-case-replay",
+    )
+    analyzer = FakeAnalyzer(analysis_result(client="Replay Client", policy="REPLAY-100"))
+    first = process_message(seeded_db, message.id, analyzer=analyzer)
+    policy_case = seeded_db.get(PolicyCase, first.case_id)
+    assert policy_case is not None and policy_case.assigned_agent_id is not None
+    source_tasks = seeded_db.scalars(
+        select(Task).where(Task.source_carrier_message_id == message.id)
+    ).all()
+    assert source_tasks
+    for task in source_tasks:
+        task.status = TaskStatus.COMPLETED
+    policy_case.completed_at = datetime.now(UTC)
+    policy_case.completed_by_user_id = policy_case.assigned_agent_id
+    message.processing_status = ProcessingStatus.FAILED
+    message.processing_next_retry_at = None
+    seeded_db.commit()
+
+    replay = process_message(seeded_db, message.id, analyzer=analyzer)
+
+    seeded_db.refresh(policy_case)
+    assert replay.processing_status is ProcessingStatus.PROCESSED
+    assert policy_case.completed_at is not None
+    assert policy_case.completed_by_user_id is not None
+    assert not seeded_db.scalars(
+        select(Task).where(
+            Task.case_id == policy_case.id,
+            Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+        )
+    ).all()
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(
+                AuditEvent.carrier_message_id == message.id,
+                AuditEvent.event_type == "CASE_REOPENED",
+            )
+        )
+        == 0
+    )
+
+
 def test_reprocessing_reconciles_stale_tasks_and_replaces_evidence(
     seeded_db: Session,
 ) -> None:

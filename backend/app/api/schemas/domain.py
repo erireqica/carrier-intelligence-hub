@@ -64,6 +64,7 @@ class CaseListItem(BaseModel):
     assigned_agent: AgentBrief | None
     needs_review: bool
     dismissed_at: datetime | None
+    completed_at: datetime | None
     can_manage_lifecycle: bool
 
 
@@ -213,6 +214,10 @@ class CaseDetail(CaseListItem):
     premium_amount: Decimal | None
     currency: str | None
     effective_date: date | None
+    completed_by: AgentBrief | None
+    can_complete: bool
+    can_reopen: bool
+    completion_blockers: list[str]
     messages: list[MessageItem]
     attachments: list[AttachmentItem]
     tasks: list[TaskItem]

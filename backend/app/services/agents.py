@@ -115,6 +115,7 @@ def remove_agent(db: Session, current: AuthContext, agent_id: int) -> None:
                 PolicyCase.agency_id == current.user.agency_id,
                 PolicyCase.assigned_agent_id == agent.id,
                 PolicyCase.dismissed_at.is_(None),
+                PolicyCase.completed_at.is_(None),
             )
         )
         or 0

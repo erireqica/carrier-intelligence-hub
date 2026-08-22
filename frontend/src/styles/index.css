@@ -421,6 +421,22 @@ main :where(.border-green-300.bg-green-50) {
   }
 }
 
+@keyframes completion-blocker-notice {
+  0%,
+  82% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.completion-blocker-notice {
+  animation: completion-blocker-notice 4s ease-out forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -429,5 +445,9 @@ main :where(.border-green-300.bg-green-50) {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .completion-blocker-notice {
+    animation: none !important;
   }
 }

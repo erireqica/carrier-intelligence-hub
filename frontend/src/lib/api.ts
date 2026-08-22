@@ -206,6 +206,10 @@ export const dismissCase = (id: number) =>
   apiRequest<CaseDetail>(`/cases/${id}/dismiss`, { method: 'POST' })
 export const restoreCase = (id: number) =>
   apiRequest<CaseDetail>(`/cases/${id}/restore`, { method: 'POST' })
+export const completeCase = (id: number) =>
+  apiRequest<CaseDetail>(`/cases/${id}/complete`, { method: 'POST' })
+export const reopenCase = (id: number) =>
+  apiRequest<CaseDetail>(`/cases/${id}/reopen`, { method: 'POST' })
 export const correctCase = (id: number, data: CaseCorrectionInput) =>
   apiRequest<CaseDetail>(`/cases/${id}/correction`, {
     method: 'PATCH',

@@ -9,8 +9,8 @@ import { CasesPage } from './CasesPage'
 vi.mock('../lib/api', () => ({ getCases: vi.fn() }))
 const mockedGetCases = vi.mocked(getCases)
 
-describe('CasesPage empty states', () => {
-  it('distinguishes an empty scope from filters with no matches', async () => {
+describe('CasesPage lifecycle filtering', () => {
+  it('defaults to Active and switches to mutually exclusive lifecycle categories', async () => {
     mockedGetCases.mockResolvedValue({
       items: [],
       page: { page: 1, page_size: 20, total: 0, pages: 1 },
@@ -25,16 +25,36 @@ describe('CasesPage empty states', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    expect(await screen.findByText('No carrier cases yet')).toBeInTheDocument()
+    expect(
+      await screen.findByText('No active carrier cases yet'),
+    ).toBeInTheDocument()
     expect(mockedGetCases).toHaveBeenCalledWith(
-      expect.stringContaining('page_size=10'),
+      expect.stringContaining('lifecycle=ACTIVE'),
     )
-    fireEvent.click(screen.getByLabelText('Include dismissed cases'))
+    expect(screen.getByRole('tab', { name: /Active/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    fireEvent.click(screen.getByRole('tab', { name: /Completed/ }))
     await waitFor(() =>
       expect(mockedGetCases).toHaveBeenLastCalledWith(
-        expect.stringContaining('include_dismissed=true'),
+        expect.stringContaining('lifecycle=COMPLETED'),
       ),
     )
+    expect(
+      await screen.findByText('No completed cases yet'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Completed/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    fireEvent.click(screen.getByRole('tab', { name: /Dismissed/ }))
+    await waitFor(() =>
+      expect(mockedGetCases).toHaveBeenLastCalledWith(
+        expect.stringContaining('lifecycle=DISMISSED'),
+      ),
+    )
+    expect(await screen.findByText('No dismissed cases')).toBeInTheDocument()
     fireEvent.change(await screen.findByLabelText('Search cases'), {
       target: { value: 'missing policy' },
     })
@@ -47,13 +67,13 @@ describe('CasesPage empty states', () => {
     )
   })
 
-  it('renders a strong lifecycle badge for an included dismissed case', async () => {
+  it('resets page one when switching lifecycle and renders completed history distinctly', async () => {
     mockedGetCases.mockResolvedValue({
       items: [
         {
           id: 9,
-          client_name: 'Dismissed Client',
-          policy_number: 'DIS-9',
+          client_name: 'Completed Client',
+          policy_number: 'COM-9',
           policy_status: 'ACTIVE',
           priority: 'NORMAL',
           summary: 'Historical case.',
@@ -62,7 +82,8 @@ describe('CasesPage empty states', () => {
           carrier: { id: 1, name: 'Americo', code: 'AMR' },
           assigned_agent: null,
           needs_review: false,
-          dismissed_at: '2026-08-21T10:00:00Z',
+          dismissed_at: null,
+          completed_at: '2026-08-21T10:00:00Z',
           can_manage_lifecycle: true,
         },
       ],
@@ -73,17 +94,26 @@ describe('CasesPage empty states', () => {
     })
     render(
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={['/cases?lifecycle=COMPLETED&page=3']}>
           <CasesPage />
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    const badge = await screen.findByText('DISMISSED')
-    expect(badge).toHaveClass('text-red-800')
+    const badge = await screen.findByText('COMPLETED')
+    expect(badge).toHaveClass('text-emerald-800')
     expect(
       screen
         .getAllByText('ACTIVE')
         .some((element) => element.tagName === 'SPAN'),
     ).toBe(true)
+    expect(mockedGetCases).toHaveBeenCalledWith(
+      expect.stringContaining('page=3'),
+    )
+    fireEvent.click(screen.getByRole('tab', { name: /Active/ }))
+    await waitFor(() => {
+      const request = mockedGetCases.mock.calls.at(-1)?.[0] ?? ''
+      expect(request).toContain('lifecycle=ACTIVE')
+      expect(request).toContain('page=1')
+    })
   })
 })

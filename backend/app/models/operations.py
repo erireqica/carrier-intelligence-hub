@@ -62,6 +62,7 @@ class PolicyCase(TimestampMixin, Base):
         Index("ix_cases_agency_priority_status", "agency_id", "priority", "current_policy_status"),
         Index("ix_cases_assigned_agent", "assigned_agent_id"),
         Index("ix_cases_agency_dismissed", "agency_id", "dismissed_at"),
+        Index("ix_cases_agency_completed", "agency_id", "completed_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -90,10 +91,15 @@ class PolicyCase(TimestampMixin, Base):
     dismissed_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
 
     carrier: Mapped[Carrier] = relationship()
     assigned_agent: Mapped[User | None] = relationship(foreign_keys=[assigned_agent_id])
     dismissed_by: Mapped[User | None] = relationship(foreign_keys=[dismissed_by_user_id])
+    completed_by: Mapped[User | None] = relationship(foreign_keys=[completed_by_user_id])
     messages: Mapped[list[CarrierMessage]] = relationship(
         back_populates="case", order_by="CarrierMessage.received_at"
     )

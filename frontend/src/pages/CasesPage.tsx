@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { type FormEvent, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import {
   Badge,
@@ -17,27 +17,62 @@ import {
 import { Avatar } from '../components/Avatar'
 import { formatDate } from '../lib/format'
 import { getCases } from '../lib/api'
+import type { CaseLifecycle } from '../lib/types'
+
+const lifecycleOptions: Array<{
+  value: CaseLifecycle
+  label: string
+  description: string
+}> = [
+  { value: 'ACTIVE', label: 'Active', description: 'Current operational work' },
+  {
+    value: 'COMPLETED',
+    label: 'Completed',
+    description: 'Finished case history',
+  },
+  {
+    value: 'DISMISSED',
+    label: 'Dismissed',
+    description: 'Removed from active work',
+  },
+]
 
 export function CasesPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [priority, setPriority] = useState('')
-  const [page, setPage] = useState(1)
-  const [includeDismissed, setIncludeDismissed] = useState(false)
+  const lifecycleParam = searchParams.get('lifecycle')
+  const lifecycle: CaseLifecycle = ['COMPLETED', 'DISMISSED'].includes(
+    lifecycleParam ?? '',
+  )
+    ? (lifecycleParam as CaseLifecycle)
+    : 'ACTIVE'
+  const requestedPage = Number(searchParams.get('page') ?? '1')
+  const page =
+    Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1
+  function navigate(nextLifecycle: CaseLifecycle, nextPage = 1) {
+    const next = new URLSearchParams(searchParams)
+    if (nextLifecycle === 'ACTIVE') next.delete('lifecycle')
+    else next.set('lifecycle', nextLifecycle)
+    if (nextPage === 1) next.delete('page')
+    else next.set('page', String(nextPage))
+    setSearchParams(next)
+  }
   const params = new URLSearchParams({ page: String(page), page_size: '10' })
+  params.set('lifecycle', lifecycle)
   if (search) params.set('search', search)
   if (status) params.set('policy_status', status)
   if (priority) params.set('priority', priority)
-  if (includeDismissed) params.set('include_dismissed', 'true')
   const cases = useQuery({
-    queryKey: ['cases', search, status, priority, includeDismissed, page],
+    queryKey: ['cases', search, status, priority, lifecycle, page],
     queryFn: () => getCases(params.toString()),
   })
   function submit(event: FormEvent) {
     event.preventDefault()
     setSearch(searchInput.trim())
-    setPage(1)
+    navigate(lifecycle)
   }
   if (cases.isPending) return <LoadingState label="Loading cases…" />
   if (cases.isError)
@@ -50,8 +85,44 @@ export function CasesPage() {
       <PageHeader
         eyebrow="Policy operations"
         title="Cases"
-        description="Active policy work created from approved carrier communications."
+        description={
+          lifecycle === 'COMPLETED'
+            ? 'Finished operational Cases with their full policy history preserved.'
+            : lifecycle === 'DISMISSED'
+              ? 'Cases removed from active work without deleting their history.'
+              : 'Active policy work created from approved carrier communications.'
+        }
       />
+      <div
+        className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-1.5 sm:grid-cols-3"
+        role="tablist"
+        aria-label="Case lifecycle"
+      >
+        {lifecycleOptions.map((option) => {
+          const selected = lifecycle === option.value
+          return (
+            <button
+              key={option.value}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              className={`rounded-lg border px-4 py-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:outline-none ${
+                selected
+                  ? 'border-slate-300 bg-white text-slate-950 shadow-sm'
+                  : 'border-transparent text-slate-600 hover:bg-white/70 hover:text-slate-900'
+              }`}
+              onClick={() => navigate(option.value)}
+            >
+              <span className="block text-sm font-semibold">
+                {option.label}
+              </span>
+              <span className="mt-0.5 block text-xs text-slate-500">
+                {option.description}
+              </span>
+            </button>
+          )
+        })}
+      </div>
       <form
         onSubmit={submit}
         className="filter-toolbar grid gap-3 lg:grid-cols-[minmax(260px,1fr)_180px_160px_auto]"
@@ -74,7 +145,7 @@ export function CasesPage() {
           value={status}
           onChange={(event) => {
             setStatus(event.target.value)
-            setPage(1)
+            navigate(lifecycle)
           }}
         >
           <option value="">All statuses</option>
@@ -101,7 +172,7 @@ export function CasesPage() {
           value={priority}
           onChange={(event) => {
             setPriority(event.target.value)
-            setPage(1)
+            navigate(lifecycle)
           }}
         >
           <option value="">All priorities</option>
@@ -124,7 +195,7 @@ export function CasesPage() {
                 setSearch('')
                 setStatus('')
                 setPriority('')
-                setPage(1)
+                navigate(lifecycle)
               }}
             >
               Reset
@@ -132,28 +203,25 @@ export function CasesPage() {
           )}
         </div>
       </form>
-      <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
-        <input
-          type="checkbox"
-          checked={includeDismissed}
-          onChange={(event) => {
-            setIncludeDismissed(event.target.checked)
-            setPage(1)
-          }}
-        />
-        Include dismissed cases
-      </label>
       {cases.data.items.length === 0 ? (
         <EmptyState
           title={
             search || status || priority
               ? 'No cases match your filters'
-              : 'No carrier cases yet'
+              : lifecycle === 'COMPLETED'
+                ? 'No completed cases yet'
+                : lifecycle === 'DISMISSED'
+                  ? 'No dismissed cases'
+                  : 'No active carrier cases yet'
           }
           description={
             search || status || priority
               ? 'Adjust or reset the search and filters.'
-              : 'Cases will appear after approved carrier communications are processed.'
+              : lifecycle === 'COMPLETED'
+                ? 'Cases explicitly completed by their assigned agent will appear here.'
+                : lifecycle === 'DISMISSED'
+                  ? 'Dismissed Cases will remain available here with their history intact.'
+                  : 'Cases will appear after approved carrier communications are processed.'
           }
         />
       ) : (
@@ -187,6 +255,11 @@ export function CasesPage() {
                     {item.dismissed_at && (
                       <span className="mt-2 inline-flex">
                         <Badge tone="red">DISMISSED</Badge>
+                      </span>
+                    )}
+                    {!item.dismissed_at && item.completed_at && (
+                      <span className="mt-2 inline-flex">
+                        <Badge tone="green">COMPLETED</Badge>
                       </span>
                     )}
                   </td>
@@ -225,7 +298,7 @@ export function CasesPage() {
       <Pagination
         page={cases.data.page.page}
         pages={cases.data.page.pages}
-        onPageChange={setPage}
+        onPageChange={(nextPage) => navigate(lifecycle, nextPage)}
         label="Case pagination"
       />
     </div>

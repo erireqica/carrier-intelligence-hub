@@ -398,7 +398,7 @@ def test_assigned_agent_can_dismiss_and_restore_case_without_deleting_history(
     }
     assert policy_case.id in {
         item["id"]
-        for item in client.get("/api/v1/cases?page_size=100&include_dismissed=true").json()["items"]
+        for item in client.get("/api/v1/cases?page_size=100&lifecycle=DISMISSED").json()["items"]
     }
     assert task.id not in {
         item["id"] for item in client.get("/api/v1/tasks?view=ALL&page_size=100").json()["items"]
@@ -449,6 +449,185 @@ def test_assigned_agent_can_dismiss_and_restore_case_without_deleting_history(
         db.scalars(select(AuditEvent.event_type).where(AuditEvent.case_id == policy_case.id)).all()
     )
     assert {"CASE_DISMISSED", "CASE_RESTORED"} <= events
+
+
+def test_case_completion_lifecycle_enforces_work_authorization_and_history(
+    client: TestClient, db: Session, login
+) -> None:
+    policy_case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "Mary Smith"))
+    assert policy_case is not None and policy_case.assigned_agent_id is not None
+    assignee = db.get(User, policy_case.assigned_agent_id)
+    open_task = db.scalar(
+        select(Task).where(Task.case_id == policy_case.id, Task.status == TaskStatus.OPEN)
+    )
+    source_message = db.scalar(
+        select(CarrierMessage).where(CarrierMessage.case_id == policy_case.id).limit(1)
+    )
+    assert assignee is not None and open_task is not None and source_message is not None
+    auth = login(client, assignee.email)
+    headers = {"X-CSRF-Token": auth["csrf_token"]}
+
+    blocked_open = client.post(f"/api/v1/cases/{policy_case.id}/complete", headers=headers)
+    assert blocked_open.status_code == 409
+    assert "Complete all active tasks" in blocked_open.json()["detail"]
+    detail = client.get(f"/api/v1/cases/{policy_case.id}").json()
+    assert detail["can_complete"] is False
+    assert detail["completion_blockers"] == [
+        "Complete all active tasks before completing this case."
+    ]
+
+    in_progress = client.patch(
+        f"/api/v1/tasks/{open_task.id}", json={"status": "IN_PROGRESS"}, headers=headers
+    )
+    assert in_progress.status_code == 200
+    assert (
+        client.post(f"/api/v1/cases/{policy_case.id}/complete", headers=headers).status_code == 409
+    )
+    assert (
+        client.patch(
+            f"/api/v1/tasks/{open_task.id}", json={"status": "COMPLETED"}, headers=headers
+        ).status_code
+        == 200
+    )
+
+    review = ReviewItem(
+        agency_id=policy_case.agency_id,
+        case_id=policy_case.id,
+        carrier_message_id=source_message.id,
+        assigned_reviewer_id=assignee.id,
+        status=ReviewStatus.OPEN,
+        reason_code="MANUAL_COMPLETION_GUARD",
+        reason="Synthetic active Review for Case completion coverage.",
+    )
+    db.add(review)
+    db.commit()
+    blocked_review = client.post(f"/api/v1/cases/{policy_case.id}/complete", headers=headers)
+    assert blocked_review.status_code == 409
+    assert "Resolve the active review" in blocked_review.json()["detail"]
+    review.status = ReviewStatus.RESOLVED
+    review.resolved_at = utc_now()
+    db.commit()
+
+    other = login(client, "agent.one@demo.local")
+    assert (
+        client.post(
+            f"/api/v1/cases/{policy_case.id}/complete",
+            headers={"X-CSRF-Token": other["csrf_token"]},
+        ).status_code
+        == 404
+    )
+    manager = login(client, "manager@demo.local")
+    assert (
+        client.post(
+            f"/api/v1/cases/{policy_case.id}/complete",
+            headers={"X-CSRF-Token": manager["csrf_token"]},
+        ).status_code
+        == 403
+    )
+
+    auth = login(client, assignee.email)
+    headers = {"X-CSRF-Token": auth["csrf_token"]}
+    completed = client.post(f"/api/v1/cases/{policy_case.id}/complete", headers=headers)
+    assert completed.status_code == 200
+    completed_item = completed.json()
+    assert completed_item["completed_at"] is not None
+    assert completed_item["completed_by"]["id"] == assignee.id
+    assert completed_item["can_reopen"] is True
+    db.refresh(policy_case)
+    assert policy_case.completed_by_user_id == assignee.id
+
+    payload = {
+        "title": "Follow up after reopening",
+        "description": None,
+        "priority": "NORMAL",
+        "due_date": None,
+    }
+    assert (
+        client.post(
+            f"/api/v1/cases/{policy_case.id}/tasks", json=payload, headers=headers
+        ).status_code
+        == 409
+    )
+    assert (
+        client.patch(
+            f"/api/v1/tasks/{open_task.id}", json={"status": "OPEN"}, headers=headers
+        ).status_code
+        == 409
+    )
+
+    manager = login(client, "manager@demo.local")
+    manager_headers = {"X-CSRF-Token": manager["csrf_token"]}
+    other_agent = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert other_agent is not None
+    reassigned = client.patch(
+        f"/api/v1/cases/{policy_case.id}/assignment",
+        json={"assigned_agent_id": other_agent.id},
+        headers=manager_headers,
+    )
+    assert reassigned.status_code == 200
+    db.refresh(open_task)
+    assert open_task.assigned_agent_id == assignee.id
+    assert reassigned.json()["completed_by"]["id"] == assignee.id
+    assert (
+        client.patch(
+            f"/api/v1/cases/{policy_case.id}/assignment",
+            json={"assigned_agent_id": assignee.id},
+            headers=manager_headers,
+        ).status_code
+        == 200
+    )
+
+    dismissed_case = db.scalar(
+        select(PolicyCase).where(PolicyCase.id != policy_case.id).order_by(PolicyCase.id.desc())
+    )
+    assert dismissed_case is not None
+    dismissed_case.dismissed_at = utc_now()
+    db.commit()
+    manager = login(client, "manager@demo.local")
+    active_ids = {
+        item["id"]
+        for item in client.get("/api/v1/cases?page_size=100&lifecycle=ACTIVE").json()["items"]
+    }
+    completed_ids = {
+        item["id"]
+        for item in client.get("/api/v1/cases?page_size=100&lifecycle=COMPLETED").json()["items"]
+    }
+    dismissed_ids = {
+        item["id"]
+        for item in client.get("/api/v1/cases?page_size=100&lifecycle=DISMISSED").json()["items"]
+    }
+    assert policy_case.id not in active_ids and policy_case.id in completed_ids
+    assert dismissed_case.id in dismissed_ids
+    assert not ({policy_case.id, dismissed_case.id} & active_ids)
+    assert policy_case.id not in dismissed_ids
+    assert dismissed_case.id not in completed_ids
+
+    auth = login(client, assignee.email)
+    headers = {"X-CSRF-Token": auth["csrf_token"]}
+    reopened = client.post(f"/api/v1/cases/{policy_case.id}/reopen", headers=headers)
+    assert reopened.status_code == 200
+    assert reopened.json()["completed_at"] is None
+    assert reopened.json()["completed_by"] is None
+    assert (
+        client.post(
+            f"/api/v1/cases/{policy_case.id}/tasks", json=payload, headers=headers
+        ).status_code
+        == 201
+    )
+    policy_case.dismissed_at = utc_now()
+    db.commit()
+    assert (
+        client.post(f"/api/v1/cases/{policy_case.id}/complete", headers=headers).status_code == 409
+    )
+
+    events = db.scalars(
+        select(AuditEvent).where(
+            AuditEvent.case_id == policy_case.id,
+            AuditEvent.event_type.in_(["CASE_COMPLETED", "CASE_REOPENED"]),
+        )
+    ).all()
+    assert [event.event_type for event in events] == ["CASE_COMPLETED", "CASE_REOPENED"]
+    assert all(event.actor_user_id == assignee.id for event in events)
 
 
 def test_business_deadlines_serialize_as_agency_local_dates(
