@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -50,6 +51,9 @@ class User(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    avatar_image: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    avatar_content_type: Mapped[str | None] = mapped_column(String(32))
+    avatar_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     agency: Mapped[Agency] = relationship(back_populates="users")
     sessions: Mapped[list[AuthSession]] = relationship(back_populates="user")

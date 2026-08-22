@@ -13,6 +13,7 @@ import {
 import { Link, useParams } from 'react-router-dom'
 
 import { useCurrentUser } from '../app/auth'
+import { Avatar } from '../components/Avatar'
 import {
   Button,
   ErrorState,
@@ -375,7 +376,11 @@ export function CaseDetailPage() {
         </div>
         <div className="grid divide-y divide-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">
           <div className="flex items-start gap-3 px-5 py-4">
-            <UserRound className="mt-0.5 h-4 w-4 text-blue-600" aria-hidden />
+            {item.assigned_agent ? (
+              <Avatar user={item.assigned_agent} size="sm" />
+            ) : (
+              <UserRound className="mt-0.5 h-4 w-4 text-blue-600" aria-hidden />
+            )}
             <div className="min-w-0 flex-1">
               <p className="text-[0.66rem] font-bold tracking-wider text-slate-500 uppercase">
                 Assigned agent

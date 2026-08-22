@@ -1,10 +1,16 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { type FormEvent, useState } from 'react'
-import { Building2, LockKeyhole, UserRound } from 'lucide-react'
+import { type FormEvent, useEffect, useState } from 'react'
+import { Building2, Camera, LockKeyhole, Trash2, UserRound } from 'lucide-react'
 
 import { authQueryKey, useCurrentUser } from '../app/auth'
+import { Avatar } from '../components/Avatar'
 import { Button, Input, PageHeader, StatusBadge } from '../components/ui'
-import { changePassword, updateProfile } from '../lib/api'
+import {
+  changePassword,
+  removeProfileAvatar,
+  updateProfile,
+  uploadProfileAvatar,
+} from '../lib/api'
 import { formatDate } from '../lib/format'
 
 const CURRENT_PASSWORD_MIN_LENGTH = 8
@@ -28,6 +34,23 @@ export function ProfilePage() {
   >(null)
   const [showProfilePassword, setShowProfilePassword] = useState(false)
   const [showPasswords, setShowPasswords] = useState(false)
+  const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const [avatarError, setAvatarError] = useState<string | null>(null)
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
+  const refreshAvatarViews = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+      queryClient.invalidateQueries({ queryKey: ['cases'] }),
+      queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+      queryClient.invalidateQueries({ queryKey: ['gmail-connections'] }),
+      queryClient.invalidateQueries({ queryKey: ['manager', 'agents'] }),
+    ])
+  }
+  useEffect(() => {
+    return () => {
+      if (avatarPreview) URL.revokeObjectURL(avatarPreview)
+    }
+  }, [avatarPreview])
   const profile = useMutation({
     mutationFn: () =>
       updateProfile({
@@ -53,14 +76,126 @@ export function ProfilePage() {
       setConfirmPassword('')
     },
   })
+  const avatarUpload = useMutation({
+    mutationFn: (file: File) => uploadProfileAvatar(file),
+    onSuccess: async (response) => {
+      queryClient.setQueryData(authQueryKey, response)
+      setAvatarFile(null)
+      setAvatarPreview(null)
+      setAvatarError(null)
+      await refreshAvatarViews()
+    },
+  })
+  const avatarRemove = useMutation({
+    mutationFn: removeProfileAvatar,
+    onSuccess: async (response) => {
+      queryClient.setQueryData(authQueryKey, response)
+      setAvatarFile(null)
+      setAvatarPreview(null)
+      setAvatarError(null)
+      await refreshAvatarViews()
+    },
+  })
   const emailChanged = email.trim().toLowerCase() !== user.email
 
   return (
     <div className="app-page space-y-6">
       <PageHeader
+        eyebrow="Personal settings"
         title="Profile"
-        description="Update your Carrier Hub sign-in details and password."
+        description="Manage how you appear across Carrier Hub and keep your sign-in details secure."
       />
+      <section className="surface-panel overflow-hidden">
+        <div className="grid gap-6 p-6 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center">
+          <div className="relative w-fit">
+            {avatarPreview ? (
+              <img
+                className="h-24 w-24 rounded-2xl object-cover ring-1 ring-slate-900/10"
+                src={avatarPreview}
+                alt="Selected profile preview"
+              />
+            ) : (
+              <Avatar user={user} size="xl" />
+            )}
+            <span className="absolute -right-2 -bottom-2 flex h-8 w-8 items-center justify-center rounded-lg border-2 border-white bg-blue-600 text-white shadow-sm">
+              <Camera className="h-4 w-4" aria-hidden />
+            </span>
+          </div>
+          <div>
+            <p className="text-[0.66rem] font-bold tracking-[0.14em] text-blue-700 uppercase">
+              Profile photo
+            </p>
+            <h2 className="mt-1 text-lg font-semibold text-slate-950">
+              Your Carrier Hub identity
+            </h2>
+            <p className="mt-1 max-w-xl text-sm leading-6 text-slate-500">
+              Appears in navigation, assigned work, Gmail ownership, workload
+              views, and the Manager&apos;s Agent roster. Images are
+              center-cropped to a square.
+            </p>
+            {avatarFile && (
+              <p className="mt-2 text-xs font-semibold text-blue-700">
+                Ready to upload: {avatarFile.name}
+              </p>
+            )}
+            {(avatarError ??
+              avatarUpload.error?.message ??
+              avatarRemove.error?.message) && (
+              <p className="mt-2 text-sm text-red-700" role="alert">
+                {avatarError ??
+                  avatarUpload.error?.message ??
+                  avatarRemove.error?.message}
+              </p>
+            )}
+            {(avatarUpload.isSuccess || avatarRemove.isSuccess) && (
+              <p className="mt-2 text-sm text-green-700" role="status">
+                Profile photo updated.
+              </p>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2 lg:justify-end">
+            <label className="inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-slate-50">
+              <Camera className="h-4 w-4" aria-hidden />
+              Choose photo
+              <input
+                className="sr-only"
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null
+                  setAvatarError(null)
+                  if (file && file.size > 5 * 1024 * 1024) {
+                    setAvatarError('Profile photo must be 5 MB or smaller.')
+                    setAvatarFile(null)
+                    setAvatarPreview(null)
+                    return
+                  }
+                  setAvatarFile(file)
+                  setAvatarPreview(file ? URL.createObjectURL(file) : null)
+                }}
+              />
+            </label>
+            {avatarFile && (
+              <Button
+                disabled={avatarUpload.isPending}
+                onClick={() => avatarUpload.mutate(avatarFile)}
+              >
+                {avatarUpload.isPending ? 'Uploading…' : 'Save photo'}
+              </Button>
+            )}
+            {user.avatar_url && !avatarFile && (
+              <Button
+                variant="dangerSecondary"
+                disabled={avatarRemove.isPending}
+                onClick={() => avatarRemove.mutate()}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden />
+                Remove
+              </Button>
+            )}
+          </div>
+        </div>
+      </section>
       <div className="grid items-start gap-6 xl:grid-cols-2">
         <div className="space-y-6" aria-label="Account and agency information">
           <form

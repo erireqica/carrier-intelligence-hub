@@ -478,6 +478,7 @@ def agent_list_item(db: Session, user: User) -> AgentListItem:
         open_tasks=open_tasks,
         urgent_cases=urgent_cases,
         gmail_connections=gmail_count,
+        avatar_url=agent_brief(user).avatar_url,
     )
 
 

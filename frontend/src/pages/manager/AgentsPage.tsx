@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { UserPlus, UsersRound } from 'lucide-react'
 
 import { useCurrentUser } from '../../app/auth'
+import { Avatar } from '../../components/Avatar'
 import {
   Badge,
   Button,
@@ -189,13 +190,7 @@ export function AgentsPage() {
               <tr key={agent.id}>
                 <td className="px-4 py-4 font-medium">
                   <div className="flex items-center gap-3">
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-white">
-                      {agent.full_name
-                        .split(' ')
-                        .map((part) => part[0])
-                        .join('')
-                        .slice(0, 2)}
-                    </span>
+                    <Avatar user={agent} />
                     <div>
                       <p className="font-semibold text-slate-900">
                         {agent.full_name}

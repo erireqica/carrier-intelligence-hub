@@ -20,6 +20,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useCurrentUser } from '../app/auth'
 import { clearSessionState } from '../app/queryClient'
 import { logout } from '../lib/api'
+import { Avatar } from './Avatar'
 import { Button } from './ui'
 
 const agentNavigation = [
@@ -97,12 +98,6 @@ export function AppShell() {
       await navigate('/login', { replace: true })
     },
   })
-  const initials = user.full_name
-    .split(' ')
-    .map((part) => part[0])
-    .join('')
-    .slice(0, 2)
-
   return (
     <div className="min-h-dvh bg-[#f3f6fa] lg:pl-[268px]">
       <aside className="hidden bg-[#13233a] text-white lg:fixed lg:inset-y-0 lg:left-0 lg:z-30 lg:flex lg:w-[268px] lg:flex-col lg:overflow-hidden">
@@ -154,9 +149,7 @@ export function AppShell() {
             </div>
           )}
           <div className="flex items-center gap-3">
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/10 text-sm font-bold text-white">
-              {initials}
-            </span>
+            <Avatar user={user} className="ring-1 ring-white/15" />
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold">{user.full_name}</p>
               <p className="mt-0.5 text-xs text-slate-400">
@@ -204,9 +197,7 @@ export function AppShell() {
                 </p>
                 <p className="text-xs text-slate-500">{user.agency.name}</p>
               </div>
-              <span className="hidden h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-xs font-bold text-slate-700 sm:flex lg:hidden">
-                {initials}
-              </span>
+              <Avatar user={user} className="hidden sm:flex lg:hidden" />
               <Button
                 className="lg:hidden"
                 variant="secondary"

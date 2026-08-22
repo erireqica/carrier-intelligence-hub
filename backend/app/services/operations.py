@@ -73,7 +73,14 @@ def valid_page(page: int, page_size: int, total: int) -> int:
 
 
 def agent_brief(user: User) -> AgentBrief:
-    return AgentBrief(id=user.id, full_name=user.full_name, email=user.email)
+    from app.services.avatars import avatar_url
+
+    return AgentBrief(
+        id=user.id,
+        full_name=user.full_name,
+        email=user.email,
+        avatar_url=avatar_url(user),
+    )
 
 
 def business_date(value: datetime | None, timezone_name: str) -> date | None:

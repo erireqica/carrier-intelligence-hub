@@ -4,6 +4,7 @@ import { Mail, PlugZap, RefreshCw, Unplug } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 
 import { useCurrentUser } from '../app/auth'
+import { Avatar } from '../components/Avatar'
 import {
   Button,
   EmptyState,
@@ -287,13 +288,22 @@ function ConnectionCard({
               <StatusBadge status={connection.status} />
             </div>
             {isManager ? (
-              <p className="mt-2 border-l-2 border-blue-500 pl-3 text-sm">
-                <span className="font-semibold text-slate-900">
-                  Connected agent
-                </span>
-                <br />
-                {connection.owner.full_name} · {connection.owner.email}
-              </p>
+              <div className="mt-3 flex items-center gap-2 border-l-2 border-blue-500 pl-3 text-sm">
+                <Avatar user={connection.owner} size="sm" />
+                <p>
+                  <span className="text-[0.65rem] font-bold tracking-wide text-blue-700 uppercase">
+                    Connected agent
+                  </span>
+                  <br />
+                  <span className="font-semibold text-slate-900">
+                    {connection.owner.full_name}
+                  </span>
+                  <br />
+                  <span className="text-xs text-slate-500">
+                    {connection.owner.email}
+                  </span>
+                </p>
+              </div>
             ) : (
               <p className="mt-1 text-sm text-slate-500">
                 Connected {formatDate(connection.connected_at)}

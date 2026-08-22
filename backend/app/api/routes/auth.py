@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
 from app.api.dependencies import CsrfUser, CurrentUser, DbSession
 from app.api.schemas.auth import (
@@ -20,6 +20,7 @@ from app.services.auth import (
     revoke_session,
     update_profile,
 )
+from app.services.avatars import avatar_url, get_agency_avatar, remove_avatar, update_avatar
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -34,6 +35,7 @@ def auth_response(current_user, csrf_token: str) -> AuthResponse:
             role=current_user.role,
             is_active=current_user.is_active,
             last_login_at=current_user.last_login_at,
+            avatar_url=avatar_url(current_user),
             agency=AgencySummary(
                 id=current_user.agency.id,
                 name=current_user.agency.name,
@@ -92,6 +94,28 @@ def patch_profile(data: ProfileUpdateRequest, current: CsrfUser, db: DbSession) 
         current_password=data.current_password,
     )
     return auth_response(user, current.csrf_token)
+
+
+@router.put("/profile/avatar", response_model=AuthResponse)
+async def put_profile_avatar(request: Request, current: CsrfUser, db: DbSession) -> AuthResponse:
+    user = update_avatar(db, current, await request.body())
+    return auth_response(user, current.csrf_token)
+
+
+@router.delete("/profile/avatar", response_model=AuthResponse)
+def delete_profile_avatar(current: CsrfUser, db: DbSession) -> AuthResponse:
+    user = remove_avatar(db, current)
+    return auth_response(user, current.csrf_token)
+
+
+@router.get("/users/{user_id}/avatar")
+def user_avatar(user_id: int, current: CurrentUser, db: DbSession) -> Response:
+    content, content_type = get_agency_avatar(db, current, user_id)
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @router.post("/change-password", response_model=MessageResponse)

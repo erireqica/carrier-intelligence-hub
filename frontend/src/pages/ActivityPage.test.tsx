@@ -50,6 +50,10 @@ describe('ActivityPage', () => {
       </QueryClientProvider>,
     )
     expect(await screen.findByText('Case Corrected')).toBeInTheDocument()
+    expect(screen.getByText('Recorded actions')).toBeInTheDocument()
+    expect(
+      screen.getByText('Your complete activity stream'),
+    ).toBeInTheDocument()
     expect(screen.getByText('Case: Taylor Demo · DEMO-4')).toBeInTheDocument()
     expect(screen.getByText('Action')).toBeInTheDocument()
     expect(screen.getByText('Details')).toBeInTheDocument()

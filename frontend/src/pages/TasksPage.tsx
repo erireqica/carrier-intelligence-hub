@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ArrowUpRight, CalendarClock, ListChecks } from 'lucide-react'
+import { ArrowUpRight, ListChecks } from 'lucide-react'
 
 import { useCurrentUser } from '../app/auth'
+import { Avatar } from '../components/Avatar'
 import {
   EmptyState,
   ErrorState,
@@ -204,13 +205,7 @@ export function TasksPage() {
                     <PriorityBadge priority={task.priority} />
                   </td>
                   <td className="px-4 py-4">
-                    <span className="inline-flex items-center gap-1.5">
-                      <CalendarClock
-                        className="h-3.5 w-3.5 text-slate-400"
-                        aria-hidden
-                      />
-                      {formatBusinessDate(task.due_at)}
-                    </span>
+                    {formatBusinessDate(task.due_at)}
                     <div className="mt-1">
                       {dueState(
                         task.due_at,
@@ -222,7 +217,12 @@ export function TasksPage() {
                   <td className="px-4 py-4">
                     <StatusBadge status={task.status} />
                   </td>
-                  <td className="px-4 py-4">{task.assigned_agent.full_name}</td>
+                  <td className="px-4 py-4">
+                    <span className="flex items-center gap-2">
+                      <Avatar user={task.assigned_agent} size="sm" />
+                      <span>{task.assigned_agent.full_name}</span>
+                    </span>
+                  </td>
                   {!isManager && (
                     <td className="px-4 py-4">
                       <select

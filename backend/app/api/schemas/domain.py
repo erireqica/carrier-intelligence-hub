@@ -48,6 +48,7 @@ class AgentBrief(BaseModel):
     id: int
     full_name: str
     email: InternalEmail
+    avatar_url: str | None
 
 
 class CaseListItem(BaseModel):
@@ -383,6 +384,7 @@ class AgentListItem(BaseModel):
     open_tasks: int
     urgent_cases: int
     gmail_connections: int
+    avatar_url: str | None
 
 
 class AgentListResponse(BaseModel):

@@ -33,7 +33,12 @@ export type PolicyStatus =
   | 'GRACE_PERIOD'
   | 'UNKNOWN'
 
-export type AgentBrief = { id: number; full_name: string; email: string }
+export type AgentBrief = {
+  id: number
+  full_name: string
+  email: string
+  avatar_url?: string | null
+}
 export type CarrierBrief = { id: number; name: string; code: string | null }
 
 export type AuthResponse = {
@@ -44,6 +49,7 @@ export type AuthResponse = {
     role: Role
     is_active: boolean
     last_login_at: string | null
+    avatar_url?: string | null
     agency: { id: number; name: string; timezone: string }
   }
   csrf_token: string
@@ -394,6 +400,7 @@ export type AgentItem = {
   open_tasks: number
   urgent_cases: number
   gmail_connections: number
+  avatar_url?: string | null
 }
 
 export type CarrierItem = {

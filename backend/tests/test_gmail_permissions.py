@@ -108,6 +108,7 @@ def test_agent_manager_and_cross_agency_connection_permissions(
     agent_auth = login(client, agent_one.email)
     listed = client.get("/api/v1/gmail-connections").json()["connections"]
     assert [item["id"] for item in listed] == [own.id]
+    assert listed[0]["owner"]["avatar_url"] is None
     assert client.get(f"/api/v1/gmail-connections/{other.id}/messages").status_code == 404
     assert (
         client.post(
@@ -186,6 +187,7 @@ def test_recent_message_case_access_matches_case_authorization(
     assert owner_item["case_id"] == policy_case.id
     assert owner_item["case_assigned_agent"]["id"] == case_owner.id
     assert owner_item["case_assigned_agent"]["full_name"] == case_owner.full_name
+    assert owner_item["case_assigned_agent"]["avatar_url"] is None
     assert owner_item["can_open_case"] is False
     assert owner_item["review_id"] == review.id
     assert owner_item["can_open_review"] is False

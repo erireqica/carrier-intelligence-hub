@@ -1,14 +1,80 @@
 from copy import deepcopy
+from io import BytesIO
 
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditEvent
 from app.models.carriers import Carrier
-from app.models.enums import PolicyStatus, Priority, TaskStatus
+from app.models.enums import PolicyStatus, Priority, TaskStatus, UserRole
 from app.models.operations import MessageAnalysis, PolicyCase, ReviewItem, Task
 from app.models.organization import Agency, User
+
+
+def test_profile_photo_is_normalized_agency_visible_and_removable(
+    client: TestClient, db: Session, login
+) -> None:
+    agent = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert agent is not None
+    auth = login(client, agent.email)
+    headers = {"X-CSRF-Token": auth["csrf_token"], "Content-Type": "image/png"}
+    source = BytesIO()
+    Image.new("RGB", (900, 600), color=(31, 91, 180)).save(source, format="PNG")
+
+    invalid = client.put(
+        "/api/v1/auth/profile/avatar",
+        content=b"not-an-image",
+        headers=headers,
+    )
+    assert invalid.status_code == 422
+    uploaded = client.put(
+        "/api/v1/auth/profile/avatar",
+        content=source.getvalue(),
+        headers=headers,
+    )
+
+    assert uploaded.status_code == 200
+    avatar_url = uploaded.json()["user"]["avatar_url"]
+    assert avatar_url.startswith(f"/auth/users/{agent.id}/avatar?v=")
+    image_response = client.get(f"/api/v1{avatar_url.split('?')[0]}")
+    assert image_response.status_code == 200
+    assert image_response.headers["content-type"] == "image/webp"
+    with Image.open(BytesIO(image_response.content)) as normalized:
+        assert normalized.size == (512, 512)
+        assert normalized.format == "WEBP"
+
+    login(client, "manager@demo.local")
+    assert client.get(f"/api/v1{avatar_url.split('?')[0]}").status_code == 200
+    other_agency = Agency(name="Other Agency", timezone="UTC")
+    db.add(other_agency)
+    db.flush()
+    other_user = User(
+        agency_id=other_agency.id,
+        email="other.agent@demo.local",
+        full_name="Other Agent",
+        role=UserRole.AGENT,
+        password_hash=agent.password_hash,
+        avatar_image=b"private-avatar",
+        avatar_content_type="image/webp",
+        avatar_updated_at=agent.avatar_updated_at,
+    )
+    db.add(other_user)
+    db.flush()
+    assert client.get(f"/api/v1/auth/users/{other_user.id}/avatar").status_code == 404
+
+    auth = login(client, agent.email)
+    removed = client.delete(
+        "/api/v1/auth/profile/avatar",
+        headers={"X-CSRF-Token": auth["csrf_token"]},
+    )
+    assert removed.status_code == 200
+    assert removed.json()["user"]["avatar_url"] is None
+    assert client.get(f"/api/v1{avatar_url.split('?')[0]}").status_code == 404
+    assert {"PROFILE_PHOTO_UPDATED", "PROFILE_PHOTO_REMOVED"} <= set(
+        db.scalars(select(AuditEvent.event_type)).all()
+    )
 
 
 def test_profile_update_duplicate_email_wrong_password_and_password_change(

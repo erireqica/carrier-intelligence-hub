@@ -41,6 +41,7 @@ from app.models.organization import (
 )
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
+from app.services.operations import agent_brief
 from app.services.processing_failures import (
     processing_retry_state,
     safe_processing_failure_reason,
@@ -50,11 +51,7 @@ OAUTH_STATE_LIFETIME = timedelta(minutes=10)
 
 
 def _owner_brief(connection: GmailConnection) -> AgentBrief:
-    return AgentBrief(
-        id=connection.owner.id,
-        full_name=connection.owner.full_name,
-        email=connection.owner.email,
-    )
+    return agent_brief(connection.owner)
 
 
 def connection_item(
@@ -508,11 +505,7 @@ def recent_messages(
             attachment_count=attachment_count,
             case_id=message.case_id,
             case_assigned_agent=(
-                AgentBrief(
-                    id=cases_by_id[message.case_id].assigned_agent.id,
-                    full_name=cases_by_id[message.case_id].assigned_agent.full_name,
-                    email=cases_by_id[message.case_id].assigned_agent.email,
-                )
+                agent_brief(cases_by_id[message.case_id].assigned_agent)
                 if message.case_id in cases_by_id
                 and cases_by_id[message.case_id].assigned_agent is not None
                 else None

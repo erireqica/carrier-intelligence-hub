@@ -1,4 +1,5 @@
 import { clearSessionState } from '../app/queryClient'
+import { apiBaseUrl } from './api-url'
 import type {
   AgentItem,
   Analytics,
@@ -22,11 +23,6 @@ import type {
   TaskItem,
   TaskStatus,
 } from './types'
-
-const DEFAULT_API_BASE_URL = 'http://localhost:8000/api/v1'
-export const apiBaseUrl = (
-  import.meta.env.VITE_API_BASE_URL ?? DEFAULT_API_BASE_URL
-).replace(/\/$/, '')
 
 let csrfToken: string | null = null
 
@@ -113,7 +109,8 @@ async function apiRequest<T>(
   const unsafe = !['GET', 'HEAD', 'OPTIONS'].includes(method)
   const headers = new Headers(options.headers)
   headers.set('Accept', 'application/json')
-  if (options.body) headers.set('Content-Type', 'application/json')
+  if (options.body && !headers.has('Content-Type'))
+    headers.set('Content-Type', 'application/json')
   if (unsafe && csrfToken) headers.set('X-CSRF-Token', csrfToken)
 
   let response: Response
@@ -177,6 +174,16 @@ export const updateProfile = (data: {
     method: 'PATCH',
     body: JSON.stringify(data),
   })
+
+export const uploadProfileAvatar = (file: File) =>
+  apiRequest<AuthResponse>('/auth/profile/avatar', {
+    method: 'PUT',
+    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+    body: file,
+  })
+
+export const removeProfileAvatar = () =>
+  apiRequest<AuthResponse>('/auth/profile/avatar', { method: 'DELETE' })
 
 export const changePassword = (data: {
   current_password: string

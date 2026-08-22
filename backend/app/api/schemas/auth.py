@@ -56,6 +56,7 @@ class UserSummary(BaseModel):
     role: UserRole
     is_active: bool
     last_login_at: datetime | None
+    avatar_url: str | None
     agency: AgencySummary
 
 

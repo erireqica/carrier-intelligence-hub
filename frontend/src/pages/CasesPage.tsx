@@ -14,6 +14,7 @@ import {
   PriorityBadge,
   StatusBadge,
 } from '../components/ui'
+import { Avatar } from '../components/Avatar'
 import { formatDate } from '../lib/format'
 import { getCases } from '../lib/api'
 
@@ -196,7 +197,14 @@ export function CasesPage() {
                     <PriorityBadge priority={item.priority} />
                   </td>
                   <td className="px-4 py-4">
-                    {item.assigned_agent?.full_name ?? 'Unassigned'}
+                    {item.assigned_agent ? (
+                      <span className="flex items-center gap-2">
+                        <Avatar user={item.assigned_agent} size="sm" />
+                        <span>{item.assigned_agent.full_name}</span>
+                      </span>
+                    ) : (
+                      'Unassigned'
+                    )}
                   </td>
                   <td className="px-4 py-4 text-slate-600">
                     {formatDate(item.updated_at)}

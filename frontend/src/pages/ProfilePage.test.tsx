@@ -9,7 +9,12 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useCurrentUser } from '../app/auth'
-import { changePassword, updateProfile } from '../lib/api'
+import {
+  changePassword,
+  removeProfileAvatar,
+  updateProfile,
+  uploadProfileAvatar,
+} from '../lib/api'
 import { authFixture } from '../test/fixtures'
 import { ProfilePage } from './ProfilePage'
 
@@ -19,13 +24,82 @@ vi.mock('../app/auth', () => ({
 }))
 vi.mock('../lib/api', () => ({
   changePassword: vi.fn(),
+  removeProfileAvatar: vi.fn(),
   updateProfile: vi.fn(),
+  uploadProfileAvatar: vi.fn(),
 }))
 
 afterEach(cleanup)
 
 describe('ProfilePage', () => {
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:profile-preview'),
+      revokeObjectURL: vi.fn(),
+    })
+  })
+
+  it('previews and uploads a selected profile photo', async () => {
+    const auth = authFixture('AGENT')
+    const updated = {
+      ...auth,
+      user: { ...auth.user, avatar_url: '/auth/users/2/avatar?v=1' },
+    }
+    vi.mocked(useCurrentUser).mockReturnValue({
+      data: auth,
+    } as ReturnType<typeof useCurrentUser>)
+    vi.mocked(uploadProfileAvatar).mockResolvedValue(updated)
+    const client = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ProfilePage />
+      </QueryClientProvider>,
+    )
+
+    const photo = new File(['profile-photo'], 'elena.webp', {
+      type: 'image/webp',
+    })
+    fireEvent.change(screen.getByLabelText('Choose photo'), {
+      target: { files: [photo] },
+    })
+    expect(screen.getByAltText('Selected profile preview')).toHaveAttribute(
+      'src',
+      'blob:profile-preview',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Save photo' }))
+
+    await waitFor(() => expect(uploadProfileAvatar).toHaveBeenCalledWith(photo))
+    expect(client.getQueryData(['auth', 'me'])).toEqual(updated)
+  })
+
+  it('removes an existing profile photo', async () => {
+    const auth = authFixture('MANAGER')
+    auth.user.avatar_url = '/auth/users/1/avatar?v=1'
+    const updated = {
+      ...auth,
+      user: { ...auth.user, avatar_url: null },
+    }
+    vi.mocked(useCurrentUser).mockReturnValue({
+      data: auth,
+    } as ReturnType<typeof useCurrentUser>)
+    vi.mocked(removeProfileAvatar).mockResolvedValue(updated)
+    const client = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ProfilePage />
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(removeProfileAvatar).toHaveBeenCalledOnce())
+    expect(client.getQueryData(['auth', 'me'])).toEqual(updated)
+  })
 
   it('updates profile details and requires the current password for email changes', async () => {
     vi.mocked(useCurrentUser).mockReturnValue({
