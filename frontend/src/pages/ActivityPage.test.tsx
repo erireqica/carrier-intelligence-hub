@@ -51,10 +51,15 @@ describe('ActivityPage', () => {
     )
     expect(await screen.findByText('Case Corrected')).toBeInTheDocument()
     expect(screen.getByText('Case: Taylor Demo · DEMO-4')).toBeInTheDocument()
+    expect(screen.getByText('Action')).toBeInTheDocument()
+    expect(screen.getByText('Details')).toBeInTheDocument()
+    expect(screen.getByText('Date')).toBeInTheDocument()
+    expect(
+      screen.getByText('Case information corrected by the assigned agent'),
+    ).toHaveClass('text-[0.95rem]')
     expect(screen.queryByLabelText('Activity agent')).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'View case' })).toHaveAttribute(
-      'href',
-      '/cases/4',
-    )
+    const caseLink = screen.getByRole('link', { name: 'View case' })
+    expect(caseLink).toHaveAttribute('href', '/cases/4')
+    expect(caseLink).toHaveClass('text-sm')
   })
 })

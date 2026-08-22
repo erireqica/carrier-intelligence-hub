@@ -61,6 +61,8 @@ class CaseListItem(BaseModel):
     carrier: CarrierBrief
     assigned_agent: AgentBrief | None
     needs_review: bool
+    dismissed_at: datetime | None
+    can_manage_lifecycle: bool
 
 
 class CaseListResponse(BaseModel):
@@ -204,6 +206,8 @@ class ReviewItemResponse(BaseModel):
     created_at: datetime
     resolved_at: datetime | None
     analysis_confidence: float | None
+    issue_title: str
+    issue_summary: str
 
 
 class MessageAnalysisResponse(BaseModel):
@@ -273,6 +277,7 @@ class GmailConnectionItem(BaseModel):
 class GmailConnectionsResponse(BaseModel):
     configured: bool
     connections: list[GmailConnectionItem]
+    page: PageInfo
 
 
 class GmailOAuthStartRequest(BaseModel):
@@ -310,6 +315,11 @@ class GmailMessageListItem(BaseModel):
     processing_attempt_count: int
     processing_next_retry_at: datetime | None
     label_sync_status: GmailLabelSyncStatus | None
+
+
+class GmailMessageListResponse(BaseModel):
+    items: list[GmailMessageListItem]
+    page: PageInfo
 
 
 class MessageProcessingResult(BaseModel):

@@ -109,14 +109,14 @@ def update_profile(
         or not verify_password(current_password, current.user.password_hash)
     ):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Current password is incorrect",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect.",
         )
     duplicate = db.scalar(
         select(User.id).where(User.email == normalized_email, User.id != current.user.id)
     )
     if duplicate is not None:
-        raise HTTPException(status_code=409, detail="That login email is already in use")
+        raise HTTPException(status_code=409, detail="That login email is already in use.")
 
     changed_fields: list[str] = []
     if current.user.full_name != full_name:
@@ -140,7 +140,9 @@ def update_profile(
         db.commit()
     except IntegrityError as error:
         db.rollback()
-        raise HTTPException(status_code=409, detail="That login email is already in use") from error
+        raise HTTPException(
+            status_code=409, detail="That login email is already in use."
+        ) from error
     db.refresh(current.user)
     return current.user
 
@@ -154,11 +156,11 @@ def change_password(
 ) -> None:
     if not verify_password(current_password, current.user.password_hash):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Current password is incorrect",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect.",
         )
     if verify_password(new_password, current.user.password_hash):
-        raise HTTPException(status_code=422, detail="Choose a different new password")
+        raise HTTPException(status_code=422, detail="Choose a different new password.")
     current.user.password_hash = hash_password(new_password)
     now = utc_now()
     db.execute(

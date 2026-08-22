@@ -69,6 +69,8 @@ export type CaseItem = {
   carrier: CarrierBrief
   assigned_agent: AgentBrief | null
   needs_review: boolean
+  dismissed_at?: string | null
+  can_manage_lifecycle?: boolean
 }
 
 export type TaskItem = {
@@ -162,6 +164,8 @@ export type ReviewItem = {
   created_at: string
   resolved_at: string | null
   analysis_confidence: number | null
+  issue_title?: string
+  issue_summary?: string
 }
 
 export type Deadline = {
@@ -334,6 +338,7 @@ export type GmailConnection = {
 export type GmailConnectionsResponse = {
   configured: boolean
   connections: GmailConnection[]
+  page?: PageInfo
 }
 
 export type GmailSyncResult = {
@@ -363,6 +368,11 @@ export type GmailMessage = {
   processing_attempt_count: number
   processing_next_retry_at: string | null
   label_sync_status: GmailLabelSyncStatus | null
+}
+
+export type GmailMessageListResponse = {
+  items: GmailMessage[]
+  page: PageInfo
 }
 
 export type AgentItem = {

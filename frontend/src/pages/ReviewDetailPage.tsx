@@ -16,7 +16,6 @@ import {
   dismissReviewAnalysis,
   getReviewAnalysis,
 } from '../lib/api'
-import { evidenceSourceLabel, humanFieldLabel } from '../lib/humanize'
 import type {
   ActionItem,
   AnalysisResult,
@@ -201,6 +200,7 @@ export function ReviewDetailPage() {
   const [editedForm, setEditedForm] = useState<HumanAnalysisInput | null>(null)
   const [notes, setNotes] = useState('')
   const [showDismiss, setShowDismiss] = useState(false)
+  const [selectedCaseId, setSelectedCaseId] = useState<number | undefined>()
 
   const refreshAfterDecision = async (caseId: number | null) => {
     await queryClient.invalidateQueries({ queryKey: ['reviews'] })
@@ -213,6 +213,7 @@ export function ReviewDetailPage() {
       applyReviewAnalysis(
         id,
         editedForm ?? toHumanInput(detail.data!.analysis.proposed_result!),
+        selectedCaseId,
       ),
     onSuccess: (result) => refreshAfterDecision(result.case_id),
   })
@@ -237,6 +238,8 @@ export function ReviewDetailPage() {
   const isFinalized = ['RESOLVED', 'DISMISSED'].includes(review.status)
   const isOwnershipBlocked =
     !isFinalized && review.reason_code === 'CASE_OWNER_CONFLICT'
+  const isCaseMatch =
+    !isFinalized && review.reason_code === 'CASE_MATCH_CONFLICT'
   const update = <K extends keyof HumanAnalysisInput>(
     key: K,
     value: HumanAnalysisInput[K],
@@ -279,24 +282,40 @@ export function ReviewDetailPage() {
                   {issue.message}
                 </p>
                 {issue.values.length > 0 && (
-                  <dl className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {issue.values.map((value, index) => (
-                      <div
-                        className="border border-amber-200 bg-white p-3 text-sm"
-                        key={`${value.source_id}-${index}`}
-                      >
-                        <dt className="text-amber-800">{value.source_label}</dt>
-                        <dd className="mt-1 font-medium text-slate-950">
-                          {value.value}
-                        </dd>
-                        {value.excerpt && (
-                          <dd className="mt-2 text-xs leading-5 text-slate-600">
-                            “{value.excerpt}”
-                          </dd>
-                        )}
-                      </div>
-                    ))}
-                  </dl>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {issue.values.map((value, index) => {
+                      const caseId = value.source_id.startsWith('case:')
+                        ? Number(value.source_id.slice(5))
+                        : undefined
+                      return (
+                        <label
+                          className="border border-amber-200 bg-white p-3 text-sm"
+                          key={`${value.source_id}-${index}`}
+                        >
+                          {isCaseMatch && caseId && !isManager && (
+                            <input
+                              className="mr-2"
+                              type="radio"
+                              name="selected-case"
+                              checked={selectedCaseId === caseId}
+                              onChange={() => setSelectedCaseId(caseId)}
+                            />
+                          )}
+                          <span className="block text-amber-800">
+                            {value.source_label}
+                          </span>
+                          <span className="mt-1 block font-medium text-slate-950">
+                            {value.value}
+                          </span>
+                          {value.excerpt && (
+                            <span className="mt-2 block text-xs leading-5 text-slate-600">
+                              “{value.excerpt}”
+                            </span>
+                          )}
+                        </label>
+                      )
+                    })}
+                  </div>
                 )}
               </div>
             ))
@@ -357,53 +376,62 @@ export function ReviewDetailPage() {
           </p>
         </section>
       )}
-      <section className="grid gap-6 xl:grid-cols-2">
-        <div className="space-y-5 border border-slate-200 bg-white p-5">
+      <section className="grid items-start gap-6 xl:grid-cols-2">
+        <div className="h-fit self-start space-y-5 border border-slate-200 bg-white p-5">
           <div>
-            <h2 className="font-semibold">Check against the carrier message</h2>
+            <h2 className="font-semibold">Email content</h2>
             <p className="mt-1 text-sm text-slate-600">
-              Compare every correction against the source before applying it.
+              Review the original email and any attachments to identify the
+              issue before confirming your decision.
             </p>
           </div>
-          <div className="border border-slate-200 bg-slate-50 p-4">
-            <p className="whitespace-pre-wrap text-sm leading-6">
-              {analysis.source_content}
-            </p>
+          <div className="space-y-4 border border-slate-200 bg-slate-50 p-4">
+            <div>
+              <p className="text-sm font-semibold text-slate-900">
+                Email subject
+              </p>
+              <p className="mt-1 text-sm text-slate-700">
+                {review.message_subject}
+              </p>
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-900">Email body</p>
+              <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                {analysis.source_content}
+              </p>
+            </div>
           </div>
-          {analysis.proposed_result?.evidence.map((evidence, index) => (
-            <blockquote
-              key={`${evidence.field_name}-${index}`}
-              className="border-l-4 border-blue-200 pl-4"
-            >
-              <p className="text-xs font-semibold text-slate-500 uppercase">
-                {humanFieldLabel(evidence.field_name)} ·{' '}
-                {evidence.source_id === 'email'
-                  ? 'Email body'
-                  : evidenceSourceLabel(
-                      'PDF',
-                      analysis.attachments.find(
-                        (attachment) =>
-                          evidence.source_id === `attachment:${attachment.id}`,
-                      )?.filename,
-                    )}
-              </p>
-              <p className="mt-1 text-sm">“{evidence.excerpt}”</p>
-            </blockquote>
-          ))}
-          {analysis.attachments.map((attachment) => (
-            <details
-              key={attachment.id}
-              className="border border-slate-200 p-3"
-            >
-              <summary className="cursor-pointer text-sm font-semibold">
-                {attachment.filename} · {attachment.processing_status}
-              </summary>
-              <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
-                {attachment.extracted_text_preview ??
-                  'No extracted text preview.'}
-              </p>
-            </details>
-          ))}
+          {analysis.attachments.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">
+                Attachments
+              </h3>
+              <div className="mt-2 space-y-3">
+                {analysis.attachments.map((attachment) => (
+                  <div
+                    key={attachment.id}
+                    className="border border-slate-200 p-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-semibold">
+                        {attachment.filename}
+                      </p>
+                      <StatusBadge status={attachment.processing_status} />
+                    </div>
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-sm font-semibold text-blue-700">
+                        View extracted text
+                      </summary>
+                      <p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">
+                        {attachment.extracted_text_preview ??
+                          'No extracted text preview.'}
+                      </p>
+                    </details>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {proposal && form ? (
@@ -659,7 +687,9 @@ export function ReviewDetailPage() {
                       Technical details
                     </summary>
                     <p className="mt-3 text-sm text-slate-600">
-                      Confidence:{' '}
+                      <span className="font-semibold text-slate-700">
+                        AI&apos;s confidence that this is the issue:
+                      </span>{' '}
                       {analysis.overall_confidence === null
                         ? 'Unavailable'
                         : `${Math.round(analysis.overall_confidence * 100)}%`}
@@ -702,7 +732,11 @@ export function ReviewDetailPage() {
                     <div className="mt-4 flex flex-wrap gap-3">
                       <Button
                         type="submit"
-                        disabled={apply.isPending || dismiss.isPending}
+                        disabled={
+                          apply.isPending ||
+                          dismiss.isPending ||
+                          (isCaseMatch && !selectedCaseId)
+                        }
                       >
                         Confirm &amp; apply
                       </Button>

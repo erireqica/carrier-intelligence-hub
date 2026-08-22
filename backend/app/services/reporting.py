@@ -94,7 +94,7 @@ def _category_clause(category: str):
 
 
 def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
-    case_scope = scoped_cases_query(current)
+    case_scope = scoped_cases_query(current).where(PolicyCase.dismissed_at.is_(None))
     task_filters = [Task.agency_id == current.user.agency_id]
     gmail_filters = [GmailConnection.agency_id == current.user.agency_id]
     if current.user.role is UserRole.AGENT:
@@ -113,7 +113,12 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
         db.scalar(
             select(func.count())
             .select_from(Task)
-            .where(*task_filters, Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]))
+            .join(PolicyCase, Task.case_id == PolicyCase.id)
+            .where(
+                *task_filters,
+                PolicyCase.dismissed_at.is_(None),
+                Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+            )
         )
         or 0
     )
@@ -121,8 +126,10 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
         db.scalar(
             select(func.count())
             .select_from(Task)
+            .join(PolicyCase, Task.case_id == PolicyCase.id)
             .where(
                 *task_filters,
+                PolicyCase.dismissed_at.is_(None),
                 Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
                 Task.due_at < utc_now(),
             )
@@ -132,15 +139,15 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
     review_query = (
         select(func.count())
         .select_from(ReviewItem)
+        .join(PolicyCase, ReviewItem.case_id == PolicyCase.id, isouter=True)
         .where(
             ReviewItem.agency_id == current.user.agency_id,
             ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+            or_(ReviewItem.case_id.is_(None), PolicyCase.dismissed_at.is_(None)),
         )
     )
     if current.user.role is UserRole.AGENT:
-        review_query = review_query.join(
-            PolicyCase, ReviewItem.case_id == PolicyCase.id, isouter=True
-        ).where(
+        review_query = review_query.where(
             or_(
                 ReviewItem.assigned_reviewer_id == current.user.id,
                 PolicyCase.assigned_agent_id == current.user.id,
@@ -290,12 +297,16 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
     workload: list[WorkloadItem] = []
     if current.user.role is UserRole.MANAGER:
         rows = db.execute(
-            select(User, func.count(Task.id))
+            select(
+                User,
+                func.count(Task.id).filter(PolicyCase.dismissed_at.is_(None)),
+            )
             .outerjoin(
                 Task,
                 (Task.assigned_agent_id == User.id)
                 & Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
             )
+            .outerjoin(PolicyCase, Task.case_id == PolicyCase.id)
             .where(User.agency_id == current.user.agency_id, User.is_active.is_(True))
             .group_by(User.id)
             .order_by(User.full_name)
@@ -333,7 +344,7 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
                 else None
             ),
         ),
-        recent_cases=[case_item(item, current.agency.timezone) for item in recent_cases],
+        recent_cases=[case_item(item, current.agency.timezone, current) for item in recent_cases],
         recent_activity=[
             ActivityItem(
                 id=event.id,

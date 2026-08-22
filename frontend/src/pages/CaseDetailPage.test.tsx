@@ -23,9 +23,11 @@ import { CaseDetailPage } from './CaseDetailPage'
 vi.mock('../lib/api', () => ({
   assignCase: vi.fn(),
   correctCase: vi.fn(),
+  dismissCase: vi.fn(),
   getAgents: vi.fn(),
   getCase: vi.fn(),
   getMe: vi.fn(),
+  restoreCase: vi.fn(),
   updateTask: vi.fn(),
 }))
 
@@ -46,6 +48,8 @@ describe('CaseDetailPage carrier messages', () => {
       carrier: { id: 1, name: 'Americo', code: 'AMR' },
       assigned_agent: null,
       needs_review: false,
+      dismissed_at: '2026-08-21T10:00:00Z',
+      can_manage_lifecycle: true,
       premium_amount: null,
       currency: null,
       effective_date: null,
@@ -136,6 +140,11 @@ describe('CaseDetailPage carrier messages', () => {
     expect(
       screen.queryByLabelText('Update Other assignee task'),
     ).not.toBeInTheDocument()
+    const restore = screen.getByRole('button', { name: 'Restore case' })
+    expect(restore).toHaveClass('bg-emerald-700')
+    expect(
+      screen.queryByRole('button', { name: 'Correct case information' }),
+    ).not.toBeInTheDocument()
   })
 
   it('lets an agent submit an audited current-case correction', async () => {
@@ -156,10 +165,28 @@ describe('CaseDetailPage carrier messages', () => {
         email: 'agent.one@demo.local',
       },
       needs_review: false,
+      dismissed_at: null,
+      can_manage_lifecycle: true,
       premium_amount: null,
       currency: null,
       effective_date: null,
-      messages: [],
+      messages: [
+        {
+          id: 20,
+          sender: 'carrier@example.test',
+          subject: 'Pending requirement',
+          received_at: '2026-08-20T10:00:00Z',
+          classification: 'PENDING_REQUIREMENTS' as const,
+          summary: 'Pending carrier requirement.',
+          priority: 'HIGH' as const,
+          processing_status: 'PROCESSED' as const,
+          cleaned_content: 'Please return the requirement.',
+          original_deadline_text: null,
+          analysis_confidence: 0.9,
+          validation_flags: [],
+          review_id: null,
+        },
+      ],
       attachments: [],
       tasks: [],
       evidence: [],
@@ -183,9 +210,20 @@ describe('CaseDetailPage carrier messages', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Correct case information' }),
+    const correctButton = await screen.findByRole('button', {
+      name: 'Correct case information',
+    })
+    const dismissButton = screen.getByRole('button', { name: 'Dismiss case' })
+    expect(correctButton.parentElement).toBe(dismissButton.parentElement)
+    expect(dismissButton).toHaveClass('bg-red-700')
+    expect(screen.getAllByText('Pending carrier requirement.')).toHaveLength(1)
+    expect(screen.getByText('AI analysis')).toBeInTheDocument()
+    expect(screen.queryByText('View AI analysis')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Technical analysis details'))
+    expect(screen.getByText(/AI's analysis confidence:/)).toHaveTextContent(
+      "AI's analysis confidence: 90%",
     )
+    fireEvent.click(correctButton)
     fireEvent.change(screen.getByLabelText('Policy status'), {
       target: { value: 'ACTIVE' },
     })

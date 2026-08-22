@@ -17,8 +17,10 @@ import { evidenceSourceLabel, humanFieldLabel } from '../lib/humanize'
 import {
   assignCase,
   correctCase,
+  dismissCase,
   getAgents,
   getCase,
+  restoreCase,
   updateTask,
 } from '../lib/api'
 import type {
@@ -53,6 +55,18 @@ function pendingAnalysisSummary(processingStatus: string) {
     default:
       return 'Semantic analysis has not started yet.'
   }
+}
+
+function groupEvidence(items: CaseDetail['evidence']) {
+  const groups = new Map<string, CaseDetail['evidence']>()
+  for (const evidence of items) {
+    const source = evidenceSourceLabel(
+      evidence.source_type,
+      evidence.attachment_filename,
+    )
+    groups.set(source, [...(groups.get(source) ?? []), evidence])
+  }
+  return Array.from(groups.entries())
 }
 
 function CaseCorrectionForm({
@@ -282,6 +296,17 @@ export function CaseDetailPage() {
       })
     },
   })
+  const lifecycleMutation = useMutation({
+    mutationFn: () =>
+      item.dismissed_at ? restoreCase(item.id) : dismissCase(item.id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['case', caseId] })
+      await queryClient.invalidateQueries({ queryKey: ['cases'] })
+      await queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      await queryClient.invalidateQueries({ queryKey: ['reviews'] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+    },
+  })
   if (detail.isPending) return <LoadingState label="Loading case history…" />
   if (detail.isError)
     return (
@@ -302,24 +327,45 @@ export function CaseDetailPage() {
       <PageHeader
         eyebrow={`${item.carrier.name} · ${item.policy_number ?? 'Policy number pending'}`}
         title={item.client_name}
-        description={item.summary}
         action={
           <div className="flex w-full flex-col items-start gap-3 self-start sm:w-auto sm:items-end sm:self-end">
             <div className="flex flex-wrap items-center gap-2 self-start sm:self-end">
               <PriorityBadge priority={item.priority} />
               <StatusBadge status={item.policy_status} />
             </div>
-            {!isManager && (
-              <Button variant="secondary" onClick={() => setCorrecting(true)}>
-                Correct case information
-              </Button>
-            )}
+            <div className="flex flex-wrap gap-2 self-start sm:self-end">
+              {!isManager && !item.dismissed_at && (
+                <Button variant="secondary" onClick={() => setCorrecting(true)}>
+                  Correct case information
+                </Button>
+              )}
+              {item.can_manage_lifecycle && (
+                <Button
+                  variant={item.dismissed_at ? 'success' : 'danger'}
+                  disabled={lifecycleMutation.isPending}
+                  onClick={() => lifecycleMutation.mutate()}
+                >
+                  {item.dismissed_at ? 'Restore case' : 'Dismiss case'}
+                </Button>
+              )}
+            </div>
           </div>
         }
       />
       <p className="text-sm text-slate-500">
         Policy status is based on the latest carrier information.
       </p>
+      {item.dismissed_at && (
+        <p className="border border-slate-300 bg-slate-50 p-4 text-sm text-slate-700">
+          This Case is dismissed from active work. Restore it to update tasks or
+          case information.
+        </p>
+      )}
+      {lifecycleMutation.error && (
+        <p className="text-sm text-red-700" role="alert">
+          {lifecycleMutation.error.message}
+        </p>
+      )}
       {correcting && (
         <CaseCorrectionForm
           item={item}
@@ -349,7 +395,7 @@ export function CaseDetailPage() {
           <p className="text-xs font-semibold text-slate-500 uppercase">
             Assigned agent
           </p>
-          {isManager ? (
+          {isManager && !item.dismissed_at ? (
             <select
               aria-label="Assigned agent"
               className="mt-2 min-h-10 w-full border border-slate-300 bg-white px-3 py-2 text-sm"
@@ -420,16 +466,19 @@ export function CaseDetailPage() {
                     <p className="mt-1 text-sm text-slate-600">
                       {task.description}
                     </p>
-                    <p className="mt-2 text-xs text-slate-500">
-                      Due {formatBusinessDate(task.due_at)}
-                    </p>
+                    {task.due_at && (
+                      <p className="mt-2 text-xs text-slate-500">
+                        Due {formatBusinessDate(task.due_at)}
+                      </p>
+                    )}
                   </div>
                   <div className="shrink-0 text-right">
                     <StatusBadge status={task.status} />
                     <label className="sr-only" htmlFor={`case-task-${task.id}`}>
                       Update {task.title}
                     </label>
-                    {!isManager &&
+                    {!item.dismissed_at &&
+                    !isManager &&
                     task.assigned_agent.id === auth.data!.user.id ? (
                       <select
                         id={`case-task-${task.id}`}
@@ -480,35 +529,43 @@ export function CaseDetailPage() {
                   <p className="mt-1 text-xs text-slate-500">
                     From {message.sender} · {formatDate(message.received_at)}
                   </p>
-                  <p className="mt-3 text-sm text-slate-700">
+                  <p className="mt-3 text-xs font-semibold tracking-wide text-slate-500 uppercase">
+                    AI analysis
+                  </p>
+                  <p className="mt-1 text-sm leading-6 text-slate-700">
                     {message.summary ??
                       pendingAnalysisSummary(message.processing_status)}
                   </p>
+                  {message.review_id && (
+                    <Link
+                      className="mt-2 inline-block text-sm font-semibold text-blue-700"
+                      to={`/reviews/${message.review_id}`}
+                    >
+                      Review analysis
+                    </Link>
+                  )}
                   {(message.analysis_confidence !== null ||
                     message.validation_flags.length > 0) && (
-                    <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                      {message.analysis_confidence !== null && (
-                        <span>
-                          Analysis confidence:{' '}
-                          {Math.round(message.analysis_confidence * 100)}%
-                        </span>
-                      )}
-                      {message.validation_flags.map((flag) => (
-                        <StatusBadge key={flag} status={flag} />
-                      ))}
-                      {message.review_id && (
-                        <Link
-                          className="font-semibold text-blue-700"
-                          to={`/reviews/${message.review_id}`}
-                        >
-                          Review analysis
-                        </Link>
-                      )}
-                    </div>
+                    <details className="mt-3">
+                      <summary className="cursor-pointer text-xs font-semibold text-slate-600">
+                        Technical analysis details
+                      </summary>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                        {message.analysis_confidence !== null && (
+                          <span>
+                            AI&apos;s analysis confidence:{' '}
+                            {Math.round(message.analysis_confidence * 100)}%
+                          </span>
+                        )}
+                        {message.validation_flags.map((flag) => (
+                          <StatusBadge key={flag} status={flag} />
+                        ))}
+                      </div>
+                    </details>
                   )}
                   <details className="mt-4 border-t border-slate-100 pt-3">
                     <summary className="cursor-pointer text-sm font-semibold text-blue-800">
-                      View cleaned source content
+                      View email content
                     </summary>
                     <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">
                       {message.cleaned_content}
@@ -583,19 +640,29 @@ export function CaseDetailPage() {
             </h2>
             <div className="divide-y divide-slate-100">
               {item.evidence.length ? (
-                item.evidence.map((evidence) => (
-                  <blockquote key={evidence.id} className="px-5 py-4">
-                    <p className="text-xs font-semibold text-slate-500 uppercase">
-                      {humanFieldLabel(evidence.field_name)} ·{' '}
-                      {evidenceSourceLabel(
-                        evidence.source_type,
-                        evidence.attachment_filename,
-                      )}
+                groupEvidence(item.evidence).map(([source, evidenceItems]) => (
+                  <div key={source} className="px-5 py-4">
+                    <h3 className="text-sm font-semibold">{source}</h3>
+                    <p className="mt-2 text-xs text-slate-600">
+                      {[
+                        ...new Set(
+                          evidenceItems.map((evidence) =>
+                            humanFieldLabel(evidence.field_name),
+                          ),
+                        ),
+                      ].join(' · ')}
                     </p>
-                    <p className="mt-2 text-sm leading-6 text-slate-700">
-                      “{evidence.excerpt}”
-                    </p>
-                  </blockquote>
+                    <details className="mt-3">
+                      <summary className="cursor-pointer text-xs font-semibold text-blue-700">
+                        View source excerpts
+                      </summary>
+                      <div className="mt-2 space-y-2 text-sm text-slate-700">
+                        {evidenceItems.map((evidence) => (
+                          <p key={evidence.id}>“{evidence.excerpt}”</p>
+                        ))}
+                      </div>
+                    </details>
+                  </div>
                 ))
               ) : (
                 <p className="p-5 text-sm text-slate-600">
@@ -608,7 +675,7 @@ export function CaseDetailPage() {
             <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
               Activity
             </h2>
-            <div className="divide-y divide-slate-100">
+            <div className="max-h-[30rem] divide-y divide-slate-100 overflow-y-auto">
               {item.activity.map((event) => (
                 <div key={event.id} className="px-5 py-4">
                   <p className="text-sm font-medium">{event.description}</p>

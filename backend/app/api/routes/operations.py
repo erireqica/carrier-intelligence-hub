@@ -38,12 +38,13 @@ def get_cases(
     current: CurrentUser,
     db: DbSession,
     page: Page = 1,
-    page_size: PageSize = 20,
+    page_size: PageSize = 10,
     search: str | None = None,
     carrier_id: int | None = None,
     policy_status: PolicyStatus | None = None,
     priority: Priority | None = None,
     assigned_agent_id: int | None = None,
+    include_dismissed: bool = False,
 ) -> CaseListResponse:
     return operations_service.list_cases(
         db,
@@ -55,12 +56,23 @@ def get_cases(
         policy_status=policy_status,
         priority=priority,
         assigned_agent_id=assigned_agent_id,
+        include_dismissed=include_dismissed,
     )
 
 
 @router.get("/cases/{case_id}", response_model=CaseDetail)
 def get_case(case_id: int, current: CurrentUser, db: DbSession) -> CaseDetail:
     return operations_service.get_case_detail(db, current, case_id)
+
+
+@router.post("/cases/{case_id}/dismiss", response_model=CaseDetail)
+def dismiss_case(case_id: int, current: CsrfUser, db: DbSession) -> CaseDetail:
+    return operations_service.set_case_dismissed(db, current, case_id, dismissed=True)
+
+
+@router.post("/cases/{case_id}/restore", response_model=CaseDetail)
+def restore_case(case_id: int, current: CsrfUser, db: DbSession) -> CaseDetail:
+    return operations_service.set_case_dismissed(db, current, case_id, dismissed=False)
 
 
 @router.patch("/cases/{case_id}/correction", response_model=CaseDetail)
@@ -85,13 +97,14 @@ def get_tasks(
     current: CurrentUser,
     db: DbSession,
     page: Page = 1,
-    page_size: PageSize = 50,
+    page_size: PageSize = 10,
     task_status: TaskStatusFilter = None,
     priority: Priority | None = None,
     overdue: bool | None = None,
     assigned_agent_id: int | None = None,
     task_view: Annotated[
-        Literal["TODO", "COMPLETED", "DISMISSED", "ALL"], Query(alias="view")
+        Literal["TODO", "OPEN", "IN_PROGRESS", "COMPLETED", "DISMISSED", "ALL"],
+        Query(alias="view"),
     ] = "TODO",
 ) -> TaskListResponse:
     return operations_service.list_tasks(
@@ -117,7 +130,7 @@ def get_reviews(
     current: CurrentUser,
     db: DbSession,
     page: Page = 1,
-    page_size: PageSize = 50,
+    page_size: PageSize = 8,
     review_status: ReviewStatusFilter = None,
     review_view: Annotated[
         Literal["ACTIONABLE", "RESOLVED", "DISMISSED", "ALL"], Query(alias="view")

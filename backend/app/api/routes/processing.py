@@ -48,8 +48,13 @@ def apply_review_analysis(
     data: HumanAnalysisInput,
     current: CsrfUser,
     db: DbSession,
+    selected_case_id: int | None = None,
 ) -> MessageProcessingResult:
-    return response_from_result(message_processing.apply_review(db, current, review_id, data))
+    return response_from_result(
+        message_processing.apply_review(
+            db, current, review_id, data, selected_case_id=selected_case_id
+        )
+    )
 
 
 @router.post("/reviews/{review_id}/dismiss-analysis", response_model=MessageProcessingResult)

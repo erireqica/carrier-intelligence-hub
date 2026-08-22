@@ -1,18 +1,22 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useCurrentUser } from '../app/auth'
 
 import {
   EmptyState,
   ErrorState,
   LoadingState,
   PageHeader,
+  Pagination,
   StatusBadge,
 } from '../components/ui'
 import { formatDate } from '../lib/format'
 import { getReviews } from '../lib/api'
 
 export function ReviewsPage() {
+  const auth = useCurrentUser()
+  const isManager = auth.data?.user.role === 'MANAGER'
   const [view, setView] = useState<
     'ACTIONABLE' | 'RESOLVED' | 'DISMISSED' | 'ALL'
   >('ACTIONABLE')
@@ -22,7 +26,7 @@ export function ReviewsPage() {
     queryFn: () =>
       getReviews(
         new URLSearchParams({
-          page_size: '25',
+          page_size: '8',
           page: String(page),
           view,
         }).toString(),
@@ -41,7 +45,7 @@ export function ReviewsPage() {
       <PageHeader
         eyebrow="Human verification"
         title="Review Queue"
-        description="Records that need explicit human attention because validation or source interpretation was incomplete."
+        description="Messages that require an agent's judgment before Carrier Hub can continue."
       />
       <div className="flex flex-wrap gap-2" aria-label="Review views">
         {(
@@ -88,9 +92,6 @@ export function ReviewsPage() {
                 <div>
                   <div className="flex items-center gap-2">
                     <StatusBadge status={item.status} />
-                    <span className="text-xs font-semibold text-slate-500">
-                      {item.reason_code.replaceAll('_', ' ')}
-                    </span>
                   </div>
                   <h2 className="mt-3 font-semibold text-slate-950">
                     {item.client_name ?? 'Unlinked communication'} ·{' '}
@@ -100,14 +101,19 @@ export function ReviewsPage() {
                     {item.message_subject}
                   </p>
                   <p className="mt-3 text-sm leading-6 text-slate-700">
-                    {item.reason}
+                    <strong>
+                      {item.issue_title ??
+                        'Carrier information needs confirmation'}
+                      .
+                    </strong>{' '}
+                    {item.issue_summary ?? item.reason}
                   </p>
                   <p className="mt-3 text-xs text-slate-500">
                     Opened {formatDate(item.created_at)}
-                    {item.analysis_confidence === null
-                      ? ''
-                      : ` · Confidence ${Math.round(item.analysis_confidence * 100)}%`}
-                    {item.assigned_reviewer
+                    {isManager && item.analysis_confidence !== null
+                      ? ` · Confidence ${Math.round(item.analysis_confidence * 100)}%`
+                      : ''}
+                    {isManager && item.assigned_reviewer
                       ? ` · Assigned to ${item.assigned_reviewer.full_name}`
                       : ''}
                   </p>
@@ -135,25 +141,12 @@ export function ReviewsPage() {
           ))}
         </div>
       )}
-      <div className="flex items-center justify-between gap-3 text-sm">
-        <button
-          className="font-semibold text-blue-700 disabled:text-slate-400"
-          disabled={page <= 1}
-          onClick={() => setPage((value) => value - 1)}
-        >
-          Previous
-        </button>
-        <span>
-          Page {reviews.data.page.page} of {reviews.data.page.pages}
-        </span>
-        <button
-          className="font-semibold text-blue-700 disabled:text-slate-400"
-          disabled={page >= reviews.data.page.pages}
-          onClick={() => setPage((value) => value + 1)}
-        >
-          Next
-        </button>
-      </div>
+      <Pagination
+        page={reviews.data.page.page}
+        pages={reviews.data.page.pages}
+        onPageChange={setPage}
+        label="Review pagination"
+      />
     </div>
   )
 }

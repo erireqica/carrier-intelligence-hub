@@ -1,3 +1,4 @@
+import math
 import secrets
 from dataclasses import asdict
 from datetime import UTC, timedelta
@@ -13,8 +14,10 @@ from app.api.schemas.domain import (
     GmailConnectionItem,
     GmailConnectionsResponse,
     GmailMessageListItem,
+    GmailMessageListResponse,
     GmailOAuthStartResponse,
     GmailSyncResult,
+    PageInfo,
 )
 from app.core.config import get_settings
 from app.core.security import normalize_email, token_hash
@@ -100,7 +103,9 @@ def connection_item(
     )
 
 
-def list_connections(db: Session, current: AuthContext) -> GmailConnectionsResponse:
+def list_connections(
+    db: Session, current: AuthContext, *, page: int = 1, page_size: int = 5
+) -> GmailConnectionsResponse:
     query = (
         select(GmailConnection)
         .options(
@@ -112,10 +117,18 @@ def list_connections(db: Session, current: AuthContext) -> GmailConnectionsRespo
     )
     if current.user.role is UserRole.AGENT:
         query = query.where(GmailConnection.user_id == current.user.id)
-    connections = db.scalars(query.order_by(GmailConnection.created_at.desc())).all()
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    pages = max(1, math.ceil(total / page_size))
+    page = min(max(1, page), pages)
+    connections = db.scalars(
+        query.order_by(GmailConnection.created_at.desc(), GmailConnection.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
     return GmailConnectionsResponse(
         configured=get_settings().gmail_oauth_configured,
         connections=[connection_item(db, item, current) for item in connections],
+        page=PageInfo(page=page, page_size=page_size, total=total, pages=pages),
     )
 
 
@@ -335,8 +348,13 @@ def run_manual_sync(
 
 
 def recent_messages(
-    db: Session, current: AuthContext, connection_id: int
-) -> list[GmailMessageListItem]:
+    db: Session,
+    current: AuthContext,
+    connection_id: int,
+    *,
+    page: int = 1,
+    page_size: int = 8,
+) -> GmailMessageListResponse:
     connection = get_connection(db, current, connection_id, manager_can_access=True)
     open_review_id = (
         select(func.max(ReviewItem.id))
@@ -356,13 +374,24 @@ def recent_messages(
         .correlate(CarrierMessage)
         .scalar_subquery()
     )
+    total = (
+        db.scalar(
+            select(func.count())
+            .select_from(CarrierMessage)
+            .where(CarrierMessage.gmail_connection_id == connection.id)
+        )
+        or 0
+    )
+    pages = max(1, math.ceil(total / page_size))
+    page = min(max(1, page), pages)
     rows = db.execute(
         select(CarrierMessage, func.count(Attachment.id), open_review_id, label_sync_status)
         .outerjoin(Attachment, Attachment.carrier_message_id == CarrierMessage.id)
         .where(CarrierMessage.gmail_connection_id == connection.id)
         .group_by(CarrierMessage.id)
         .order_by(CarrierMessage.received_at.desc())
-        .limit(50)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     ).all()
     case_ids = {message.case_id for message, *_ in rows if message.case_id is not None}
     cases_by_id = (
@@ -404,7 +433,7 @@ def recent_messages(
         if review_ids
         else set()
     )
-    return [
+    items = [
         GmailMessageListItem(
             id=message.id,
             carrier=CarrierBrief(
@@ -438,6 +467,10 @@ def recent_messages(
         )
         for message, attachment_count, review_id, sync_status in rows
     ]
+    return GmailMessageListResponse(
+        items=items,
+        page=PageInfo(page=page, page_size=page_size, total=total, pages=pages),
+    )
 
 
 def disconnect(

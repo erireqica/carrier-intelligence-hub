@@ -11,12 +11,14 @@ export function Button({
   variant = 'primary',
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'secondary' | 'danger'
+  variant?: 'primary' | 'secondary' | 'danger' | 'success'
 }) {
   const variants = {
     primary: 'border-slate-900 bg-slate-900 text-white hover:bg-slate-700',
     secondary: 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50',
     danger: 'border-red-700 bg-red-700 text-white hover:bg-red-800',
+    success:
+      'border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800',
   }
   return (
     <button
@@ -187,5 +189,45 @@ export function Metric({
         {value}
       </p>
     </div>
+  )
+}
+
+export function Pagination({
+  page,
+  pages,
+  onPageChange,
+  label = 'Pagination',
+}: {
+  page: number
+  pages: number
+  onPageChange: (page: number) => void
+  label?: string
+}) {
+  const safePages = Math.max(1, pages)
+  const safePage = Math.min(Math.max(1, page), safePages)
+  if (safePages <= 1) return null
+  return (
+    <nav
+      className="flex items-center justify-between gap-3 text-sm"
+      aria-label={label}
+    >
+      <Button
+        variant="secondary"
+        disabled={safePage <= 1}
+        onClick={() => onPageChange(safePage - 1)}
+      >
+        Previous
+      </Button>
+      <span>
+        Page {safePage} of {safePages}
+      </span>
+      <Button
+        variant="secondary"
+        disabled={safePage >= safePages}
+        onClick={() => onPageChange(safePage + 1)}
+      >
+        Next
+      </Button>
+    </nav>
   )
 }

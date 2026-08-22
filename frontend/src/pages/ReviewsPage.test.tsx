@@ -3,13 +3,15 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
-import { getReviews } from '../lib/api'
+import { getMe, getReviews } from '../lib/api'
+import { authFixture } from '../test/fixtures'
 import { ReviewsPage } from './ReviewsPage'
 
-vi.mock('../lib/api', () => ({ getReviews: vi.fn() }))
+vi.mock('../lib/api', () => ({ getMe: vi.fn(), getReviews: vi.fn() }))
 
 describe('ReviewsPage history views', () => {
   it('defaults to actionable and lets users reopen a terminal review read-only', async () => {
+    vi.mocked(getMe).mockResolvedValue(authFixture('AGENT'))
     vi.mocked(getReviews).mockImplementation(async (params) => ({
       items: (params ?? '').includes('view=RESOLVED')
         ? [
@@ -49,6 +51,11 @@ describe('ReviewsPage history views', () => {
         expect.stringContaining('view=ACTIONABLE'),
       ),
     )
+    expect(
+      await screen.findByText(
+        "Messages that require an agent's judgment before Carrier Hub can continue.",
+      ),
+    ).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: 'Resolved' }))
     expect(
       await screen.findByText('Historical Client · Americo'),

@@ -231,15 +231,13 @@ describe('GmailConnectionsPage', () => {
     renderPage()
 
     expect(getGmailMessages).not.toHaveBeenCalled()
-    const recentMessages = await screen.findByText(
-      'Recent ingested carrier messages',
-    )
+    const recentMessages = await screen.findByText('Ingested carrier messages')
     fireEvent.click(recentMessages)
     expect(await screen.findByText('Renewal notice')).toBeInTheDocument()
     expect(screen.getByText('RECEIVED')).toBeInTheDocument()
     expect(screen.getByText('Queued for analysis')).toBeInTheDocument()
     expect(screen.getByText('Labels queued')).toBeInTheDocument()
-    expect(getGmailMessages).toHaveBeenCalledWith(11)
+    expect(getGmailMessages).toHaveBeenCalledWith(11, 1)
     expect(screen.queryByText('Sync manually')).not.toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Analyze now' }),
@@ -323,7 +321,7 @@ describe('GmailConnectionsPage', () => {
     ])
     renderPage()
 
-    fireEvent.click(await screen.findByText('Recent ingested carrier messages'))
+    fireEvent.click(await screen.findByText('Ingested carrier messages'))
     expect(await screen.findByText('Analyzing…')).toBeInTheDocument()
     expect(screen.getByText('Retry scheduled')).toBeInTheDocument()
     expect(screen.getByText('Updating labels…')).toBeInTheDocument()

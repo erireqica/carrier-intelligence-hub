@@ -203,9 +203,18 @@ describe('ReviewDetailPage', () => {
       </QueryClientProvider>,
     )
 
+    expect(await screen.findByText('Email content')).toBeInTheDocument()
+    expect(screen.getByText('Email subject')).toBeInTheDocument()
+    expect(screen.getAllByText('Email body').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Pending requirements').length).toBeGreaterThan(
+      0,
+    )
     expect(
-      await screen.findByText('Check against the carrier message'),
+      screen.getByText(/Client Review Client\s+Policy REVIEW-100/),
     ).toBeInTheDocument()
+    const sourceCard =
+      screen.getByText('Email content').parentElement?.parentElement
+    expect(sourceCard).toHaveClass('self-start', 'h-fit')
     expect(
       screen.getByText('More than one interpretation is plausible'),
     ).toBeInTheDocument()
@@ -215,7 +224,17 @@ describe('ReviewDetailPage', () => {
         'The deadline applies to every outstanding requirement.',
       ),
     ).toBeInTheDocument()
-    expect(screen.getByText('“Policy REVIEW-100”')).toBeInTheDocument()
+    expect(screen.queryByText('“Policy REVIEW-100”')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('Technical details'))
+    expect(
+      screen.queryByText('Issue', { selector: 'dt' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByText("AI's confidence that this is the issue:"),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("AI's confidence that this is the issue:").parentElement,
+    ).toHaveTextContent("AI's confidence that this is the issue: 62%")
     fireEvent.change(screen.getByLabelText('Client name'), {
       target: { value: 'Corrected Client' },
     })
@@ -225,6 +244,7 @@ describe('ReviewDetailPage', () => {
       expect(applyReviewAnalysis).toHaveBeenCalledWith(
         7,
         expect.objectContaining({ client_name: 'Corrected Client' }),
+        undefined,
       ),
     )
     expect(await screen.findByText('Case opened')).toBeInTheDocument()
@@ -266,7 +286,11 @@ describe('ReviewDetailPage', () => {
     expect(
       screen.getByText('The attached document requires human inspection.'),
     ).toBeInTheDocument()
+    expect(screen.getByText('Email subject')).toBeInTheDocument()
+    expect(screen.getAllByText('Email body').length).toBeGreaterThan(0)
+    expect(screen.getByText('Attachments')).toBeInTheDocument()
     expect(screen.getByText(/scanned-notice\.pdf/)).toBeInTheDocument()
+    expect(screen.getByText('View extracted text')).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Confirm & apply' }),
     ).not.toBeInTheDocument()
@@ -393,5 +417,81 @@ describe('ReviewDetailPage', () => {
       view.queryByRole('button', { name: 'Confirm & apply' }),
     ).not.toBeInTheDocument()
     expect(applyReviewAnalysis).not.toHaveBeenCalled()
+  })
+
+  it('requires an authorized case selection for a case-match review', async () => {
+    vi.mocked(getReviewAnalysis).mockResolvedValue({
+      ...noProposalReview,
+      id: 11,
+      message_id: 16,
+      reason_code: 'CASE_MATCH_CONFLICT',
+      reason: 'Multiple matching cases require confirmation.',
+      issues: [
+        {
+          code: 'CASE_MATCH_CONFLICT',
+          category: 'CASE_MATCH_CONFLICT',
+          title: 'Multiple cases match this message',
+          message: 'Select the correct existing case.',
+          field_name: 'case_id',
+          human_resolvable: true,
+          values: [
+            {
+              source_id: 'case:44',
+              source_label: 'Existing case 44',
+              value: 'Review Client · REVIEW-100',
+            },
+          ],
+        },
+      ],
+      analysis: {
+        ...noProposalReview.analysis,
+        message_id: 16,
+        review_id: 11,
+        proposed_result: proposal,
+      },
+    })
+    vi.mocked(applyReviewAnalysis).mockResolvedValue({
+      message_id: 16,
+      processing_status: 'PROCESSED',
+      case_id: 44,
+      review_id: null,
+      tasks_created: 0,
+      attachments_extracted: 0,
+      analysis_confidence: 0.62,
+      validation_flags: [],
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/reviews/11']}>
+          <Routes>
+            <Route path="/reviews/:reviewId" element={<ReviewDetailPage />} />
+            <Route
+              path="/cases/:caseId"
+              element={<p>Selected case opened</p>}
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    const applyButton = await screen.findByRole('button', {
+      name: 'Confirm & apply',
+    })
+    expect(applyButton).toBeDisabled()
+    fireEvent.click(screen.getByRole('radio'))
+    expect(applyButton).toBeEnabled()
+    fireEvent.click(applyButton)
+    await waitFor(() =>
+      expect(applyReviewAnalysis).toHaveBeenCalledWith(
+        11,
+        expect.any(Object),
+        44,
+      ),
+    )
   })
 })

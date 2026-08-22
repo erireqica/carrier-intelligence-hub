@@ -1,14 +1,14 @@
 import logging
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from app.api.dependencies import AgentCsrfUser, CsrfUser, CurrentUser, DbSession
 from app.api.schemas.auth import MessageResponse
 from app.api.schemas.domain import (
     GmailConnectionsResponse,
-    GmailMessageListItem,
+    GmailMessageListResponse,
     GmailOAuthStartRequest,
     GmailOAuthStartResponse,
     GmailSyncResult,
@@ -45,8 +45,13 @@ def _frontend_redirect(result: str) -> RedirectResponse:
 
 
 @router.get("/gmail-connections", response_model=GmailConnectionsResponse)
-def get_gmail_connections(current: CurrentUser, db: DbSession) -> GmailConnectionsResponse:
-    return gmail_service.list_connections(db, current)
+def get_gmail_connections(
+    current: CurrentUser,
+    db: DbSession,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(5, ge=1, le=100),
+) -> GmailConnectionsResponse:
+    return gmail_service.list_connections(db, current, page=page, page_size=page_size)
 
 
 @router.post("/gmail/oauth/start", response_model=GmailOAuthStartResponse)
@@ -166,12 +171,16 @@ def sync_gmail_connection(connection_id: int, current: CsrfUser, db: DbSession) 
 
 @router.get(
     "/gmail-connections/{connection_id}/messages",
-    response_model=list[GmailMessageListItem],
+    response_model=GmailMessageListResponse,
 )
 def get_recent_gmail_messages(
-    connection_id: int, current: CurrentUser, db: DbSession
-) -> list[GmailMessageListItem]:
-    return gmail_service.recent_messages(db, current, connection_id)
+    connection_id: int,
+    current: CurrentUser,
+    db: DbSession,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(8, ge=1, le=100),
+) -> GmailMessageListResponse:
+    return gmail_service.recent_messages(db, current, connection_id, page=page, page_size=page_size)
 
 
 @router.delete(

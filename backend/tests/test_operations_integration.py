@@ -106,6 +106,74 @@ def test_role_authorization_case_and_task_scoping(client: TestClient, db: Sessio
     assert task_assignment_forbidden.status_code == 422
 
 
+def test_assigned_agent_can_dismiss_and_restore_case_without_deleting_history(
+    client: TestClient, db: Session, login
+) -> None:
+    policy_case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "John Doe"))
+    assert policy_case is not None
+    task = db.scalar(select(Task).where(Task.case_id == policy_case.id))
+    assert task is not None
+    case_count = db.scalar(select(func.count()).select_from(PolicyCase))
+    task_count = db.scalar(select(func.count()).select_from(Task))
+
+    auth = login(client, "agent.one@demo.local")
+    headers = {"X-CSRF-Token": auth["csrf_token"]}
+    dismissed = client.post(f"/api/v1/cases/{policy_case.id}/dismiss", headers=headers)
+    assert dismissed.status_code == 200
+    assert dismissed.json()["dismissed_at"] is not None
+    assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 200
+    assert policy_case.id not in {
+        item["id"] for item in client.get("/api/v1/cases?page_size=100").json()["items"]
+    }
+    assert policy_case.id in {
+        item["id"]
+        for item in client.get("/api/v1/cases?page_size=100&include_dismissed=true").json()["items"]
+    }
+    assert task.id not in {
+        item["id"] for item in client.get("/api/v1/tasks?view=ALL&page_size=100").json()["items"]
+    }
+    assert (
+        client.patch(
+            f"/api/v1/tasks/{task.id}",
+            json={"status": "IN_PROGRESS"},
+            headers=headers,
+        ).status_code
+        == 409
+    )
+    assert db.scalar(select(func.count()).select_from(PolicyCase)) == case_count
+    assert db.scalar(select(func.count()).select_from(Task)) == task_count
+
+    manager = login(client, "manager@demo.local")
+    other_agent = db.scalar(select(User).where(User.email == "agent.two@demo.local"))
+    assert other_agent is not None
+    assert (
+        client.patch(
+            f"/api/v1/cases/{policy_case.id}/assignment",
+            json={"assigned_agent_id": other_agent.id},
+            headers={"X-CSRF-Token": manager["csrf_token"]},
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            f"/api/v1/cases/{policy_case.id}/restore",
+            headers={"X-CSRF-Token": manager["csrf_token"]},
+        ).status_code
+        == 403
+    )
+    auth = login(client, "agent.one@demo.local")
+    restored = client.post(
+        f"/api/v1/cases/{policy_case.id}/restore",
+        headers={"X-CSRF-Token": auth["csrf_token"]},
+    )
+    assert restored.status_code == 200
+    assert restored.json()["dismissed_at"] is None
+    events = set(
+        db.scalars(select(AuditEvent.event_type).where(AuditEvent.case_id == policy_case.id)).all()
+    )
+    assert {"CASE_DISMISSED", "CASE_RESTORED"} <= events
+
+
 def test_business_deadlines_serialize_as_agency_local_dates(
     client: TestClient, db: Session, login
 ) -> None:
@@ -134,6 +202,21 @@ def test_business_deadlines_serialize_as_agency_local_dates(
     )
     assert listed_task["due_at"] == "2026-08-28"
     assert "T" in listed_case["updated_at"]
+
+
+def test_paginated_operations_clamp_pages_after_result_counts_change(
+    client: TestClient, login
+) -> None:
+    login(client, "agent.one@demo.local")
+    for path in (
+        "/api/v1/cases?page=999&page_size=10",
+        "/api/v1/tasks?page=999&page_size=10&view=ALL",
+        "/api/v1/reviews?page=999&page_size=8&view=ALL",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+        page = response.json()["page"]
+        assert 1 <= page["page"] <= page["pages"]
 
 
 def test_manager_carrier_whitelist_and_review_workflows(

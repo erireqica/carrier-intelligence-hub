@@ -577,7 +577,11 @@ def test_reconnect_preserves_refresh_token_and_disconnected_address_can_be_reuse
         client.get(f"/api/v1/gmail-connections/{reused_connections[0].id}/messages").status_code
         == 404
     )
-    assert client.get(f"/api/v1/gmail-connections/{reused_connections[1].id}/messages").json() == []
+    empty_messages = client.get(
+        f"/api/v1/gmail-connections/{reused_connections[1].id}/messages"
+    ).json()
+    assert empty_messages["items"] == []
+    assert empty_messages["page"]["total"] == 0
     assert (
         db.scalar(
             select(func.count())

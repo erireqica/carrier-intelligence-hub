@@ -8,6 +8,7 @@ import {
   ErrorState,
   LoadingState,
   PageHeader,
+  Pagination,
 } from '../components/ui'
 import { getActivity } from '../lib/api'
 import { formatDateTime } from '../lib/format'
@@ -64,24 +65,25 @@ export function ActivityPage() {
         />
       ) : (
         <div className="divide-y divide-slate-100 border border-slate-200 bg-white">
+          <div className="hidden grid-cols-[180px_1fr_180px] gap-4 bg-slate-50 px-5 py-3 text-xs font-semibold tracking-wide text-slate-500 uppercase sm:grid">
+            <span>Action</span>
+            <span>Details</span>
+            <span>Date</span>
+          </div>
           {activity.data.items.map((event) => (
             <article
               key={event.id}
-              className="grid gap-2 px-5 py-4 sm:grid-cols-[180px_1fr_auto] sm:items-start"
+              className="grid gap-2 px-5 py-4 sm:grid-cols-[180px_1fr_180px] sm:items-start"
             >
               <div>
                 <p className="font-semibold text-slate-900">
                   {event.event_label}
                 </p>
-                <p className="text-xs text-slate-500">
-                  {formatDateTime(
-                    event.created_at,
-                    auth.data!.user.agency.timezone,
-                  )}
-                </p>
               </div>
               <div>
-                <p className="text-sm text-slate-800">{event.description}</p>
+                <p className="text-[0.95rem] leading-6 text-slate-800">
+                  {event.description}
+                </p>
                 {event.task_title && (
                   <p className="mt-1 text-xs text-slate-500">
                     Task: {event.task_title}
@@ -93,37 +95,30 @@ export function ActivityPage() {
                   </p>
                 )}
               </div>
-              {event.case_id && (
-                <Link
-                  className="text-sm font-semibold text-blue-700"
-                  to={`/cases/${event.case_id}`}
-                >
-                  View case
-                </Link>
-              )}
+              <div className="text-sm text-slate-500">
+                {formatDateTime(
+                  event.created_at,
+                  auth.data!.user.agency.timezone,
+                )}
+                {event.case_id && (
+                  <Link
+                    className="mt-2 block text-sm font-semibold text-blue-700"
+                    to={`/cases/${event.case_id}`}
+                  >
+                    View case
+                  </Link>
+                )}
+              </div>
             </article>
           ))}
         </div>
       )}
-      <div className="flex items-center justify-between text-sm">
-        <button
-          className="font-semibold text-blue-700 disabled:text-slate-400"
-          disabled={page <= 1}
-          onClick={() => setPage((value) => value - 1)}
-        >
-          Previous
-        </button>
-        <span>
-          Page {activity.data.page.page} of {activity.data.page.pages}
-        </span>
-        <button
-          className="font-semibold text-blue-700 disabled:text-slate-400"
-          disabled={page >= activity.data.page.pages}
-          onClick={() => setPage((value) => value + 1)}
-        >
-          Next
-        </button>
-      </div>
+      <Pagination
+        page={activity.data.page.page}
+        pages={activity.data.page.pages}
+        onPageChange={setPage}
+        label="Activity pagination"
+      />
     </div>
   )
 }

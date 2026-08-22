@@ -6,6 +6,9 @@ import { Button, Input, PageHeader, StatusBadge } from '../components/ui'
 import { changePassword, updateProfile } from '../lib/api'
 import { formatDate } from '../lib/format'
 
+const CURRENT_PASSWORD_MIN_LENGTH = 8
+const NEW_PASSWORD_MIN_LENGTH = 12
+
 export function ProfilePage() {
   const auth = useCurrentUser()
   const user = auth.data!.user
@@ -16,6 +19,14 @@ export function ProfilePage() {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [profileValidationError, setProfileValidationError] = useState<
+    string | null
+  >(null)
+  const [passwordValidationError, setPasswordValidationError] = useState<
+    string | null
+  >(null)
+  const [showProfilePassword, setShowProfilePassword] = useState(false)
+  const [showPasswords, setShowPasswords] = useState(false)
   const profile = useMutation({
     mutationFn: () =>
       updateProfile({
@@ -49,139 +60,209 @@ export function ProfilePage() {
         title="Profile"
         description="Update your Carrier Hub sign-in details and password."
       />
-      <form
-        className="max-w-2xl space-y-5 border border-slate-200 bg-white p-5"
-        onSubmit={(event: FormEvent) => {
-          event.preventDefault()
-          profile.mutate()
-        }}
-      >
-        <h2 className="font-semibold">Account details</h2>
-        <label className="block text-sm font-medium">
-          Full name
-          <Input
-            className="mt-1"
-            value={fullName}
-            onChange={(event) => setFullName(event.target.value)}
-            required
-          />
-        </label>
-        <label className="block text-sm font-medium">
-          Login email
-          <Input
-            className="mt-1"
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            required
-          />
-        </label>
-        {emailChanged && (
-          <label className="block text-sm font-medium">
-            Current password
-            <Input
-              className="mt-1"
-              type="password"
-              autoComplete="current-password"
-              value={profilePassword}
-              onChange={(event) => setProfilePassword(event.target.value)}
-              required
-            />
-            <span className="mt-1 block text-xs font-normal text-slate-500">
-              Required to change your login email.
-            </span>
-          </label>
-        )}
-        {profile.error && (
-          <p className="text-sm text-red-700" role="alert">
-            {profile.error.message}
-          </p>
-        )}
-        {profile.isSuccess && (
-          <p className="text-sm text-green-700" role="status">
-            Profile updated.
-          </p>
-        )}
-        <Button disabled={profile.isPending} type="submit">
-          {profile.isPending ? 'Saving…' : 'Save profile'}
-        </Button>
-      </form>
-
-      <section className="max-w-2xl border border-slate-200 bg-white p-5">
-        <h2 className="font-semibold">Agency access</h2>
-        <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2">
-          {[
-            ['Role', user.role],
-            ['Agency', user.agency.name],
-            ['Agency timezone', user.agency.timezone],
-            ['Last login', formatDate(user.last_login_at)],
-          ].map(([label, value]) => (
-            <div key={label}>
-              <dt className="text-slate-500">{label}</dt>
-              <dd className="mt-1 font-medium">{value}</dd>
-            </div>
-          ))}
-          <div>
-            <dt className="text-slate-500">Account status</dt>
-            <dd className="mt-1">
-              <StatusBadge status={user.is_active ? 'ACTIVE' : 'DISABLED'} />
-            </dd>
-          </div>
-        </dl>
-      </section>
-
-      <form
-        className="max-w-2xl space-y-5 border border-slate-200 bg-white p-5"
-        onSubmit={(event: FormEvent) => {
-          event.preventDefault()
-          password.mutate()
-        }}
-      >
-        <h2 className="font-semibold">Change password</h2>
-        {[
-          [
-            'Current password',
-            currentPassword,
-            setCurrentPassword,
-            'current-password',
-          ],
-          ['New password', newPassword, setNewPassword, 'new-password'],
-          [
-            'Confirm new password',
-            confirmPassword,
-            setConfirmPassword,
-            'new-password',
-          ],
-        ].map(([label, value, setter, autoComplete]) => (
-          <label key={label as string} className="block text-sm font-medium">
-            {label as string}
-            <Input
-              className="mt-1"
-              type="password"
-              autoComplete={autoComplete as string}
-              minLength={label === 'Current password' ? 8 : 12}
-              value={value as string}
-              onChange={(event) =>
-                (setter as (value: string) => void)(event.target.value)
+      <div className="grid items-start gap-6 xl:grid-cols-2">
+        <div className="space-y-6" aria-label="Account and agency information">
+          <form
+            className="space-y-5 border border-slate-200 bg-white p-5"
+            onSubmit={(event: FormEvent) => {
+              event.preventDefault()
+              setProfileValidationError(null)
+              if (
+                emailChanged &&
+                profilePassword.length < CURRENT_PASSWORD_MIN_LENGTH
+              ) {
+                setProfileValidationError(
+                  `Current password must be at least ${CURRENT_PASSWORD_MIN_LENGTH} characters.`,
+                )
+                return
               }
-              required
+              profile.mutate()
+            }}
+          >
+            <h2 className="font-semibold">Account details</h2>
+            <label className="block text-sm font-medium">
+              Full name
+              <Input
+                className="mt-1"
+                value={fullName}
+                onChange={(event) => setFullName(event.target.value)}
+                required
+              />
+            </label>
+            <label className="block text-sm font-medium">
+              Login email
+              <Input
+                className="mt-1"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+              />
+            </label>
+            {emailChanged && (
+              <div>
+                <label className="block text-sm font-medium">
+                  Current password
+                  <Input
+                    className="mt-1"
+                    type={showProfilePassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    minLength={CURRENT_PASSWORD_MIN_LENGTH}
+                    value={profilePassword}
+                    onChange={(event) => setProfilePassword(event.target.value)}
+                    required
+                  />
+                  <span className="mt-1 block text-xs font-normal text-slate-500">
+                    Required to change your login email.
+                  </span>
+                </label>
+                <label className="mt-2 flex items-center gap-2 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={showProfilePassword}
+                    onChange={(event) =>
+                      setShowProfilePassword(event.target.checked)
+                    }
+                  />
+                  Show password
+                </label>
+              </div>
+            )}
+            {profileValidationError && (
+              <p className="text-sm text-red-700" role="alert">
+                {profileValidationError}
+              </p>
+            )}
+            {profile.error && (
+              <p className="text-sm text-red-700" role="alert">
+                {profile.error.message}
+              </p>
+            )}
+            {profile.isSuccess && (
+              <p className="text-sm text-green-700" role="status">
+                Profile updated.
+              </p>
+            )}
+            <Button disabled={profile.isPending} type="submit">
+              {profile.isPending ? 'Saving…' : 'Save profile'}
+            </Button>
+          </form>
+          <section className="border border-slate-200 bg-white p-5">
+            <h2 className="font-semibold">Agency access</h2>
+            <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2">
+              {[
+                ['Role', user.role],
+                ['Agency', user.agency.name],
+                ['Agency timezone', user.agency.timezone],
+                ['Last login', formatDate(user.last_login_at)],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <dt className="text-slate-500">{label}</dt>
+                  <dd className="mt-1 font-medium">{value}</dd>
+                </div>
+              ))}
+              <div>
+                <dt className="text-slate-500">Account status</dt>
+                <dd className="mt-1">
+                  <StatusBadge
+                    status={user.is_active ? 'ACTIVE' : 'DISABLED'}
+                  />
+                </dd>
+              </div>
+            </dl>
+          </section>
+        </div>
+
+        <form
+          aria-label="Change password"
+          className="space-y-5 border border-slate-200 bg-white p-5"
+          onSubmit={(event: FormEvent) => {
+            event.preventDefault()
+            setPasswordValidationError(null)
+            if (currentPassword.length < CURRENT_PASSWORD_MIN_LENGTH) {
+              setPasswordValidationError(
+                `Current password must be at least ${CURRENT_PASSWORD_MIN_LENGTH} characters.`,
+              )
+              return
+            }
+            if (newPassword.length < NEW_PASSWORD_MIN_LENGTH) {
+              setPasswordValidationError(
+                `New password must be at least ${NEW_PASSWORD_MIN_LENGTH} characters.`,
+              )
+              return
+            }
+            if (newPassword !== confirmPassword) {
+              setPasswordValidationError(
+                'New password and confirmation do not match.',
+              )
+              return
+            }
+            password.mutate()
+          }}
+        >
+          <h2 className="font-semibold">Change password</h2>
+          {[
+            [
+              'Current password',
+              currentPassword,
+              setCurrentPassword,
+              'current-password',
+            ],
+            ['New password', newPassword, setNewPassword, 'new-password'],
+            [
+              'Confirm new password',
+              confirmPassword,
+              setConfirmPassword,
+              'new-password',
+            ],
+          ].map(([label, value, setter, autoComplete]) => (
+            <label key={label as string} className="block text-sm font-medium">
+              {label as string}
+              <Input
+                className="mt-1"
+                type={showPasswords ? 'text' : 'password'}
+                autoComplete={autoComplete as string}
+                minLength={
+                  label === 'Current password'
+                    ? CURRENT_PASSWORD_MIN_LENGTH
+                    : NEW_PASSWORD_MIN_LENGTH
+                }
+                value={value as string}
+                onChange={(event) =>
+                  (setter as (value: string) => void)(event.target.value)
+                }
+                required
+              />
+            </label>
+          ))}
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={showPasswords}
+              onChange={(event) => setShowPasswords(event.target.checked)}
             />
+            Show passwords
           </label>
-        ))}
-        {password.error && (
-          <p className="text-sm text-red-700" role="alert">
-            {password.error.message}
-          </p>
-        )}
-        {password.isSuccess && (
-          <p className="text-sm text-green-700" role="status">
-            Password changed. Other signed-in sessions were ended.
-          </p>
-        )}
-        <Button disabled={password.isPending} type="submit">
-          {password.isPending ? 'Changing…' : 'Change password'}
-        </Button>
-      </form>
+          {passwordValidationError && (
+            <p className="text-sm text-red-700" role="alert">
+              {passwordValidationError}
+            </p>
+          )}
+          {password.error && (
+            <p className="text-sm text-red-700" role="alert">
+              {password.error.message}
+            </p>
+          )}
+          {password.isSuccess && (
+            <p className="text-sm text-green-700" role="status">
+              Password changed. Other signed-in sessions were ended.
+            </p>
+          )}
+          <Button disabled={password.isPending} type="submit">
+            {password.isPending ? 'Changing…' : 'Change password'}
+          </Button>
+        </form>
+      </div>
     </div>
   )
 }

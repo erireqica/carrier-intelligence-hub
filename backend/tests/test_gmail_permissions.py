@@ -70,7 +70,11 @@ def test_unconfigured_state_does_not_break_connection_listing(
     login(client, "agent.one@demo.local")
     response = client.get("/api/v1/gmail-connections")
     assert response.status_code == 200
-    assert response.json() == {"configured": False, "connections": []}
+    assert response.json() == {
+        "configured": False,
+        "connections": [],
+        "page": {"page": 1, "page_size": 5, "total": 0, "pages": 1},
+    }
 
 
 def test_agent_manager_and_cross_agency_connection_permissions(
@@ -178,7 +182,7 @@ def test_recent_message_case_access_matches_case_authorization(
     login(client, gmail_owner.email)
     owner_response = client.get(f"/api/v1/gmail-connections/{connection.id}/messages")
     assert owner_response.status_code == 200
-    owner_item = owner_response.json()[0]
+    owner_item = owner_response.json()["items"][0]
     assert owner_item["case_id"] == policy_case.id
     assert owner_item["case_assigned_agent"]["id"] == case_owner.id
     assert owner_item["case_assigned_agent"]["full_name"] == case_owner.full_name
@@ -188,7 +192,9 @@ def test_recent_message_case_access_matches_case_authorization(
     assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 404
 
     login(client, "manager@demo.local")
-    manager_item = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()[0]
+    manager_item = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()[
+        "items"
+    ][0]
     assert manager_item["can_open_case"] is True
     assert manager_item["can_open_review"] is True
     assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 200
@@ -196,7 +202,9 @@ def test_recent_message_case_access_matches_case_authorization(
     policy_case.assigned_agent_id = gmail_owner.id
     db.commit()
     login(client, gmail_owner.email)
-    current_owner_item = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()[0]
+    current_owner_item = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()[
+        "items"
+    ][0]
     assert current_owner_item["can_open_case"] is True
     assert current_owner_item["can_open_review"] is True
     assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 200

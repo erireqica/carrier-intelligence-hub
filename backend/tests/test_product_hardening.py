@@ -24,7 +24,31 @@ def test_profile_update_duplicate_email_wrong_password_and_password_change(
         },
         headers=headers,
     )
-    assert wrong.status_code == 401
+    assert wrong.status_code == 400
+    assert wrong.json()["detail"] == "Current password is incorrect."
+    assert client.get("/api/v1/auth/me").status_code == 200
+    too_short_profile_password = client.patch(
+        "/api/v1/auth/profile",
+        json={
+            "full_name": "Elena Torres",
+            "email": "elena.updated@demo.local",
+            "current_password": "x",
+        },
+        headers=headers,
+    )
+    assert too_short_profile_password.status_code == 422
+    assert too_short_profile_password.json()["detail"][0]["ctx"]["min_length"] == 8
+    invalid_email = client.patch(
+        "/api/v1/auth/profile",
+        json={
+            "full_name": "Elena Torres",
+            "email": "not-an-email",
+            "current_password": "demo-test-password",
+        },
+        headers=headers,
+    )
+    assert invalid_email.status_code == 422
+    assert "Enter a valid internal email address" in invalid_email.json()["detail"][0]["msg"]
     duplicate = client.patch(
         "/api/v1/auth/profile",
         json={
@@ -35,6 +59,7 @@ def test_profile_update_duplicate_email_wrong_password_and_password_change(
         headers=headers,
     )
     assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "That login email is already in use."
     updated = client.patch(
         "/api/v1/auth/profile",
         json={
@@ -47,6 +72,43 @@ def test_profile_update_duplicate_email_wrong_password_and_password_change(
     assert updated.status_code == 200
     assert updated.json()["user"]["full_name"] == "Elena Updated"
     assert updated.json()["user"]["email"] == "elena.updated@demo.local"
+    wrong_password_change = client.post(
+        "/api/v1/auth/change-password",
+        json={
+            "current_password": "wrong-password",
+            "new_password": "new-secure-demo-password",
+            "confirm_new_password": "new-secure-demo-password",
+        },
+        headers=headers,
+    )
+    assert wrong_password_change.status_code == 400
+    assert wrong_password_change.json()["detail"] == "Current password is incorrect."
+    assert client.get("/api/v1/auth/me").status_code == 200
+    short_new_password = client.post(
+        "/api/v1/auth/change-password",
+        json={
+            "current_password": "demo-test-password",
+            "new_password": "short",
+            "confirm_new_password": "short",
+        },
+        headers=headers,
+    )
+    assert short_new_password.status_code == 422
+    assert short_new_password.json()["detail"][0]["ctx"]["min_length"] == 12
+    mismatched_passwords = client.post(
+        "/api/v1/auth/change-password",
+        json={
+            "current_password": "demo-test-password",
+            "new_password": "new-secure-demo-password",
+            "confirm_new_password": "different-secure-password",
+        },
+        headers=headers,
+    )
+    assert mismatched_passwords.status_code == 422
+    assert (
+        "New password and confirmation do not match."
+        in mismatched_passwords.json()["detail"][0]["msg"]
+    )
     changed = client.post(
         "/api/v1/auth/change-password",
         json={

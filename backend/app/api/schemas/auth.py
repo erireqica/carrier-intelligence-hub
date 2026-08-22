@@ -19,7 +19,7 @@ class LoginRequest(BaseModel):
 
 class ProfileUpdateRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=200)
-    email: str = Field(min_length=3, max_length=320)
+    email: InternalEmail = Field(max_length=320)
     current_password: str | None = Field(default=None, min_length=8, max_length=256)
 
     @field_validator("full_name")
@@ -30,11 +30,6 @@ class ProfileUpdateRequest(BaseModel):
             raise ValueError("Full name must contain at least two characters")
         return normalized
 
-    @field_validator("email")
-    @classmethod
-    def normalize_profile_email(cls, value: str) -> str:
-        return normalize_email(value)
-
 
 class PasswordChangeRequest(BaseModel):
     current_password: str = Field(min_length=8, max_length=256)
@@ -44,7 +39,7 @@ class PasswordChangeRequest(BaseModel):
     @model_validator(mode="after")
     def passwords_match(self) -> PasswordChangeRequest:
         if self.new_password != self.confirm_new_password:
-            raise ValueError("New passwords do not match")
+            raise ValueError("New password and confirmation do not match.")
         return self
 
 

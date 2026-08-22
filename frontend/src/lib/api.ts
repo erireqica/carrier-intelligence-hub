@@ -11,6 +11,7 @@ import type {
   Dashboard,
   GmailConnectionsResponse,
   GmailMessage,
+  GmailMessageListResponse,
   GmailSyncResult,
   HumanAnalysisInput,
   MessageAnalysis,
@@ -43,6 +44,65 @@ export function setCsrfToken(token: string | null) {
   csrfToken = token
 }
 
+type ValidationErrorDetail = {
+  ctx?: { min_length?: number }
+  loc?: Array<number | string>
+  message?: string
+  msg?: string
+  type?: string
+}
+
+const fieldLabels: Record<string, string> = {
+  confirm_new_password: 'Confirm new password',
+  current_password: 'Current password',
+  email: 'Login email',
+  full_name: 'Full name',
+  new_password: 'New password',
+  password: 'Password',
+}
+
+function finishSentence(message: string) {
+  return /[.!?]$/.test(message) ? message : `${message}.`
+}
+
+function validationErrorMessage(detail: ValidationErrorDetail) {
+  const field = [...(detail.loc ?? [])]
+    .reverse()
+    .find((part): part is string => typeof part === 'string')
+  const label = field ? fieldLabels[field] : undefined
+  const minimum = detail.ctx?.min_length
+  if (detail.type === 'string_too_short' && label && minimum) {
+    return `${label} must be at least ${minimum} characters.`
+  }
+  if (detail.type === 'missing' && label) return `${label} is required.`
+  const message = detail.message ?? detail.msg
+  if (!message) return null
+  return finishSentence(message.replace(/^Value error,\s*/i, ''))
+}
+
+export function parseApiErrorMessage(body: unknown) {
+  if (!body || typeof body !== 'object' || !('detail' in body)) return null
+  const detail = (body as { detail?: unknown }).detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    for (const item of detail) {
+      if (item && typeof item === 'object') {
+        const message = validationErrorMessage(item as ValidationErrorDetail)
+        if (message) return message
+      }
+    }
+    return null
+  }
+  if (detail && typeof detail === 'object') {
+    return validationErrorMessage(detail as ValidationErrorDetail)
+  }
+  return null
+}
+
+export function isInvalidSessionResponse(path: string, status: number) {
+  return status === 401 && path !== '/auth/login'
+}
+
 async function apiRequest<T>(
   path: string,
   options: RequestInit = {},
@@ -67,19 +127,13 @@ async function apiRequest<T>(
   if (!response.ok) {
     let message = 'The request could not be completed.'
     try {
-      const body = (await response.json()) as {
-        detail?: string | { message?: string }
-      }
-      if (typeof body.detail === 'string') message = body.detail
-      else if (body.detail) {
-        if (body.detail.message) message = body.detail.message
-      }
+      const parsedMessage = parseApiErrorMessage(await response.json())
+      if (parsedMessage) message = parsedMessage
     } catch {
       // The safe generic message is used for non-JSON errors.
     }
     if (
-      response.status === 401 &&
-      path !== '/auth/login' &&
+      isInvalidSessionResponse(path, response.status) &&
       window.location.pathname !== '/login'
     ) {
       setCsrfToken(null)
@@ -138,6 +192,10 @@ export const getCases = (params = '') =>
     `/cases${params ? `?${params}` : ''}`,
   )
 export const getCase = (id: string) => apiRequest<CaseDetail>(`/cases/${id}`)
+export const dismissCase = (id: number) =>
+  apiRequest<CaseDetail>(`/cases/${id}/dismiss`, { method: 'POST' })
+export const restoreCase = (id: number) =>
+  apiRequest<CaseDetail>(`/cases/${id}/restore`, { method: 'POST' })
 export const correctCase = (id: number, data: CaseCorrectionInput) =>
   apiRequest<CaseDetail>(`/cases/${id}/correction`, {
     method: 'PATCH',
@@ -178,18 +236,27 @@ export const processMessage = (id: number) =>
   apiRequest<MessageProcessingResult>(`/carrier-messages/${id}/process`, {
     method: 'POST',
   })
-export const applyReviewAnalysis = (id: number, data: HumanAnalysisInput) =>
-  apiRequest<MessageProcessingResult>(`/reviews/${id}/apply-analysis`, {
-    method: 'POST',
-    body: JSON.stringify(data),
-  })
+export const applyReviewAnalysis = (
+  id: number,
+  data: HumanAnalysisInput,
+  selectedCaseId?: number,
+) =>
+  apiRequest<MessageProcessingResult>(
+    `/reviews/${id}/apply-analysis${selectedCaseId ? `?selected_case_id=${selectedCaseId}` : ''}`,
+    {
+      method: 'POST',
+      body: JSON.stringify(data),
+    },
+  )
 export const dismissReviewAnalysis = (id: number, resolutionNotes?: string) =>
   apiRequest<MessageProcessingResult>(`/reviews/${id}/dismiss-analysis`, {
     method: 'POST',
     body: JSON.stringify({ resolution_notes: resolutionNotes ?? null }),
   })
-export const getGmailConnections = () =>
-  apiRequest<GmailConnectionsResponse>('/gmail-connections')
+export const getGmailConnections = (page = 1) =>
+  apiRequest<GmailConnectionsResponse>(
+    `/gmail-connections?page=${page}&page_size=5`,
+  )
 export const startGmailOAuth = (reconnectConnectionId?: number) =>
   apiRequest<{ authorization_url: string }>('/gmail/oauth/start', {
     method: 'POST',
@@ -210,8 +277,10 @@ export const disconnectGmailConnection = (connectionId: number) =>
   apiRequest<{ message: string }>(`/gmail-connections/${connectionId}`, {
     method: 'DELETE',
   })
-export const getGmailMessages = (connectionId: number) =>
-  apiRequest<GmailMessage[]>(`/gmail-connections/${connectionId}/messages`)
+export const getGmailMessages = (connectionId: number, page = 1) =>
+  apiRequest<GmailMessageListResponse | GmailMessage[]>(
+    `/gmail-connections/${connectionId}/messages?page=${page}&page_size=8`,
+  )
 export function redirectToOAuth(authorizationUrl: string) {
   window.location.assign(authorizationUrl)
 }

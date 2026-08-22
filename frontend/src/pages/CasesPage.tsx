@@ -3,12 +3,14 @@ import { type FormEvent, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import {
+  Badge,
   Button,
   EmptyState,
   ErrorState,
   Input,
   LoadingState,
   PageHeader,
+  Pagination,
   PriorityBadge,
   StatusBadge,
 } from '../components/ui'
@@ -21,12 +23,14 @@ export function CasesPage() {
   const [status, setStatus] = useState('')
   const [priority, setPriority] = useState('')
   const [page, setPage] = useState(1)
-  const params = new URLSearchParams({ page: String(page), page_size: '20' })
+  const [includeDismissed, setIncludeDismissed] = useState(false)
+  const params = new URLSearchParams({ page: String(page), page_size: '10' })
   if (search) params.set('search', search)
   if (status) params.set('policy_status', status)
   if (priority) params.set('priority', priority)
+  if (includeDismissed) params.set('include_dismissed', 'true')
   const cases = useQuery({
-    queryKey: ['cases', search, status, priority, page],
+    queryKey: ['cases', search, status, priority, includeDismissed, page],
     queryFn: () => getCases(params.toString()),
   })
   function submit(event: FormEvent) {
@@ -45,7 +49,7 @@ export function CasesPage() {
       <PageHeader
         eyebrow="Policy operations"
         title="Cases"
-        description="Ongoing policy records, separated from the carrier communications that update them."
+        description="Active policy work created from approved carrier communications."
       />
       <form
         onSubmit={submit}
@@ -127,6 +131,17 @@ export function CasesPage() {
           )}
         </div>
       </form>
+      <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
+        <input
+          type="checkbox"
+          checked={includeDismissed}
+          onChange={(event) => {
+            setIncludeDismissed(event.target.checked)
+            setPage(1)
+          }}
+        />
+        Include dismissed cases
+      </label>
       {cases.data.items.length === 0 ? (
         <EmptyState
           title={
@@ -167,6 +182,11 @@ export function CasesPage() {
                       {item.policy_number ?? 'Policy number pending'}
                       {item.needs_review ? ' · Needs review' : ''}
                     </p>
+                    {item.dismissed_at && (
+                      <span className="mt-2 inline-flex">
+                        <Badge tone="red">DISMISSED</Badge>
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-4">{item.carrier.name}</td>
                   <td className="px-4 py-4">
@@ -187,32 +207,12 @@ export function CasesPage() {
           </table>
         </div>
       )}
-      {cases.data.page.pages > 1 && (
-        <nav
-          className="flex items-center justify-between text-sm"
-          aria-label="Case pagination"
-        >
-          <span>
-            Page {cases.data.page.page} of {cases.data.page.pages}
-          </span>
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              disabled={page === 1}
-              onClick={() => setPage((value) => value - 1)}
-            >
-              Previous
-            </Button>
-            <Button
-              variant="secondary"
-              disabled={page === cases.data.page.pages}
-              onClick={() => setPage((value) => value + 1)}
-            >
-              Next
-            </Button>
-          </div>
-        </nav>
-      )}
+      <Pagination
+        page={cases.data.page.page}
+        pages={cases.data.page.pages}
+        onPageChange={setPage}
+        label="Case pagination"
+      />
     </div>
   )
 }

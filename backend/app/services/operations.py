@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, status
 from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import case as sql_case
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -67,6 +68,10 @@ def page_info(page: int, page_size: int, total: int) -> PageInfo:
     )
 
 
+def valid_page(page: int, page_size: int, total: int) -> int:
+    return min(page, max(1, math.ceil(total / page_size)))
+
+
 def agent_brief(user: User) -> AgentBrief:
     return AgentBrief(id=user.id, full_name=user.full_name, email=user.email)
 
@@ -99,7 +104,7 @@ def task_item(task: Task, agency_timezone: str) -> TaskItem:
     )
 
 
-def case_item(case: PolicyCase, agency_timezone: str) -> CaseListItem:
+def case_item(case: PolicyCase, agency_timezone: str, current: AuthContext) -> CaseListItem:
     return CaseListItem(
         id=case.id,
         client_name=case.client_name,
@@ -113,6 +118,10 @@ def case_item(case: PolicyCase, agency_timezone: str) -> CaseListItem:
         assigned_agent=agent_brief(case.assigned_agent) if case.assigned_agent else None,
         needs_review=any(
             item.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW} for item in case.reviews
+        ),
+        dismissed_at=case.dismissed_at,
+        can_manage_lifecycle=(
+            current.user.role is UserRole.AGENT and case.assigned_agent_id == current.user.id
         ),
     )
 
@@ -151,8 +160,11 @@ def list_cases(
     policy_status: PolicyStatus | None,
     priority: Priority | None,
     assigned_agent_id: int | None,
+    include_dismissed: bool,
 ) -> CaseListResponse:
     query = scoped_cases_query(current)
+    if not include_dismissed:
+        query = query.where(PolicyCase.dismissed_at.is_(None))
     if search:
         term = f"%{search.strip()}%"
         query = query.where(
@@ -168,6 +180,7 @@ def list_cases(
         query = query.where(PolicyCase.assigned_agent_id == assigned_agent_id)
 
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    page = valid_page(page, page_size, total)
     cases = db.scalars(
         query.options(
             joinedload(PolicyCase.carrier),
@@ -179,9 +192,43 @@ def list_cases(
         .limit(page_size)
     ).all()
     return CaseListResponse(
-        items=[case_item(case, current.agency.timezone) for case in cases],
+        items=[case_item(case, current.agency.timezone, current) for case in cases],
         page=page_info(page, page_size, total),
     )
+
+
+def set_case_dismissed(
+    db: Session, current: AuthContext, case_id: int, *, dismissed: bool
+) -> CaseDetail:
+    if current.user.role is not UserRole.AGENT:
+        raise HTTPException(
+            status_code=403, detail="Case lifecycle is managed by its assigned agent"
+        )
+    case = db.scalar(
+        select(PolicyCase).where(
+            PolicyCase.id == case_id,
+            PolicyCase.agency_id == current.user.agency_id,
+            PolicyCase.assigned_agent_id == current.user.id,
+        )
+    )
+    if case is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if dismissed == (case.dismissed_at is not None):
+        return get_case_detail(db, current, case.id)
+    case.dismissed_at = utc_now() if dismissed else None
+    case.dismissed_by_user_id = current.user.id if dismissed else None
+    record_audit_event(
+        db,
+        agency_id=case.agency_id,
+        actor_user_id=current.user.id,
+        case_id=case.id,
+        event_type="CASE_DISMISSED" if dismissed else "CASE_RESTORED",
+        description="Case dismissed from active work"
+        if dismissed
+        else "Case restored to active work",
+    )
+    db.commit()
+    return get_case_detail(db, current, case.id)
 
 
 def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDetail:
@@ -207,7 +254,7 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
         .order_by(AuditEvent.created_at.desc())
         .limit(30)
     ).all()
-    base = case_item(case, current.agency.timezone).model_dump()
+    base = case_item(case, current.agency.timezone, current).model_dump()
     return CaseDetail(
         **base,
         premium_amount=case.premium_amount,
@@ -288,6 +335,8 @@ def assign_case(
     )
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    if case.dismissed_at is not None:
+        raise HTTPException(status_code=409, detail="Restore this case before reassigning it")
     assignee = db.scalar(
         select(User).where(
             User.id == assigned_agent_id,
@@ -344,7 +393,11 @@ def list_tasks(
     assigned_agent_id: int | None,
     task_view: str,
 ) -> TaskListResponse:
-    query = select(Task).where(Task.agency_id == current.user.agency_id)
+    query = (
+        select(Task)
+        .join(PolicyCase, Task.case_id == PolicyCase.id)
+        .where(Task.agency_id == current.user.agency_id, PolicyCase.dismissed_at.is_(None))
+    )
     if current.user.role is UserRole.AGENT:
         query = query.where(Task.assigned_agent_id == current.user.id)
     elif assigned_agent_id:
@@ -353,6 +406,10 @@ def list_tasks(
         query = query.where(Task.status == task_status)
     elif task_view == "TODO":
         query = query.where(Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]))
+    elif task_view == "OPEN":
+        query = query.where(Task.status == TaskStatus.OPEN)
+    elif task_view == "IN_PROGRESS":
+        query = query.where(Task.status == TaskStatus.IN_PROGRESS)
     elif task_view == "COMPLETED":
         query = query.where(Task.status == TaskStatus.COMPLETED)
     elif task_view == "DISMISSED":
@@ -364,9 +421,17 @@ def list_tasks(
             Task.due_at < utc_now(), Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS])
         )
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    page = valid_page(page, page_size, total)
+    status_order = sql_case(
+        (Task.status == TaskStatus.IN_PROGRESS, 0),
+        (Task.status == TaskStatus.OPEN, 1),
+        (Task.status == TaskStatus.COMPLETED, 2),
+        (Task.status == TaskStatus.DISMISSED, 3),
+        else_=4,
+    )
     tasks = db.scalars(
         query.options(joinedload(Task.case), joinedload(Task.assigned_agent))
-        .order_by(Task.due_at.asc().nullslast(), Task.created_at.desc())
+        .order_by(status_order, Task.due_at.asc().nullslast(), Task.created_at.asc(), Task.id.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     ).all()
@@ -391,6 +456,8 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found",
         )
+    if task.case.dismissed_at is not None:
+        raise HTTPException(status_code=409, detail="Restore this case before updating its tasks")
 
     previous_status = task.status
     status_changed = update.status != task.status
@@ -436,13 +503,21 @@ def list_reviews(
     query = scoped_reviews_query(current)
     if review_status:
         query = query.where(ReviewItem.status == review_status)
+        if review_status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW}:
+            query = query.where(
+                or_(ReviewItem.case_id.is_(None), PolicyCase.dismissed_at.is_(None))
+            )
     elif review_view == "ACTIONABLE":
-        query = query.where(ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]))
+        query = query.where(
+            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+            or_(ReviewItem.case_id.is_(None), PolicyCase.dismissed_at.is_(None)),
+        )
     elif review_view == "RESOLVED":
         query = query.where(ReviewItem.status == ReviewStatus.RESOLVED)
     elif review_view == "DISMISSED":
         query = query.where(ReviewItem.status == ReviewStatus.DISMISSED)
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    page = valid_page(page, page_size, total)
     reviews = (
         db.scalars(
             query.options(
@@ -463,13 +538,17 @@ def list_reviews(
 
 
 def scoped_reviews_query(current: AuthContext) -> Select[tuple[ReviewItem]]:
-    query = select(ReviewItem).where(ReviewItem.agency_id == current.user.agency_id)
+    query = (
+        select(ReviewItem)
+        .join(PolicyCase, ReviewItem.case_id == PolicyCase.id, isouter=True)
+        .where(ReviewItem.agency_id == current.user.agency_id)
+    )
     if current.user.role is not UserRole.AGENT:
         return query
 
     active_statuses = (ReviewStatus.OPEN, ReviewStatus.IN_REVIEW)
     terminal_statuses = (ReviewStatus.RESOLVED, ReviewStatus.DISMISSED)
-    return query.join(PolicyCase, ReviewItem.case_id == PolicyCase.id, isouter=True).where(
+    return query.where(
         or_(
             and_(
                 ReviewItem.status.in_(active_statuses),
@@ -528,6 +607,14 @@ def review_item_response(item: ReviewItem) -> ReviewItemResponse:
             )
         except ValueError:
             proposed = None
+    ownership_issue = item.reason_code in {"CASE_OWNER_CONFLICT", "OPERATIONAL_OWNER_REQUIRED"}
+    issue_title = (
+        "Multiple cases match this message"
+        if item.reason_code == "CASE_MATCH_CONFLICT"
+        else "Case ownership requires manager attention"
+        if ownership_issue
+        else "Carrier information needs confirmation"
+    )
     return ReviewItemResponse(
         id=item.id,
         message_id=item.carrier_message_id,
@@ -550,6 +637,8 @@ def review_item_response(item: ReviewItem) -> ReviewItemResponse:
         created_at=item.created_at,
         resolved_at=item.resolved_at,
         analysis_confidence=confidence,
+        issue_title=issue_title,
+        issue_summary=item.reason,
     )
 
 
@@ -644,6 +733,17 @@ def get_review_detail(db: Session, current: AuthContext, review_id: int) -> Revi
         from app.services.message_processing import _case_candidates
 
         candidates = _case_candidates(db, item.carrier_message, proposed) if proposed else []
+        accessible_ids = set(
+            db.scalars(
+                scoped_cases_query(current)
+                .where(
+                    PolicyCase.id.in_([case.id for case in candidates]),
+                    PolicyCase.dismissed_at.is_(None),
+                )
+                .with_only_columns(PolicyCase.id)
+            ).all()
+        )
+        candidates = [case for case in candidates if case.id in accessible_ids]
         issues.append(
             ReviewIssue(
                 code="CASE_MATCH_CONFLICT",
@@ -739,6 +839,8 @@ def correct_case(
     )
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
+    if case.dismissed_at is not None:
+        raise HTTPException(status_code=409, detail="Restore this case before correcting it")
     if correction.policy_number:
         conflict = db.scalar(
             select(PolicyCase.id).where(

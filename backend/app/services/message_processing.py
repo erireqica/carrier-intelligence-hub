@@ -1783,10 +1783,28 @@ def _human_review_case(
     review: ReviewItem,
     message: CarrierMessage,
     result: AnalysisResult,
+    selected_case_id: int | None = None,
 ) -> tuple[PolicyCase | None, set[str]]:
     """Resolve a human-reviewed result without applying Gmail handoff semantics."""
     blockers: set[str] = set()
     linked_case = review.case
+    if selected_case_id is not None:
+        from app.services.operations import scoped_cases_query
+
+        selected = db.scalar(
+            scoped_cases_query(current).where(
+                PolicyCase.id == selected_case_id,
+                PolicyCase.dismissed_at.is_(None),
+            )
+        )
+        candidate_ids = {case.id for case in _case_candidates(db, message, result)}
+        if selected is None or selected.id not in candidate_ids:
+            blockers.add("CASE_OWNER_CONFLICT")
+            return selected, blockers
+        review.case_id = selected.id
+        review.assigned_reviewer_id = selected.assigned_agent_id
+        message.case_id = selected.id
+        return selected, blockers
     matched_case = _case_for_result(db, message, result)
 
     if linked_case is not None:
@@ -1973,6 +1991,7 @@ def apply_review(
     current: AuthContext,
     review_id: int,
     correction: HumanAnalysisInput,
+    selected_case_id: int | None = None,
 ) -> ProcessingResult:
     from app.services.operations import get_review_item
 
@@ -1984,6 +2003,8 @@ def apply_review(
     get_review_item(db, current, review_id)
     review = db.get(ReviewItem, review_id)
     assert review is not None
+    if review.case is not None and review.case.dismissed_at is not None:
+        raise HTTPException(status_code=409, detail="Restore this case before resolving its review")
     if review.status in {ReviewStatus.RESOLVED, ReviewStatus.DISMISSED}:
         raise HTTPException(status_code=409, detail="This review is already finalized")
     message = _load_message(db, review.carrier_message_id)
@@ -2026,7 +2047,20 @@ def apply_review(
     )
     validated = _retain_only_verified_human_evidence(validated)
     blocking = post_human_review_blocking_flags(validated.flags)
-    case, ownership_blockers = _human_review_case(db, current, review, message, validated.result)
+    if selected_case_id is not None and (
+        review.reason_code != "CASE_MATCH_CONFLICT" or review.case_id is not None
+    ):
+        raise HTTPException(status_code=422, detail="A case selection is not valid for this review")
+    if selected_case_id is not None:
+        blocking.discard("CASE_MATCH_CONFLICT")
+    if review.reason_code == "CASE_MATCH_CONFLICT" and selected_case_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Select the matching case before applying this review",
+        )
+    case, ownership_blockers = _human_review_case(
+        db, current, review, message, validated.result, selected_case_id
+    )
     blocking.update(ownership_blockers)
     if original is not None and "CASE_OWNER_CONFLICT" in original.validation_flags:
         blocking.add("CASE_OWNER_CONFLICT")

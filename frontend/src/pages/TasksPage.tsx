@@ -7,6 +7,7 @@ import {
   ErrorState,
   LoadingState,
   PageHeader,
+  Pagination,
   PriorityBadge,
   StatusBadge,
 } from '../components/ui'
@@ -14,7 +15,8 @@ import { businessDaysFromToday, formatBusinessDate } from '../lib/format'
 import { getAgents, getTasks, updateTask } from '../lib/api'
 import type { TaskStatus } from '../lib/types'
 
-type TaskView = 'TODO' | 'COMPLETED' | 'DISMISSED' | 'ALL'
+type TaskView =
+  'TODO' | 'IN_PROGRESS' | 'OPEN' | 'COMPLETED' | 'DISMISSED' | 'ALL'
 
 function dueState(dueAt: string | null, status: TaskStatus, timezone: string) {
   if (!dueAt || ['COMPLETED', 'DISMISSED'].includes(status)) return null
@@ -36,12 +38,17 @@ export function TasksPage() {
   const [priority, setPriority] = useState('')
   const [overdue, setOverdue] = useState(false)
   const [agentId, setAgentId] = useState('')
-  const params = new URLSearchParams({ page_size: '100', view })
+  const [page, setPage] = useState(1)
+  const params = new URLSearchParams({
+    page_size: '10',
+    page: String(page),
+    view,
+  })
   if (priority) params.set('priority', priority)
   if (overdue) params.set('overdue', 'true')
   if (agentId) params.set('assigned_agent_id', agentId)
   const tasks = useQuery({
-    queryKey: ['tasks', view, priority, overdue, agentId],
+    queryKey: ['tasks', view, priority, overdue, agentId, page],
     queryFn: () => getTasks(params.toString()),
   })
   const agents = useQuery({
@@ -79,30 +86,31 @@ export function TasksPage() {
             : 'Your current policy follow-up work.'
         }
       />
-      <div className="flex flex-wrap gap-2" aria-label="Task views">
-        {(
-          [
-            ['TODO', 'To do'],
-            ['COMPLETED', 'Completed'],
-            ['DISMISSED', 'Dismissed'],
-            ['ALL', 'All'],
-          ] as const
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            className={`border px-4 py-2 text-sm font-semibold ${view === value ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
-            onClick={() => setView(value)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
       <div className="flex flex-wrap gap-3 border border-slate-200 bg-white p-4">
+        <select
+          aria-label="Task status"
+          className="border border-slate-300 bg-white px-3 py-2 text-sm"
+          value={view}
+          onChange={(event) => {
+            setView(event.target.value as TaskView)
+            setPage(1)
+          }}
+        >
+          <option value="TODO">To do</option>
+          <option value="IN_PROGRESS">In progress</option>
+          <option value="OPEN">Open</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="DISMISSED">Dismissed</option>
+          <option value="ALL">All statuses</option>
+        </select>
         <select
           aria-label="Task priority"
           className="border border-slate-300 bg-white px-3 py-2 text-sm"
           value={priority}
-          onChange={(event) => setPriority(event.target.value)}
+          onChange={(event) => {
+            setPriority(event.target.value)
+            setPage(1)
+          }}
         >
           <option value="">All priorities</option>
           {['URGENT', 'HIGH', 'NORMAL', 'LOW'].map((value) => (
@@ -114,7 +122,10 @@ export function TasksPage() {
             aria-label="Assigned agent"
             className="border border-slate-300 bg-white px-3 py-2 text-sm"
             value={agentId}
-            onChange={(event) => setAgentId(event.target.value)}
+            onChange={(event) => {
+              setAgentId(event.target.value)
+              setPage(1)
+            }}
           >
             <option value="">All agents</option>
             {eligibleAgents?.map((agent) => (
@@ -128,7 +139,10 @@ export function TasksPage() {
           <input
             type="checkbox"
             checked={overdue}
-            onChange={(event) => setOverdue(event.target.checked)}
+            onChange={(event) => {
+              setOverdue(event.target.checked)
+              setPage(1)
+            }}
           />{' '}
           Overdue only
         </label>
@@ -214,6 +228,12 @@ export function TasksPage() {
           {statusMutation.error.message}
         </p>
       )}
+      <Pagination
+        page={tasks.data.page.page}
+        pages={tasks.data.page.pages}
+        onPageChange={setPage}
+        label="Task pagination"
+      />
     </div>
   )
 }

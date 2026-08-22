@@ -9,6 +9,7 @@ import {
   ErrorState,
   LoadingState,
   PageHeader,
+  Pagination,
   StatusBadge,
 } from '../components/ui'
 import { formatDate } from '../lib/format'
@@ -62,9 +63,10 @@ const labelSyncText: Record<string, string> = {
 
 function RecentMessages({ connectionId }: { connectionId: number }) {
   const queryClient = useQueryClient()
+  const [page, setPage] = useState(1)
   const messages = useQuery({
-    queryKey: ['gmail-connections', connectionId, 'messages'],
-    queryFn: () => getGmailMessages(connectionId),
+    queryKey: ['gmail-connections', connectionId, 'messages', page],
+    queryFn: () => getGmailMessages(connectionId, page),
   })
   const process = useMutation({
     mutationFn: (messageId: number) => processMessage(messageId),
@@ -87,7 +89,18 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
         Recent messages could not be loaded.
       </p>
     )
-  if (!messages.data.length)
+  const messageItems = Array.isArray(messages.data)
+    ? messages.data
+    : messages.data.items
+  const messagePage = Array.isArray(messages.data)
+    ? {
+        page: 1,
+        pages: 1,
+        page_size: messageItems.length,
+        total: messageItems.length,
+      }
+    : messages.data.page
+  if (!messageItems.length)
     return (
       <p className="mt-4 text-sm text-slate-500">
         No approved carrier messages have been ingested from this inbox yet.
@@ -109,7 +122,7 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
-          {messages.data.map((message) => (
+          {messageItems.map((message) => (
             <tr key={message.id}>
               <td className="px-3 py-3">{formatDate(message.received_at)}</td>
               <td className="px-3 py-3">{message.carrier.name}</td>
@@ -195,6 +208,14 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
           {process.error.message}
         </p>
       )}
+      <div className="mt-4">
+        <Pagination
+          page={messagePage.page}
+          pages={messagePage.pages}
+          onPageChange={setPage}
+          label="Ingested carrier message pagination"
+        />
+      </div>
     </div>
   )
 }
@@ -316,19 +337,21 @@ function ConnectionCard({
           </dd>
         </div>
       </dl>
-      {connection.can_apply_workflow_labels ? (
+      {connection.can_apply_workflow_labels &&
+      (connection.pending_label_sync_count > 0 ||
+        connection.failed_label_sync_count > 0) ? (
         <p className="mt-4 border border-green-200 bg-green-50 p-3 text-sm text-green-950">
           Workflow labels ready · {connection.pending_label_sync_count} pending
           · {connection.failed_label_sync_count} need attention
         </p>
-      ) : (
+      ) : !connection.can_apply_workflow_labels ? (
         <p className="mt-4 border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
           Connected for ingestion. Workflow labels require a permission upgrade.
           {connection.is_owner
             ? ' Use Upgrade permissions above.'
             : ' The mailbox owner must reconnect.'}
         </p>
-      )}
+      ) : null}
       {connection.status === 'NEEDS_REAUTH' && (
         <p className="mt-4 border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
           Google authorization is no longer valid. Reconnect this inbox.
@@ -357,7 +380,7 @@ function ConnectionCard({
         onToggle={(event) => setMessagesOpen(event.currentTarget.open)}
       >
         <summary className="cursor-pointer text-sm font-semibold text-slate-700">
-          Recent ingested carrier messages
+          Ingested carrier messages
         </summary>
         {messagesOpen && <RecentMessages connectionId={connection.id} />}
       </details>
@@ -369,12 +392,13 @@ export function GmailConnectionsPage() {
   const auth = useCurrentUser()
   const [searchParams, setSearchParams] = useSearchParams()
   const [oauthResult] = useState(() => searchParams.get('oauth'))
+  const [page, setPage] = useState(1)
   useEffect(() => {
     if (searchParams.has('oauth')) setSearchParams({}, { replace: true })
   }, [searchParams, setSearchParams])
   const connections = useQuery({
-    queryKey: ['gmail-connections'],
-    queryFn: getGmailConnections,
+    queryKey: ['gmail-connections', page],
+    queryFn: () => getGmailConnections(page),
   })
   const connect = useMutation({
     mutationFn: () => startGmailOAuth(),
@@ -457,6 +481,14 @@ export function GmailConnectionsPage() {
             />
           ))}
         </div>
+      )}
+      {connections.data.page && (
+        <Pagination
+          page={connections.data.page.page}
+          pages={connections.data.page.pages}
+          onPageChange={setPage}
+          label="Gmail connection pagination"
+        />
       )}
       {isManager && (
         <p className="text-xs text-slate-500">
