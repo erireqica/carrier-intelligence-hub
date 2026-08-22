@@ -371,6 +371,71 @@ def test_strong_analysis_creates_case_tasks_evidence_and_is_idempotent(
     assert analysis.model_result_json == analysis.final_result_json
 
 
+def test_reprocessing_reconciles_stale_tasks_and_replaces_evidence(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Retry Reconciliation",
+        policy="RETRY-RECONCILE-1",
+        subject_suffix="retry-reconciliation",
+    )
+    initial = analysis_result(client="Retry Reconciliation", policy="RETRY-RECONCILE-1")
+    second_action = ActionItem(
+        title="Confirm receipt with carrier",
+        description="Confirm the carrier received the authorization.",
+        priority=Priority.NORMAL,
+        explicit_due_date=None,
+        due_text=None,
+    )
+    initial = initial.model_copy(
+        update={
+            "action_items": [*initial.action_items, second_action],
+            "evidence": [
+                *initial.evidence,
+                Evidence(
+                    field_name="action_item:1",
+                    source_id="email",
+                    excerpt="signed authorization within 10 business days",
+                ),
+            ],
+        }
+    )
+    process_message(seeded_db, message.id, analyzer=FakeAnalyzer(initial))
+    first_evidence_ids = set(
+        seeded_db.scalars(
+            select(CaseEvidence.id).where(CaseEvidence.carrier_message_id == message.id)
+        ).all()
+    )
+    message.processing_status = ProcessingStatus.FAILED
+    message.last_processing_error_code = "MATERIALIZATION_FAILED"
+    seeded_db.commit()
+
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(
+            analysis_result(client="Retry Reconciliation", policy="RETRY-RECONCILE-1")
+        ),
+    )
+
+    tasks = seeded_db.scalars(
+        select(Task)
+        .where(Task.source_carrier_message_id == message.id)
+        .order_by(Task.source_action_index)
+    ).all()
+    evidence = seeded_db.scalars(
+        select(CaseEvidence).where(CaseEvidence.carrier_message_id == message.id)
+    ).all()
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert [(task.source_action_index, task.status) for task in tasks] == [
+        (0, TaskStatus.OPEN),
+        (1, TaskStatus.DISMISSED),
+    ]
+    assert len(evidence) == 5
+    assert first_evidence_ids.isdisjoint({item.id for item in evidence})
+
+
 def test_pdf_attachment_is_downloaded_in_memory_extracted_and_joined_to_source(
     seeded_db: Session,
 ) -> None:

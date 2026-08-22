@@ -63,6 +63,8 @@ const baseMessage: GmailMessage = {
   review_id: null,
   can_open_review: false,
   last_processing_error_code: null,
+  processing_failure_reason: null,
+  processing_retry_state: null,
   processing_attempt_count: 0,
   processing_next_retry_at: null,
   label_sync_status: 'PENDING',
@@ -269,6 +271,8 @@ describe('GmailConnectionsPage', () => {
         processing_status: 'FAILED',
         processing_attempt_count: 1,
         processing_next_retry_at: '2026-08-20T09:10:00Z',
+        processing_failure_reason: 'The AI service did not respond in time.',
+        processing_retry_state: 'AUTOMATIC_RETRY_SCHEDULED',
         label_sync_status: 'RETRY_WAIT',
       },
       {
@@ -277,7 +281,9 @@ describe('GmailConnectionsPage', () => {
         subject: 'Exhausted retry message',
         processing_status: 'FAILED',
         processing_attempt_count: 3,
-        last_processing_error_code: 'AI_PROVIDER_ERROR',
+        last_processing_error_code: 'AI_TIMEOUT',
+        processing_failure_reason: 'The AI service did not respond in time.',
+        processing_retry_state: 'AUTOMATIC_RETRIES_EXHAUSTED',
         label_sync_status: 'FAILED',
       },
       {
@@ -324,6 +330,11 @@ describe('GmailConnectionsPage', () => {
     fireEvent.click(await screen.findByText('Ingested carrier messages'))
     expect(await screen.findByText('Analyzing…')).toBeInTheDocument()
     expect(screen.getByText('Retry scheduled')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Automatic retries exhausted. Manual retry is available.',
+      ),
+    ).toBeInTheDocument()
     expect(screen.getByText('Updating labels…')).toBeInTheDocument()
     expect(screen.getByText('Label retry scheduled')).toBeInTheDocument()
     expect(screen.getByText('Labels need attention')).toBeInTheDocument()
@@ -346,9 +357,50 @@ describe('GmailConnectionsPage', () => {
       screen.queryByRole('button', { name: 'Analyze now' }),
     ).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('Sync manually'))
+    fireEvent.click(screen.getByText('Manual retry'))
     fireEvent.click(screen.getByRole('button', { name: 'Retry analysis' }))
     await waitFor(() => expect(processMessage).toHaveBeenCalledWith(24))
+  })
+
+  it('shows analysis progress and a safe API error during manual recovery', async () => {
+    vi.mocked(getGmailConnections).mockResolvedValue({
+      configured: true,
+      connections: [baseConnection],
+    })
+    vi.mocked(getGmailMessages).mockResolvedValue([
+      {
+        ...baseMessage,
+        processing_status: 'FAILED',
+        last_processing_error_code: 'MATERIALIZATION_FAILED',
+        processing_failure_reason:
+          'Analysis completed, but the case or tasks could not be saved safely.',
+        processing_retry_state: 'MANUAL_RECOVERY_REQUIRED',
+      },
+    ])
+    let rejectRetry: ((error: Error) => void) | undefined
+    vi.mocked(processMessage).mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejectRetry = reject
+        }),
+    )
+    renderPage()
+
+    fireEvent.click(await screen.findByText('Ingested carrier messages'))
+    expect(
+      await screen.findByText(
+        'Analysis completed, but the case or tasks could not be saved safely.',
+      ),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Manual retry'))
+    fireEvent.click(screen.getByRole('button', { name: 'Retry analysis' }))
+    await waitFor(() =>
+      expect(screen.getAllByText('Analyzing…')).toHaveLength(2),
+    )
+    rejectRetry?.(new Error('Analysis retry could not be started.'))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Analysis retry could not be started.',
+    )
   })
 
   it('shows OAuth callback feedback and keeps manager actions read-only', async () => {

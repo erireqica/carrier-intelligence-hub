@@ -313,6 +313,8 @@ class GmailMessageListItem(BaseModel):
     review_id: int | None
     can_open_review: bool
     last_processing_error_code: str | None
+    processing_failure_reason: str | None
+    processing_retry_state: str | None
     processing_attempt_count: int
     processing_next_retry_at: datetime | None
     label_sync_status: GmailLabelSyncStatus | None

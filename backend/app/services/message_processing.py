@@ -60,6 +60,7 @@ from app.processing.validation import (
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
 from app.services.gmail_labels import enqueue_for_message
+from app.services.processing_failures import RETRYABLE_PROCESSING_CODES
 
 MailboxFactory = Callable[[GmailOAuthCredential], tuple[GmailMailbox, bool]]
 
@@ -162,14 +163,6 @@ GENERIC_MACHINE_SIGNALS = frozenset(
         "EVIDENCE_MISMATCH",
     }
 )
-RETRYABLE_PROCESSING_CODES = {
-    "AI_RATE_LIMITED",
-    "AI_TIMEOUT",
-    "AI_TRANSIENT_FAILURE",
-    "AI_SERVICE_UNAVAILABLE",
-    "ATTACHMENT_DOWNLOAD_FAILED",
-    "STALE_PROCESSING_RECOVERED",
-}
 
 
 def _load_message(db: Session, message_id: int) -> CarrierMessage | None:
@@ -1179,13 +1172,18 @@ def _finalize(
         assigned_agent_id = _active_agent_id(db, case.assigned_agent_id)
         if assigned_agent_id is None:
             raise RuntimeError("No task assignee is available")
+        source_tasks = db.scalars(
+            select(Task).where(Task.source_carrier_message_id == message.id)
+        ).all()
+        source_tasks_by_index = {
+            task.source_action_index: task
+            for task in source_tasks
+            if task.source_action_index is not None
+        }
+        current_action_indexes: set[int] = set()
         for index, action in enumerate(result.action_items):
-            task = db.scalar(
-                select(Task).where(
-                    Task.source_carrier_message_id == message.id,
-                    Task.source_action_index == index,
-                )
-            )
+            current_action_indexes.add(index)
+            task = source_tasks_by_index.get(index)
             if task is None and action.title in MISSING_INFO_TASK_TITLES:
                 task = db.scalar(
                     select(Task).where(
@@ -1211,6 +1209,35 @@ def _finalize(
                 )
                 db.add(task)
                 tasks_created += 1
+            elif task.status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+                task.case_id = case.id
+                task.assigned_agent_id = assigned_agent_id
+                task.title = action.title
+                task.description = action.description
+                task.priority = action.priority
+                task.due_at = _action_due_at(
+                    action.explicit_due_date, validated.deadline_at, agency.timezone
+                )
+
+        stale_tasks = [
+            task
+            for task in source_tasks
+            if task.source_action_index not in current_action_indexes
+            and task.status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}
+        ]
+        for task in stale_tasks:
+            task.status = TaskStatus.DISMISSED
+        if stale_tasks:
+            record_audit_event(
+                db,
+                agency_id=message.agency_id,
+                actor_user_id=actor_user_id,
+                case_id=case.id,
+                carrier_message_id=message.id,
+                event_type="STALE_SOURCE_TASKS_DISMISSED",
+                description="Stale source-linked tasks were dismissed during reconciliation",
+                metadata={"task_ids": [task.id for task in stale_tasks]},
+            )
 
         existing_evidence = db.scalars(
             select(CaseEvidence).where(CaseEvidence.carrier_message_id == message.id)

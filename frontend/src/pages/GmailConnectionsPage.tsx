@@ -122,85 +122,109 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
-          {messageItems.map((message) => (
-            <tr key={message.id}>
-              <td className="px-3 py-3">{formatDate(message.received_at)}</td>
-              <td className="px-3 py-3">{message.carrier.name}</td>
-              <td className="px-3 py-3">{message.sender}</td>
-              <td className="px-3 py-3 font-medium">{message.subject}</td>
-              <td className="px-3 py-3">
-                <StatusBadge status={message.processing_status} />
-                {message.processing_status === 'FAILED' && (
-                  <p className="mt-1 max-w-48 text-xs text-slate-500">
-                    {message.processing_next_retry_at
-                      ? `Automatic retry scheduled after attempt ${message.processing_attempt_count}`
-                      : 'Automatic retries exhausted. Manual attention required.'}
-                  </p>
-                )}
-              </td>
-              <td className="px-3 py-3 text-xs text-slate-600">
-                {message.label_sync_status
-                  ? labelSyncText[message.label_sync_status]
-                  : 'Not queued'}
-              </td>
-              <td className="px-3 py-3">{message.attachment_count}</td>
-              <td className="px-3 py-3">
-                {message.review_id && message.can_open_review ? (
-                  <Link
-                    className="font-semibold text-blue-700"
-                    to={`/reviews/${message.review_id}`}
-                  >
-                    Review
-                  </Link>
-                ) : message.case_id && message.can_open_case ? (
-                  <Link
-                    className="font-semibold text-blue-700"
-                    to={`/cases/${message.case_id}`}
-                  >
-                    Open case
-                  </Link>
-                ) : message.case_id ? (
-                  <div>
-                    <span className="font-medium text-slate-700">
-                      Managed by{' '}
-                      {message.case_assigned_agent?.full_name ??
-                        'another agent'}
-                    </span>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Case assigned to another agent
+          {messageItems.map((message) => {
+            const isRetrying =
+              process.isPending && process.variables === message.id
+            return (
+              <tr key={message.id}>
+                <td className="px-3 py-3">{formatDate(message.received_at)}</td>
+                <td className="px-3 py-3">{message.carrier.name}</td>
+                <td className="px-3 py-3">{message.sender}</td>
+                <td className="px-3 py-3 font-medium">{message.subject}</td>
+                <td className="px-3 py-3">
+                  <StatusBadge
+                    status={
+                      isRetrying ? 'PROCESSING' : message.processing_status
+                    }
+                  />
+                  {isRetrying ? (
+                    <p className="mt-1 max-w-48 text-xs text-slate-500">
+                      Analyzing…
                     </p>
-                  </div>
-                ) : message.processing_status === 'RECEIVED' ? (
-                  <span className="text-slate-500">Queued for analysis</span>
-                ) : message.processing_status === 'PROCESSING' ? (
-                  <span className="text-slate-500">Analyzing…</span>
-                ) : message.processing_status === 'FAILED' &&
-                  message.processing_next_retry_at ? (
-                  <span className="text-slate-500">Retry scheduled</span>
-                ) : message.processing_status === 'FAILED' ? (
-                  <details>
-                    <summary className="cursor-pointer text-xs font-semibold text-slate-600">
-                      Sync manually
-                    </summary>
-                    <Button
-                      className="mt-2"
-                      variant="secondary"
-                      onClick={() => process.mutate(message.id)}
-                      disabled={process.isPending}
+                  ) : message.processing_status === 'FAILED' ? (
+                    <p className="mt-1 max-w-48 text-xs text-slate-500">
+                      {message.processing_failure_reason}
+                      <span className="mt-1 block">
+                        {message.processing_retry_state ===
+                        'AUTOMATIC_RETRY_SCHEDULED'
+                          ? `Automatic retry scheduled after attempt ${message.processing_attempt_count}.`
+                          : message.processing_retry_state ===
+                              'AUTOMATIC_RETRIES_EXHAUSTED'
+                            ? 'Automatic retries exhausted. Manual retry is available.'
+                            : message.processing_retry_state ===
+                                'REAUTHORIZATION_REQUIRED'
+                              ? 'Reconnect Gmail to resume analysis.'
+                              : 'Manual retry is required.'}
+                      </span>
+                    </p>
+                  ) : null}
+                </td>
+                <td className="px-3 py-3 text-xs text-slate-600">
+                  {message.label_sync_status
+                    ? labelSyncText[message.label_sync_status]
+                    : 'Not queued'}
+                </td>
+                <td className="px-3 py-3">{message.attachment_count}</td>
+                <td className="px-3 py-3">
+                  {isRetrying ? (
+                    <span className="text-slate-500">Analyzing…</span>
+                  ) : message.review_id && message.can_open_review ? (
+                    <Link
+                      className="font-semibold text-blue-700"
+                      to={`/reviews/${message.review_id}`}
                     >
-                      {process.isPending && process.variables === message.id
-                        ? 'Retrying…'
-                        : 'Retry analysis'}
-                    </Button>
-                  </details>
-                ) : message.processing_status === 'NEEDS_REVIEW' ? (
-                  <span className="text-slate-500">Review required</span>
-                ) : (
-                  <span className="text-slate-500">Processing…</span>
-                )}
-              </td>
-            </tr>
-          ))}
+                      Review
+                    </Link>
+                  ) : message.case_id && message.can_open_case ? (
+                    <Link
+                      className="font-semibold text-blue-700"
+                      to={`/cases/${message.case_id}`}
+                    >
+                      Open case
+                    </Link>
+                  ) : message.case_id ? (
+                    <div>
+                      <span className="font-medium text-slate-700">
+                        Managed by{' '}
+                        {message.case_assigned_agent?.full_name ??
+                          'another agent'}
+                      </span>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Case assigned to another agent
+                      </p>
+                    </div>
+                  ) : message.processing_status === 'RECEIVED' ? (
+                    <span className="text-slate-500">Queued for analysis</span>
+                  ) : message.processing_status === 'PROCESSING' ? (
+                    <span className="text-slate-500">Analyzing…</span>
+                  ) : message.processing_status === 'FAILED' &&
+                    message.processing_next_retry_at ? (
+                    <span className="text-slate-500">Retry scheduled</span>
+                  ) : message.processing_status === 'FAILED' &&
+                    message.processing_retry_state !==
+                      'REAUTHORIZATION_REQUIRED' ? (
+                    <details>
+                      <summary className="cursor-pointer text-xs font-semibold text-slate-600">
+                        Manual retry
+                      </summary>
+                      <Button
+                        className="mt-2"
+                        variant="secondary"
+                        onClick={() => process.mutate(message.id)}
+                        disabled={process.isPending}
+                      >
+                        Retry analysis
+                      </Button>
+                    </details>
+                  ) : message.processing_status === 'NEEDS_REVIEW' ? (
+                    <span className="text-slate-500">Review required</span>
+                  ) : (
+                    <span className="text-slate-500">Processing…</span>
+                  )}
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
       {process.error && (

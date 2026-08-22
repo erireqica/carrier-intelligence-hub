@@ -26,8 +26,16 @@ from app.integrations.gmail.oauth import (
     OAuthTokenSet,
 )
 from app.models.carriers import Carrier
-from app.models.enums import GmailConnectionStatus, ProcessingStatus
-from app.models.operations import CarrierMessage
+from app.models.enums import (
+    CaseAssignmentSource,
+    GmailConnectionStatus,
+    PolicyStatus,
+    Priority,
+    ProcessingStatus,
+    ReviewStatus,
+    TaskStatus,
+)
+from app.models.operations import CarrierMessage, PolicyCase, ReviewItem, Task
 from app.models.organization import (
     GmailConnection,
     GmailOAuthCredential,
@@ -478,7 +486,7 @@ def test_missing_scope_is_rejected_without_persisting_credentials(
     assert db.scalar(select(func.count()).select_from(GmailOAuthCredential)) == 0
 
 
-def test_reconnect_preserves_refresh_token_and_disconnected_address_can_be_reused(
+def test_reconnect_preserves_refresh_token_and_disconnected_mailbox_is_transferred(
     client: TestClient, db: Session, login, configured_google, monkeypatch
 ) -> None:
     fake = FakeOAuthClient(gmail_address="reconnect@gmail.test")
@@ -520,34 +528,92 @@ def test_reconnect_preserves_refresh_token_and_disconnected_address_can_be_reuse
 
     other_owner = db.scalar(select(User).where(User.email == "agent.two@demo.local"))
     assert other_owner is not None
+    historical_connection = GmailConnection(
+        agency_id=other_owner.agency_id,
+        user_id=other_owner.id,
+        gmail_address="owned@gmail.test",
+        status=GmailConnectionStatus.DISCONNECTED,
+    )
+    db.add(historical_connection)
+    db.flush()
     db.add(
-        GmailConnection(
-            agency_id=other_owner.agency_id,
-            user_id=other_owner.id,
-            gmail_address="owned@gmail.test",
-            status=GmailConnectionStatus.DISCONNECTED,
+        GmailOAuthCredential(
+            gmail_connection_id=historical_connection.id,
+            encrypted_refresh_token=TokenCipher.from_settings().encrypt(
+                "former-owner-refresh-token"
+            ),
+            granted_scopes=[GMAIL_MODIFY_SCOPE],
         )
     )
     db.commit()
-    historical_connection = db.scalar(
-        select(GmailConnection).where(GmailConnection.gmail_address == "owned@gmail.test")
-    )
     carrier = db.scalar(select(Carrier).where(Carrier.name == "Americo"))
-    assert historical_connection is not None and carrier is not None
-    db.add(
-        CarrierMessage(
-            agency_id=other_owner.agency_id,
-            carrier_id=carrier.id,
-            gmail_connection_id=historical_connection.id,
-            gmail_message_id="historical-owned-message",
-            sender="alerts@americo.com",
-            subject="Historical mailbox message",
-            received_at=utc_now(),
-            processing_status=ProcessingStatus.RECEIVED,
-            raw_content="Historical synthetic content.",
-            cleaned_content="Historical synthetic content.",
-        )
+    manager = db.scalar(select(User).where(User.email == "manager@demo.local"))
+    assert historical_connection is not None and carrier is not None and manager is not None
+    case = PolicyCase(
+        agency_id=other_owner.agency_id,
+        carrier_id=carrier.id,
+        assigned_agent_id=manager.id,
+        assignment_source=CaseAssignmentSource.MANAGER,
+        client_name="Mailbox Handoff",
+        policy_number="HANDOFF-001",
+        current_policy_status=PolicyStatus.ISSUED,
+        priority=Priority.NORMAL,
+        summary="Synthetic handoff case.",
     )
+    message = CarrierMessage(
+        agency_id=other_owner.agency_id,
+        carrier_id=carrier.id,
+        gmail_connection_id=historical_connection.id,
+        gmail_message_id="historical-owned-message",
+        sender="alerts@americo.com",
+        subject="Historical mailbox message",
+        received_at=utc_now(),
+        processing_status=ProcessingStatus.RECEIVED,
+        raw_content="Historical synthetic content.",
+        cleaned_content="Historical synthetic content.",
+        case=case,
+    )
+    db.add_all([case, message])
+    db.flush()
+    open_task = Task(
+        agency_id=other_owner.agency_id,
+        case_id=case.id,
+        source_carrier_message_id=message.id,
+        source_action_index=0,
+        assigned_agent_id=manager.id,
+        title="Active mailbox work",
+        priority=Priority.NORMAL,
+        status=TaskStatus.OPEN,
+    )
+    completed_task = Task(
+        agency_id=other_owner.agency_id,
+        case_id=case.id,
+        assigned_agent_id=manager.id,
+        title="Historical mailbox work",
+        priority=Priority.NORMAL,
+        status=TaskStatus.COMPLETED,
+        completed_at=utc_now(),
+    )
+    open_review = ReviewItem(
+        agency_id=other_owner.agency_id,
+        case_id=case.id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=manager.id,
+        status=ReviewStatus.OPEN,
+        reason_code="HANDOFF_TEST",
+        reason="Synthetic active review.",
+    )
+    resolved_review = ReviewItem(
+        agency_id=other_owner.agency_id,
+        case_id=case.id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=manager.id,
+        status=ReviewStatus.RESOLVED,
+        reason_code="HANDOFF_HISTORY_TEST",
+        reason="Synthetic historical review.",
+        resolved_at=utc_now(),
+    )
+    db.add_all([open_task, completed_task, open_review, resolved_review])
     db.commit()
     fake.tokens = OAuthTokenSet(
         access_token="access",
@@ -568,20 +634,22 @@ def test_reconnect_preserves_refresh_token_and_disconnected_address_can_be_reuse
         .where(GmailConnection.gmail_address == "owned@gmail.test")
         .order_by(GmailConnection.id)
     ).all()
-    assert len(reused_connections) == 2
-    assert reused_connections[0].status is GmailConnectionStatus.DISCONNECTED
-    assert reused_connections[0].user_id == other_owner.id
-    assert reused_connections[1].status is GmailConnectionStatus.CONNECTED
-    assert reused_connections[1].user_id == auth["user"]["id"]
-    assert (
-        client.get(f"/api/v1/gmail-connections/{reused_connections[0].id}/messages").status_code
-        == 404
+    assert len(reused_connections) == 1
+    reused = reused_connections[0]
+    assert reused.id == historical_connection.id
+    assert reused.status is GmailConnectionStatus.CONNECTED
+    assert reused.user_id == auth["user"]["id"]
+    replacement_credential = db.scalar(
+        select(GmailOAuthCredential).where(GmailOAuthCredential.gmail_connection_id == reused.id)
     )
-    empty_messages = client.get(
-        f"/api/v1/gmail-connections/{reused_connections[1].id}/messages"
-    ).json()
-    assert empty_messages["items"] == []
-    assert empty_messages["page"]["total"] == 0
+    assert replacement_credential is not None
+    assert (
+        TokenCipher.from_settings().decrypt(replacement_credential.encrypted_refresh_token)
+        == "refresh"
+    )
+    recent = client.get(f"/api/v1/gmail-connections/{reused.id}/messages").json()
+    assert recent["page"]["total"] == 1
+    assert recent["items"][0]["subject"] == "Historical mailbox message"
     assert (
         db.scalar(
             select(func.count())
@@ -590,6 +658,17 @@ def test_reconnect_preserves_refresh_token_and_disconnected_address_can_be_reuse
         )
         == 1
     )
+    db.refresh(case)
+    db.refresh(open_task)
+    db.refresh(completed_task)
+    db.refresh(open_review)
+    db.refresh(resolved_review)
+    assert case.assigned_agent_id == auth["user"]["id"]
+    assert case.assignment_source is CaseAssignmentSource.GMAIL_HANDOFF
+    assert open_task.assigned_agent_id == auth["user"]["id"]
+    assert open_review.assigned_reviewer_id == auth["user"]["id"]
+    assert completed_task.assigned_agent_id == manager.id
+    assert resolved_review.assigned_reviewer_id == manager.id
 
 
 def test_active_duplicate_oauth_returns_safe_dedicated_result(

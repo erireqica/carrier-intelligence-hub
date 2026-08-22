@@ -26,6 +26,7 @@ from app.integrations.gmail.crypto import TokenCipher
 from app.integrations.gmail.oauth import GMAIL_MODIFY_SCOPE, GoogleOAuthClient, OAuthTokenSet
 from app.integrations.gmail.sync import MailboxFactory, sync_connection
 from app.models.enums import (
+    CaseAssignmentSource,
     GmailConnectionStatus,
     GmailLabelSyncStatus,
     ReviewStatus,
@@ -40,6 +41,10 @@ from app.models.organization import (
 )
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
+from app.services.processing_failures import (
+    processing_retry_state,
+    safe_processing_failure_reason,
+)
 
 OAUTH_STATE_LIFETIME = timedelta(minutes=10)
 
@@ -238,12 +243,11 @@ def complete_oauth(
     gmail_address = normalize_email(tokens.gmail_address)
     existing = db.scalar(
         select(GmailConnection)
-        .options(joinedload(GmailConnection.oauth_credential))
         .where(
             GmailConnection.agency_id == current.user.agency_id,
             GmailConnection.gmail_address == gmail_address,
-            GmailConnection.status != GmailConnectionStatus.DISCONNECTED,
         )
+        .with_for_update()
     )
     target = (
         db.scalar(
@@ -263,13 +267,18 @@ def complete_oauth(
         raise LookupError("Reconnect target is unavailable")
     if target is not None and target.gmail_address != gmail_address:
         raise ValueError("Authorized Gmail account does not match the reconnect target")
-    if existing is not None and existing.user_id != current.user.id:
+    if (
+        existing is not None
+        and existing.status is not GmailConnectionStatus.DISCONNECTED
+        and existing.user_id != current.user.id
+    ):
         raise FileExistsError("This Gmail inbox is already connected to another agency user")
     if target is not None and existing is not None and target.id != existing.id:
         raise FileExistsError("This Gmail inbox is already connected")
 
     connection = target or existing
     reconnecting = connection is not None
+    former_owner_id = connection.user_id if connection is not None else None
     if connection is None:
         connection = GmailConnection(
             agency_id=current.user.agency_id,
@@ -279,6 +288,41 @@ def complete_oauth(
             status=GmailConnectionStatus.CONNECTED,
         )
         db.add(connection)
+        db.flush()
+
+    ownership_transfer = (
+        connection.status is GmailConnectionStatus.DISCONNECTED
+        and former_owner_id is not None
+        and former_owner_id != current.user.id
+    )
+    transferred_cases = transferred_tasks = transferred_reviews = 0
+    if ownership_transfer:
+        from app.services.message_processing import reconcile_case_operational_ownership
+
+        case_ids = set(
+            db.scalars(
+                select(CarrierMessage.case_id).where(
+                    CarrierMessage.gmail_connection_id == connection.id,
+                    CarrierMessage.case_id.is_not(None),
+                )
+            ).all()
+        )
+        for case in db.scalars(select(PolicyCase).where(PolicyCase.id.in_(case_ids))).all():
+            result = reconcile_case_operational_ownership(
+                db,
+                case,
+                assigned_agent_id=current.user.id,
+                assignment_source=CaseAssignmentSource.GMAIL_HANDOFF,
+                actor_user_id=current.user.id,
+            )
+            if result.previous_assignee_id != current.user.id:
+                transferred_cases += 1
+            transferred_tasks += result.active_tasks_reassigned
+            transferred_reviews += result.active_reviews_reassigned
+        connection.user_id = current.user.id
+        # A mailbox handoff installs only the new owner's fresh authorization.
+        # Never preserve a stale credential object from the former owner.
+        connection.oauth_credential = None
         db.flush()
 
     token_cipher = cipher or TokenCipher.from_settings()
@@ -315,6 +359,22 @@ def complete_oauth(
         description=("Gmail inbox reconnected" if reconnecting else "Gmail inbox connected"),
         metadata={"connection_id": connection.id},
     )
+    if ownership_transfer:
+        record_audit_event(
+            db,
+            agency_id=connection.agency_id,
+            actor_user_id=current.user.id,
+            event_type="GMAIL_MAILBOX_OWNERSHIP_TRANSFERRED",
+            description="Gmail mailbox ownership and active policy work transferred",
+            metadata={
+                "connection_id": connection.id,
+                "former_owner_id": former_owner_id,
+                "new_owner_id": current.user.id,
+                "cases_transferred": transferred_cases,
+                "active_tasks_transferred": transferred_tasks,
+                "active_reviews_transferred": transferred_reviews,
+            },
+        )
     try:
         db.commit()
     except IntegrityError as error:
@@ -461,6 +521,12 @@ def recent_messages(
             review_id=review_id,
             can_open_review=review_id in accessible_review_ids,
             last_processing_error_code=message.last_processing_error_code,
+            processing_failure_reason=safe_processing_failure_reason(
+                message.last_processing_error_code
+            ),
+            processing_retry_state=processing_retry_state(
+                message.last_processing_error_code, message.processing_next_retry_at
+            ),
             processing_attempt_count=message.processing_attempt_count,
             processing_next_retry_at=message.processing_next_retry_at,
             label_sync_status=sync_status,

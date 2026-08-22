@@ -365,6 +365,13 @@ export type GmailMessage = {
   review_id: number | null
   can_open_review: boolean
   last_processing_error_code: string | null
+  processing_failure_reason: string | null
+  processing_retry_state:
+    | 'AUTOMATIC_RETRY_SCHEDULED'
+    | 'AUTOMATIC_RETRIES_EXHAUSTED'
+    | 'MANUAL_RECOVERY_REQUIRED'
+    | 'REAUTHORIZATION_REQUIRED'
+    | null
   processing_attempt_count: number
   processing_next_retry_at: string | null
   label_sync_status: GmailLabelSyncStatus | null
