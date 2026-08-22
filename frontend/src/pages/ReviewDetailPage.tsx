@@ -289,6 +289,11 @@ export function ReviewDetailPage() {
                         <dd className="mt-1 font-medium text-slate-950">
                           {value.value}
                         </dd>
+                        {value.excerpt && (
+                          <dd className="mt-2 text-xs leading-5 text-slate-600">
+                            “{value.excerpt}”
+                          </dd>
+                        )}
                       </div>
                     ))}
                   </dl>

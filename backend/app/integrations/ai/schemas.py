@@ -4,7 +4,30 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.models.enums import MessageClassification, PolicyStatus, Priority
 
-ANALYSIS_SCHEMA_VERSION = "1"
+ANALYSIS_SCHEMA_VERSION = "3"
+
+SOURCE_FACT_FIELDS = Literal[
+    "client_name",
+    "policy_number",
+    "policy_status",
+    "classification",
+    "premium_amount",
+    "currency",
+    "effective_date",
+]
+
+INTERPRETATION_FIELDS = Literal[
+    "client_name",
+    "policy_number",
+    "policy_status",
+    "classification",
+    "premium_amount",
+    "currency",
+    "effective_date",
+    "deadline",
+    "requirement_association",
+    "case_association",
+]
 
 
 class StrictModel(BaseModel):
@@ -43,6 +66,40 @@ class Evidence(StrictModel):
     excerpt: str = Field(min_length=1, max_length=500)
 
 
+class SourceFact(StrictModel):
+    field_name: SOURCE_FACT_FIELDS
+    value: str = Field(min_length=1, max_length=200)
+    source_id: str = Field(min_length=1, max_length=100)
+    excerpt: str = Field(min_length=1, max_length=500)
+
+    @field_validator("value", "source_id", "excerpt")
+    @classmethod
+    def strip_fact_text(cls, value: str) -> str:
+        return " ".join(value.split())
+
+
+class InterpretationCandidate(StrictModel):
+    interpretation: str = Field(min_length=1, max_length=300)
+    source_id: str = Field(min_length=1, max_length=100)
+    excerpt: str = Field(min_length=1, max_length=500)
+
+    @field_validator("interpretation", "source_id", "excerpt")
+    @classmethod
+    def strip_candidate_text(cls, value: str) -> str:
+        return " ".join(value.split())
+
+
+class InterpretationAmbiguity(StrictModel):
+    field_name: INTERPRETATION_FIELDS
+    explanation: str = Field(min_length=1, max_length=500)
+    candidates: list[InterpretationCandidate] = Field(min_length=2, max_length=4)
+
+    @field_validator("explanation")
+    @classmethod
+    def strip_explanation(cls, value: str) -> str:
+        return " ".join(value.split())
+
+
 class AnalysisResult(StrictModel):
     classification: MessageClassification
     summary: str = Field(min_length=1, max_length=2_000)
@@ -57,6 +114,10 @@ class AnalysisResult(StrictModel):
     requirements: list[str] = Field(max_length=30)
     action_items: list[ActionItem] = Field(max_length=8)
     evidence: list[Evidence] = Field(max_length=40)
+    source_facts: list[SourceFact] = Field(default_factory=list, max_length=24)
+    interpretation_ambiguities: list[InterpretationAmbiguity] = Field(
+        default_factory=list, max_length=5
+    )
     overall_confidence: float = Field(ge=0, le=1)
     uncertainties: list[str] = Field(max_length=20)
 

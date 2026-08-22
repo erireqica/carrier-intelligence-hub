@@ -185,6 +185,36 @@ export type Evidence = {
   excerpt: string
 }
 
+export type SourceFact = {
+  field_name:
+    | 'client_name'
+    | 'policy_number'
+    | 'policy_status'
+    | 'classification'
+    | 'premium_amount'
+    | 'currency'
+    | 'effective_date'
+  value: string
+  source_id: string
+  excerpt: string
+}
+
+export type InterpretationCandidate = {
+  interpretation: string
+  source_id: string
+  excerpt: string
+}
+
+export type InterpretationAmbiguity = {
+  field_name:
+    | SourceFact['field_name']
+    | 'deadline'
+    | 'requirement_association'
+    | 'case_association'
+  explanation: string
+  candidates: InterpretationCandidate[]
+}
+
 export type AnalysisResult = {
   classification: MessageClassification
   summary: string
@@ -199,13 +229,19 @@ export type AnalysisResult = {
   requirements: string[]
   action_items: ActionItem[]
   evidence: Evidence[]
+  source_facts?: SourceFact[]
+  interpretation_ambiguities?: InterpretationAmbiguity[]
   overall_confidence: number
   uncertainties: string[]
 }
 
 export type HumanAnalysisInput = Omit<
   AnalysisResult,
-  'evidence' | 'overall_confidence' | 'uncertainties'
+  | 'evidence'
+  | 'source_facts'
+  | 'interpretation_ambiguities'
+  | 'overall_confidence'
+  | 'uncertainties'
 >
 
 export type MessageAnalysis = {
@@ -232,7 +268,12 @@ export type ReviewIssue = {
   message: string
   field_name: string | null
   human_resolvable: boolean
-  values: Array<{ source_id: string; source_label: string; value: string }>
+  values: Array<{
+    source_id: string
+    source_label: string
+    value: string
+    excerpt?: string | null
+  }>
 }
 
 export type ReviewDetail = ReviewItem & {

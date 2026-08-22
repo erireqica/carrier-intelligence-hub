@@ -227,6 +227,7 @@ class ReviewIssueValue(BaseModel):
     source_id: str
     source_label: str
     value: str
+    excerpt: str | None = None
 
 
 class ReviewIssue(BaseModel):

@@ -132,23 +132,27 @@ describe('ReviewDetailPage', () => {
       analysis_confidence: 0.62,
       issues: [
         {
-          code: 'POLICY_NUMBER_CONFLICT',
-          category: 'SOURCE_CONFLICT',
-          title: 'Policy number conflict',
+          code: 'INTERPRETATION_AMBIGUITY_1',
+          category: 'INTERPRETATION_AMBIGUITY',
+          title: 'More than one interpretation is plausible',
           message:
-            'The email and policy PDF contain different policy numbers. Confirm the correct value before applying.',
-          field_name: 'policy_number',
+            'The deadline may apply to either requirement. Choose the interpretation best supported by the available communication.',
+          field_name: 'requirement_association',
           human_resolvable: true,
           values: [
             {
               source_id: 'email',
               source_label: 'Email body',
-              value: 'REVIEW-100',
+              value: 'The deadline applies only to the authorization.',
+              excerpt:
+                'Please return the signed authorization within 10 business days.',
             },
             {
               source_id: 'attachment:4',
               source_label: 'PDF attachment 4',
-              value: 'REVIEW-101',
+              value: 'The deadline applies to every outstanding requirement.',
+              excerpt:
+                'Please return the signed authorization within 10 business days.',
             },
           ],
         },
@@ -202,9 +206,15 @@ describe('ReviewDetailPage', () => {
     expect(
       await screen.findByText('Check against the carrier message'),
     ).toBeInTheDocument()
-    expect(screen.getByText('Policy number conflict')).toBeInTheDocument()
+    expect(
+      screen.getByText('More than one interpretation is plausible'),
+    ).toBeInTheDocument()
     expect(screen.getByText('PDF attachment 4')).toBeInTheDocument()
-    expect(screen.getByText('REVIEW-101')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'The deadline applies to every outstanding requirement.',
+      ),
+    ).toBeInTheDocument()
     expect(screen.getByText('“Policy REVIEW-100”')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Client name'), {
       target: { value: 'Corrected Client' },

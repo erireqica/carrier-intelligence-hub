@@ -51,7 +51,7 @@ from app.models.operations import (
     Task,
 )
 from app.models.organization import User
-from app.processing.conflicts import detect_source_conflicts
+from app.processing.ambiguities import verify_interpretation_ambiguities
 from app.processing.source import build_source_bundle
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
@@ -606,37 +606,43 @@ def get_review_detail(db: Session, current: AuthContext, review_id: int) -> Revi
     item = get_review_entity(db, current, review_id)
     base = review_item_response(item)
     bundle = build_source_bundle(item.carrier_message, max_chars=get_settings().ai_max_source_chars)
-    source_conflicts = detect_source_conflicts(bundle)
+    proposed = None
+    if item.carrier_message.analysis is not None:
+        try:
+            proposed = AnalysisResult.model_validate(
+                item.carrier_message.analysis.model_result_json
+            )
+        except ValueError:
+            proposed = None
+    ambiguities = verify_interpretation_ambiguities(
+        bundle, proposed.interpretation_ambiguities if proposed else []
+    )
     issues = [
         ReviewIssue(
-            code=conflict.code,
-            category="SOURCE_CONFLICT",
-            title=conflict.title,
-            message=f"{conflict.message} Confirm the correct value before applying.",
-            field_name=conflict.field_name,
+            code=f"INTERPRETATION_AMBIGUITY_{index}",
+            category="INTERPRETATION_AMBIGUITY",
+            title="More than one interpretation is plausible",
+            message=(
+                f"{ambiguity.explanation} Choose the interpretation best supported by "
+                "the available communication."
+            ),
+            field_name=ambiguity.field_name,
             human_resolvable=True,
             values=[
                 ReviewIssueValue(
                     source_id=value.source_id,
                     source_label=value.source_label,
-                    value=value.value,
+                    value=value.interpretation,
+                    excerpt=value.excerpt,
                 )
-                for value in conflict.values
+                for value in ambiguity.candidates
             ],
         )
-        for conflict in source_conflicts
+        for index, ambiguity in enumerate(ambiguities, start=1)
     ]
     if not issues and item.reason_code == "CASE_MATCH_CONFLICT":
         from app.services.message_processing import _case_candidates
 
-        proposed = None
-        if item.carrier_message.analysis is not None:
-            try:
-                proposed = AnalysisResult.model_validate(
-                    item.carrier_message.analysis.model_result_json
-                )
-            except ValueError:
-                proposed = None
         candidates = _case_candidates(db, item.carrier_message, proposed) if proposed else []
         issues.append(
             ReviewIssue(

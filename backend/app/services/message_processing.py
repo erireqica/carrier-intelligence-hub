@@ -46,14 +46,14 @@ from app.models.operations import (
     Task,
 )
 from app.models.organization import Agency, GmailConnection, GmailOAuthCredential, User
-from app.processing.conflicts import detect_source_conflicts, unique_source_values
+from app.processing.ambiguities import verify_interpretation_ambiguities
+from app.processing.conflicts import SourceConflict, detect_source_conflicts, unique_source_values
 from app.processing.source import SourceBundle, build_source_bundle
 from app.processing.validation import (
     POLICY_CLASSIFICATIONS,
     ValidatedAnalysis,
     evidence_supports_proposed_value,
     normalize_analysis_result,
-    parse_premium,
     post_human_review_blocking_flags,
     validate_analysis,
 )
@@ -119,6 +119,9 @@ REVIEW_REASONS = {
     "POLICY_STATUS_CONFLICT": "The carrier sources contain incompatible policy statuses.",
     "EFFECTIVE_DATE_CONFLICT": "The carrier sources contain different effective dates.",
     "CASE_MATCH_CONFLICT": "The incoming message matches more than one existing case.",
+    "INTERPRETATION_AMBIGUITY": (
+        "The available source supports more than one plausible interpretation."
+    ),
 }
 
 MISSING_INFO_TASK_TITLES = frozenset(
@@ -130,6 +133,11 @@ MISSING_INFO_TASK_TITLES = frozenset(
         "Obtain policy number from carrier",
         "Obtain client name from carrier",
         "Confirm current policy status with carrier",
+        "Resolve annual premium discrepancy with carrier",
+        "Resolve premium currency discrepancy with carrier",
+        "Verify client identity with carrier",
+        "Confirm policy effective date with carrier",
+        "Verify policy number with carrier",
     }
 )
 
@@ -546,8 +554,11 @@ def _case_for_result(
 
 def _missing_information_actions(
     validated: ValidatedAnalysis,
+    disputed_fields: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[ValidatedAnalysis, set[str]]:
     result = validated.result
+    disputed_fields = set(disputed_fields) | _disputed_fields_from_actions(result.action_items)
+    result = _without_redundant_missing_actions(result, disputed_fields)
     task_titles: list[tuple[str, str]] = []
     flags = set(validated.flags)
     missing_flags = {
@@ -557,13 +568,13 @@ def _missing_information_actions(
         "PDF_NEEDS_OCR",
         "PDF_EXTRACTION_FAILED",
     }
-    if "MISSING_POLICY_NUMBER" in flags:
+    if "MISSING_POLICY_NUMBER" in flags and "policy_number" not in disputed_fields:
         task_titles.append(
             ("Obtain policy number from carrier", "Request the missing policy number.")
         )
-    if "MISSING_CLIENT_NAME" in flags:
+    if "MISSING_CLIENT_NAME" in flags and "client_name" not in disputed_fields:
         task_titles.append(("Obtain client name from carrier", "Confirm the insured's name."))
-    if "UNKNOWN_POLICY_STATUS" in flags:
+    if "UNKNOWN_POLICY_STATUS" in flags and "policy_status" not in disputed_fields:
         task_titles.append(
             ("Confirm current policy status with carrier", "Obtain the current policy status.")
         )
@@ -575,11 +586,11 @@ def _missing_information_actions(
             )
         )
     if result.classification is MessageClassification.POLICY_ISSUED:
-        if result.premium_amount is None:
+        if result.premium_amount is None and "premium_amount" not in disputed_fields:
             task_titles.append(
                 ("Obtain premium amount from carrier", "Confirm the policy premium amount.")
             )
-        if result.effective_date is None:
+        if result.effective_date is None and "effective_date" not in disputed_fields:
             task_titles.append(
                 ("Obtain policy effective date", "Confirm the policy effective date.")
             )
@@ -619,6 +630,205 @@ def _missing_information_actions(
     )
 
 
+_DISCREPANCY_TASKS = {
+    "premium_amount": (
+        "Resolve annual premium discrepancy with carrier",
+        "The carrier communication reports competing current annual premiums: {values}. "
+        "Confirm the correct amount with the carrier.",
+    ),
+    "currency": (
+        "Resolve premium currency discrepancy with carrier",
+        "The carrier communication reports competing premium currencies: {values}. "
+        "Confirm the correct currency with the carrier.",
+    ),
+    "policy_status": (
+        "Confirm current policy status with carrier",
+        "The carrier communication reports competing current policy statuses: {values}. "
+        "Confirm the authoritative status with the carrier.",
+    ),
+    "client_name": (
+        "Verify client identity with carrier",
+        "The carrier communication identifies the client differently: {values}. "
+        "Verify the correct client identity with the carrier.",
+    ),
+    "effective_date": (
+        "Confirm policy effective date with carrier",
+        "The carrier communication reports competing effective dates: {values}. "
+        "Confirm the correct date with the carrier.",
+    ),
+    "policy_number": (
+        "Verify policy number with carrier",
+        "The carrier communication reports competing policy numbers: {values}. "
+        "Verify the correct policy number with the carrier.",
+    ),
+}
+
+_REDUNDANT_MISSING_TASKS = {
+    "premium_amount": "Obtain premium amount from carrier",
+    "effective_date": "Obtain policy effective date",
+    "policy_number": "Obtain policy number from carrier",
+    "client_name": "Obtain client name from carrier",
+}
+
+
+def _operational_conflict_field(conflict: SourceConflict) -> str:
+    return "policy_status" if conflict.field_name == "classification" else conflict.field_name
+
+
+def _conflict_values(conflict: SourceConflict, result: AnalysisResult) -> str:
+    values: list[str] = []
+    for item in conflict.values:
+        value = item.value
+        if (
+            conflict.field_name == "premium_amount"
+            and result.currency
+            and not any(marker in value.upper() for marker in (result.currency, "$"))
+        ):
+            value = f"{result.currency} {value}"
+        rendered = f"{item.source_label} — {value}"
+        if rendered.casefold() not in {existing.casefold() for existing in values}:
+            values.append(rendered)
+    return "; ".join(values[:4])
+
+
+def _action_resolves_field(action: ActionItem, field_name: str) -> bool:
+    text = f"{action.title} {action.description or ''}".casefold()
+    keywords = {
+        "premium_amount": ("premium",),
+        "currency": ("currency",),
+        "policy_status": ("policy status", "current status"),
+        "client_name": ("client identity", "client name"),
+        "effective_date": ("effective date",),
+        "policy_number": ("policy number",),
+    }[field_name]
+    resolution_terms = ("discrep", "conflict", "reconcile", "verify", "confirm")
+    return any(keyword in text for keyword in keywords) and any(
+        term in text for term in resolution_terms
+    )
+
+
+def _action_declares_discrepancy(action: ActionItem, field_name: str) -> bool:
+    text = f"{action.title} {action.description or ''}".casefold()
+    keywords = {
+        "premium_amount": ("premium",),
+        "currency": ("currency",),
+        "policy_status": ("policy status", "current status"),
+        "client_name": ("client identity", "client name"),
+        "effective_date": ("effective date",),
+        "policy_number": ("policy number",),
+    }[field_name]
+    return any(keyword in text for keyword in keywords) and any(
+        term in text for term in ("discrep", "conflict", "reconcile")
+    )
+
+
+def _disputed_fields_from_actions(actions: list[ActionItem]) -> set[str]:
+    return {
+        field_name
+        for field_name in _DISCREPANCY_TASKS
+        if any(_action_declares_discrepancy(action, field_name) for action in actions)
+    }
+
+
+def _without_redundant_missing_actions(
+    result: AnalysisResult, disputed_fields: set[str] | frozenset[str]
+) -> AnalysisResult:
+    actions = [
+        action
+        for action in result.action_items
+        if not any(
+            field_name in disputed_fields and action.title == title
+            for field_name, title in _REDUNDANT_MISSING_TASKS.items()
+        )
+    ]
+    return result.model_copy(update={"action_items": actions})
+
+
+def _apply_external_discrepancies(
+    result: AnalysisResult, conflicts: tuple[SourceConflict, ...]
+) -> tuple[AnalysisResult, frozenset[str]]:
+    disputed_fields = {
+        field_name
+        for conflict in conflicts
+        if (field_name := _operational_conflict_field(conflict)) in _DISCREPANCY_TASKS
+    }
+    if not disputed_fields:
+        return result, frozenset()
+
+    actions = list(result.action_items)
+    handled_fields: set[str] = set()
+    for conflict in conflicts:
+        field_name = _operational_conflict_field(conflict)
+        if field_name not in disputed_fields or field_name in handled_fields:
+            continue
+        handled_fields.add(field_name)
+        title, description_template = _DISCREPANCY_TASKS[field_name]
+        action = ActionItem(
+            title=title,
+            description=description_template.format(values=_conflict_values(conflict, result)),
+            priority=Priority.HIGH,
+            explicit_due_date=None,
+            due_text=None,
+        )
+        matching_index = next(
+            (
+                index
+                for index, existing in enumerate(actions)
+                if _action_resolves_field(existing, field_name)
+            ),
+            None,
+        )
+        if matching_index is None:
+            actions.append(action)
+        else:
+            actions[matching_index] = action
+
+    updates: dict[str, object] = {"action_items": actions}
+    for field_name in disputed_fields:
+        if field_name == "policy_status":
+            updates[field_name] = PolicyStatus.UNKNOWN
+        else:
+            updates[field_name] = None
+    return result.model_copy(update=updates), frozenset(disputed_fields)
+
+
+def _apply_case_identity_discrepancy(validated: ValidatedAnalysis) -> ValidatedAnalysis:
+    result = validated.result
+    action = ActionItem(
+        title=_DISCREPANCY_TASKS["client_name"][0],
+        description=(
+            "The carrier communication identifies a different client than the safely matched "
+            "policy case. Verify the correct client identity with the carrier."
+        ),
+        priority=Priority.HIGH,
+        explicit_due_date=None,
+        due_text=None,
+    )
+    actions = list(result.action_items)
+    matching_index = next(
+        (
+            index
+            for index, existing in enumerate(actions)
+            if _action_resolves_field(existing, "client_name")
+        ),
+        None,
+    )
+    if matching_index is None:
+        actions.append(action)
+    else:
+        actions[matching_index] = action
+    flags = set(validated.flags)
+    flags.discard("CLIENT_MISMATCH")
+    return ValidatedAnalysis(
+        result=result.model_copy(update={"client_name": None, "action_items": actions}),
+        flags=tuple(sorted(flags)),
+        verified_evidence=validated.verified_evidence,
+        premium_amount=validated.premium_amount,
+        effective_date=validated.effective_date,
+        deadline_at=validated.deadline_at,
+    )
+
+
 def _drop_incomplete_evidence_when_source_is_deterministic(
     validated: ValidatedAnalysis, bundle: SourceBundle
 ) -> ValidatedAnalysis:
@@ -626,7 +836,7 @@ def _drop_incomplete_evidence_when_source_is_deterministic(
         return validated
     result = validated.result
     evidenced = {item.proposal.field_name for item in validated.verified_evidence}
-    deterministic = set(unique_source_values(bundle))
+    deterministic = set(unique_source_values(bundle, result.source_facts))
     critical = {
         field_name
         for field_name, value in {
@@ -681,9 +891,8 @@ def _apply_semantic_routing_policy(
 def _ground_result_from_consistent_sources(
     result: AnalysisResult, bundle: SourceBundle
 ) -> AnalysisResult:
-    values = unique_source_values(bundle)
+    values = unique_source_values(bundle, result.source_facts)
     updates: dict[str, object] = {}
-    _, _, money_error = parse_premium(result.premium_amount, result.currency)
     for field_name in (
         "client_name",
         "policy_number",
@@ -691,9 +900,7 @@ def _ground_result_from_consistent_sources(
         "currency",
         "effective_date",
     ):
-        if field_name in values and not (
-            money_error == "CURRENCY_CONFLICT" and field_name in {"premium_amount", "currency"}
-        ):
+        if field_name in values:
             updates[field_name] = values[field_name]
     if "policy_status" in values:
         updates["policy_status"] = PolicyStatus(values["policy_status"])
@@ -1141,6 +1348,8 @@ def reconcile_case_owner_conflicts(
         bundle = build_source_bundle(message, max_chars=get_settings().ai_max_source_chars)
         retained_flags = set(analysis.validation_flags) - {"CASE_OWNER_CONFLICT"}
         result = _ground_result_from_consistent_sources(result, bundle)
+        conflicts = detect_source_conflicts(bundle, result.source_facts)
+        result, disputed_fields = _apply_external_discrepancies(result, conflicts)
         validated = validate_analysis(
             result,
             bundle,
@@ -1148,13 +1357,15 @@ def reconcile_case_owner_conflicts(
             confidence_threshold=get_settings().ai_auto_apply_confidence_threshold,
             source_flags=retained_flags,
         )
-        conflicts = detect_source_conflicts(bundle)
         validated = _drop_incomplete_evidence_when_source_is_deterministic(validated, bundle)
-        validated, _missing_flags = _missing_information_actions(validated)
+        validated, _missing_flags = _missing_information_actions(validated, disputed_fields)
+        if validated.result.client_name and _client_key(case.client_name) != _client_key(
+            validated.result.client_name
+        ):
+            validated = _apply_case_identity_discrepancy(validated)
         flags = set(validated.flags)
-        flags.update(conflict.code for conflict in conflicts)
-        if result.client_name and _client_key(case.client_name) != _client_key(result.client_name):
-            flags.add("CLIENT_MISMATCH")
+        if verify_interpretation_ambiguities(bundle, result.interpretation_ambiguities):
+            flags.add("INTERPRETATION_AMBIGUITY")
         if flags != set(validated.flags):
             validated = ValidatedAnalysis(
                 result=validated.result,
@@ -1264,6 +1475,8 @@ def _prepare_analysis_routing(
     assert agency is not None
     normalized = normalize_analysis_result(result)
     grounded = _ground_result_from_consistent_sources(normalized, bundle)
+    conflicts = detect_source_conflicts(bundle, grounded.source_facts)
+    grounded, disputed_fields = _apply_external_discrepancies(grounded, conflicts)
     validated = validate_analysis(
         grounded,
         bundle,
@@ -1271,11 +1484,11 @@ def _prepare_analysis_routing(
         confidence_threshold=confidence_threshold,
         source_flags=source_flags,
     )
-    conflicts = detect_source_conflicts(bundle)
     validated = _drop_incomplete_evidence_when_source_is_deterministic(validated, bundle)
-    validated, _missing_flags = _missing_information_actions(validated)
+    validated, _missing_flags = _missing_information_actions(validated, disputed_fields)
     flags = set(validated.flags)
-    flags.update(conflict.code for conflict in conflicts)
+    if verify_interpretation_ambiguities(bundle, grounded.interpretation_ambiguities):
+        flags.add("INTERPRETATION_AMBIGUITY")
     candidates = _case_candidates(db, message, validated.result)
     if len(candidates) > 1:
         flags.add("CASE_MATCH_CONFLICT")
@@ -1293,7 +1506,7 @@ def _prepare_analysis_routing(
         and validated.result.client_name
         and _client_key(case.client_name) != _client_key(validated.result.client_name)
     ):
-        flags.add("CLIENT_MISMATCH")
+        validated = _apply_case_identity_discrepancy(validated)
     if (
         case is None
         and validated.result.classification not in POLICY_CLASSIFICATIONS
@@ -1678,6 +1891,81 @@ def reevaluate_stored_review(db: Session, review_id: int) -> ProcessingResult:
         actor_user_id=None,
         review=review,
     )
+
+
+def reconcile_stored_discrepancy_tasks(db: Session, message_id: int) -> int:
+    """Remove obsolete generic missing-info work when stored analysis already disputes a field."""
+    message = _load_message(db, message_id)
+    if message is None or message.analysis is None or not message.analysis.final_result_json:
+        raise ValueError("Stored finalized analysis is unavailable")
+    try:
+        result = AnalysisResult.model_validate(message.analysis.final_result_json)
+    except ValueError as error:
+        raise ValueError("Stored finalized analysis is invalid") from error
+    disputed_fields = _disputed_fields_from_actions(result.action_items)
+    if not disputed_fields:
+        return 0
+
+    actions = list(_without_redundant_missing_actions(result, disputed_fields).action_items)
+    for field_name in disputed_fields:
+        matching_index = next(
+            (
+                index
+                for index, action in enumerate(actions)
+                if _action_declares_discrepancy(action, field_name)
+            ),
+            None,
+        )
+        if matching_index is None:
+            continue
+        action = actions[matching_index]
+        title = _DISCREPANCY_TASKS[field_name][0]
+        description = action.description or ""
+        if "carrier" not in description.casefold():
+            description = f"{description.rstrip()} Confirm the correct value with the carrier."
+        actions[matching_index] = action.model_copy(
+            update={"title": title, "description": description.strip()}
+        )
+
+    corrected = result.model_copy(update={"action_items": actions})
+    message.analysis.final_result_json = corrected.model_dump(mode="json")
+    active_tasks = db.scalars(
+        select(Task).where(
+            Task.source_carrier_message_id == message.id,
+            Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+        )
+    ).all()
+    dismissed = 0
+    redundant_titles = {
+        title
+        for field_name, title in _REDUNDANT_MISSING_TASKS.items()
+        if field_name in disputed_fields
+    }
+    for task in active_tasks:
+        if task.title in redundant_titles:
+            task.status = TaskStatus.DISMISSED
+            dismissed += 1
+            continue
+        if task.source_action_index is not None and task.source_action_index < len(actions):
+            action = actions[task.source_action_index]
+            task.title = action.title
+            task.description = action.description
+            task.priority = action.priority
+
+    record_audit_event(
+        db,
+        agency_id=message.agency_id,
+        case_id=message.case_id,
+        carrier_message_id=message.id,
+        event_type="TASKS_RECONCILED",
+        description="Redundant missing-information tasks were reconciled",
+        metadata={
+            "disputed_fields": sorted(disputed_fields),
+            "tasks_dismissed": dismissed,
+        },
+    )
+    db.commit()
+    return dismissed
 
 
 def apply_review(
