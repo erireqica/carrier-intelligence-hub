@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { AlertTriangle, ChevronRight, MailX, UsersRound } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 import { useCurrentUser } from '../app/auth'
@@ -28,7 +29,7 @@ export function DashboardPage() {
   const data = dashboard.data
 
   return (
-    <div className="space-y-7">
+    <div className="app-page space-y-7">
       <PageHeader
         eyebrow={
           auth.data!.user.role === 'MANAGER'
@@ -39,20 +40,26 @@ export function DashboardPage() {
         description="Prioritized operational work from your carrier communications and assigned follow-up."
       />
       {data.gmail_health === 'NEEDS_ATTENTION' && (
-        <div className="border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
-          <strong>Gmail connection needs attention.</strong> Automatic carrier
-          monitoring is paused until the inbox is reconnected.
+        <div className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
+          <p>
+            <strong>Gmail connection needs attention.</strong> Automatic carrier
+            monitoring is paused until the inbox is reconnected.
+          </p>
         </div>
       )}
       {data.gmail_health === 'NOT_CONNECTED' && (
-        <div className="border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
-          <strong>No Gmail inbox connected.</strong> Automatic carrier
-          monitoring is inactive. Existing cases, tasks, and history remain
-          available.
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+          <MailX className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
+          <p>
+            <strong>No Gmail inbox connected.</strong> Automatic carrier
+            monitoring is inactive. Existing cases, tasks, and history remain
+            available.
+          </p>
         </div>
       )}
       <section
-        className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6"
+        className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6"
         aria-label="Operational metrics"
       >
         <Metric
@@ -75,12 +82,18 @@ export function DashboardPage() {
         <Metric label="Processed" value={data.metrics.processed_messages} />
       </section>
       {auth.data!.user.role === 'MANAGER' && (
-        <section className="border border-slate-200 bg-white">
-          <div className="border-b border-slate-200 px-5 py-4">
-            <h2 className="font-semibold">Pipeline health</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Agency-wide processing and Gmail workflow-label delivery.
-            </p>
+        <section className="surface-panel">
+          <div className="section-titlebar">
+            <div>
+              <h2 className="font-semibold">Pipeline health</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Agency-wide processing and Gmail workflow-label delivery.
+              </p>
+            </div>
+            <span className="flex items-center gap-2 text-xs font-semibold text-emerald-700">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" /> Live
+              status
+            </span>
           </div>
           <div className="grid gap-px bg-slate-200 sm:grid-cols-2 xl:grid-cols-4">
             <Metric
@@ -126,14 +139,21 @@ export function DashboardPage() {
         </section>
       )}
       {auth.data!.user.role === 'MANAGER' && data.workload.length > 0 && (
-        <section className="border border-slate-200 bg-white">
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-            <h2 className="font-semibold">Agent workload</h2>
+        <section className="surface-panel">
+          <div className="section-titlebar">
+            <div className="flex items-center gap-3">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+                <UsersRound className="h-[18px] w-[18px]" aria-hidden />
+              </span>
+              <h2 className="font-semibold">Agent workload</h2>
+            </div>
             <Link
               className="text-sm font-semibold text-blue-700"
               to="/manager/agents"
             >
-              View agents
+              <span className="inline-flex items-center gap-1">
+                View agents <ChevronRight className="h-4 w-4" aria-hidden />
+              </span>
             </Link>
           </div>
           <div className="grid divide-y divide-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-3">
@@ -142,11 +162,22 @@ export function DashboardPage() {
                 key={item.agent.id}
                 className="flex items-center justify-between px-5 py-4"
               >
-                <div>
-                  <p className="font-medium">{item.agent.full_name}</p>
-                  <p className="text-xs text-slate-500">{item.agent.email}</p>
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-xs font-bold text-slate-700">
+                    {item.agent.full_name
+                      .split(' ')
+                      .map((part) => part[0])
+                      .join('')
+                      .slice(0, 2)}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">
+                      {item.agent.full_name}
+                    </p>
+                    <p className="text-xs text-slate-500">{item.agent.email}</p>
+                  </div>
                 </div>
-                <span className="text-2xl font-semibold">
+                <span className="rounded-lg bg-slate-100 px-3 py-1.5 text-xl font-semibold">
                   {item.open_tasks}
                 </span>
               </div>
@@ -155,11 +186,13 @@ export function DashboardPage() {
         </section>
       )}
       <section className="grid items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
-        <div className="self-start border border-slate-200 bg-white">
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+        <div className="surface-panel self-start">
+          <div className="section-titlebar">
             <h2 className="font-semibold">Recent cases</h2>
             <Link className="text-sm font-semibold text-blue-700" to="/cases">
-              View all
+              <span className="inline-flex items-center gap-1">
+                View all <ChevronRight className="h-4 w-4" aria-hidden />
+              </span>
             </Link>
           </div>
           {data.recent_cases.length ? (
@@ -168,7 +201,7 @@ export function DashboardPage() {
                 <Link
                   key={item.id}
                   to={`/cases/${item.id}`}
-                  className="grid gap-2 px-5 py-4 hover:bg-slate-50 sm:grid-cols-[1fr_auto]"
+                  className="group grid gap-2 px-5 py-4 transition hover:bg-blue-50/40 sm:grid-cols-[1fr_auto]"
                 >
                   <div>
                     <p className="font-medium text-slate-950">
@@ -193,8 +226,8 @@ export function DashboardPage() {
             </p>
           )}
         </div>
-        <div className="border border-slate-200 bg-white">
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+        <div className="surface-panel">
+          <div className="section-titlebar">
             <h2 className="font-semibold">Recent activity</h2>
             <Link
               className="text-sm font-semibold text-blue-700"
@@ -204,12 +237,15 @@ export function DashboardPage() {
                   : '/activity'
               }
             >
-              View all
+              <span className="inline-flex items-center gap-1">
+                View all <ChevronRight className="h-4 w-4" aria-hidden />
+              </span>
             </Link>
           </div>
           <div className="divide-y divide-slate-100">
             {data.recent_activity.map((event) => (
-              <div key={event.id} className="px-5 py-4">
+              <div key={event.id} className="relative px-5 py-4 pl-10">
+                <span className="absolute top-5 left-5 h-2 w-2 rounded-full bg-blue-500 ring-4 ring-blue-50" />
                 <p className="text-sm font-medium text-slate-800">
                   {event.description}
                 </p>

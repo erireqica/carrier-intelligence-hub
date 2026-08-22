@@ -103,7 +103,7 @@ function ReadOnlyProposal({
   resolutionNotes: string | null
 }) {
   return (
-    <section className="space-y-5 border border-slate-200 bg-white p-5">
+    <section className="surface-panel space-y-5 p-5">
       <div>
         <h2 className="font-semibold">Confirmed analysis</h2>
         <p className="mt-1 text-sm text-slate-600">
@@ -258,7 +258,7 @@ export function ReviewDetailPage() {
   const error = apply.error ?? dismiss.error
 
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <Link className="text-sm font-semibold text-blue-700" to="/reviews">
         ← Back to review queue
       </Link>
@@ -346,7 +346,7 @@ export function ReviewDetailPage() {
         </p>
       )}
       {proposal && (
-        <section className="border border-slate-200 bg-white p-5">
+        <section className="surface-panel p-5">
           <h2 className="font-semibold">What Carrier Hub found</h2>
           <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
             {[
@@ -381,7 +381,7 @@ export function ReviewDetailPage() {
         </section>
       )}
       <section className="grid items-start gap-6 xl:grid-cols-2">
-        <div className="h-fit self-start space-y-5 border border-slate-200 bg-white p-5">
+        <div className="surface-panel h-fit self-start space-y-5 p-5">
           <div>
             <h2 className="font-semibold">Email content</h2>
             <p className="mt-1 text-sm text-slate-600">
@@ -447,7 +447,7 @@ export function ReviewDetailPage() {
             />
           ) : (
             <form
-              className="space-y-5 border border-slate-200 bg-white p-5"
+              className="surface-panel space-y-5 p-5"
               onSubmit={(event) => {
                 event.preventDefault()
                 apply.mutate()
@@ -759,7 +759,7 @@ export function ReviewDetailPage() {
             </form>
           )
         ) : (
-          <section className="space-y-5 border border-slate-200 bg-white p-5">
+          <section className="surface-panel space-y-5 p-5">
             <div>
               <h2 className="font-semibold">No structured proposal</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">

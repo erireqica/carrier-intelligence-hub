@@ -45,7 +45,7 @@ export function CasesPage() {
     )
 
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <PageHeader
         eyebrow="Policy operations"
         title="Cases"
@@ -53,7 +53,7 @@ export function CasesPage() {
       />
       <form
         onSubmit={submit}
-        className="grid gap-3 lg:grid-cols-[minmax(260px,1fr)_180px_160px_auto]"
+        className="filter-toolbar grid gap-3 lg:grid-cols-[minmax(260px,1fr)_180px_160px_auto]"
       >
         <label className="sr-only" htmlFor="case-search">
           Search cases
@@ -69,7 +69,7 @@ export function CasesPage() {
         </label>
         <select
           id="case-status"
-          className="border border-slate-300 bg-white px-3 py-2 text-sm"
+          className="px-3 py-2 text-sm"
           value={status}
           onChange={(event) => {
             setStatus(event.target.value)
@@ -96,7 +96,7 @@ export function CasesPage() {
         </label>
         <select
           id="case-priority"
-          className="border border-slate-300 bg-white px-3 py-2 text-sm"
+          className="px-3 py-2 text-sm"
           value={priority}
           onChange={(event) => {
             setPriority(event.target.value)
@@ -156,7 +156,7 @@ export function CasesPage() {
           }
         />
       ) : (
-        <div className="overflow-x-auto border border-slate-200 bg-white">
+        <div className="data-table-shell">
           <table className="w-full min-w-[900px] text-left text-sm">
             <thead className="bg-slate-50 text-xs tracking-wide text-slate-500 uppercase">
               <tr>

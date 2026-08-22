@@ -95,13 +95,13 @@ export function SystemLogsPage() {
   const resetPage = () => setPage(1)
   const timezone = auth.data!.user.agency.timezone
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <PageHeader
         eyebrow="Auditability"
         title="System Logs"
         description="Agency-wide operational and user events with safe metadata and related records."
       />
-      <div className="flex flex-wrap gap-3 border border-slate-200 bg-white p-4">
+      <div className="filter-toolbar flex flex-wrap gap-3">
         <select
           aria-label="Log severity"
           className="border border-slate-300 bg-white px-3 py-2 text-sm"
@@ -170,7 +170,7 @@ export function SystemLogsPage() {
         />
       ) : (
         <>
-          <div className="hidden overflow-x-auto border border-slate-200 bg-white md:block">
+          <div className="data-table-shell hidden md:block">
             <table className="w-full min-w-[850px] text-left text-sm">
               <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
                 <tr>
@@ -212,10 +212,7 @@ export function SystemLogsPage() {
           </div>
           <div className="space-y-3 md:hidden">
             {logs.data.items.map((item) => (
-              <article
-                key={item.id}
-                className="border border-slate-200 bg-white p-4"
-              >
+              <article key={item.id} className="surface-panel p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="font-semibold">{item.event_label}</p>

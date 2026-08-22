@@ -72,7 +72,7 @@ export function AgentsPage() {
     )
   const error = create.error ?? toggle.error ?? remove.error
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <PageHeader
         eyebrow="Agency"
         title="Agents"
@@ -85,7 +85,7 @@ export function AgentsPage() {
       />
       {showCreate && (
         <form
-          className="grid gap-4 border border-slate-200 bg-white p-5 md:grid-cols-2"
+          className="form-panel grid gap-4 p-6 md:grid-cols-2"
           onSubmit={(event) => {
             event.preventDefault()
             create.mutate(form)
@@ -108,7 +108,7 @@ export function AgentsPage() {
             <label key={field} className="text-sm font-medium">
               {label}
               <input
-                className="mt-1 w-full border border-slate-300 px-3 py-2"
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 focus:border-blue-500 focus:ring-3 focus:ring-blue-100"
                 type={type}
                 minLength={field.includes('password') ? 12 : undefined}
                 value={form[field as keyof typeof form]}
@@ -146,7 +146,7 @@ export function AgentsPage() {
           {error.message}
         </p>
       )}
-      <div className="overflow-x-auto border border-slate-200 bg-white">
+      <div className="data-table-shell">
         <table className="w-full min-w-[980px] text-left text-sm">
           <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
             <tr>

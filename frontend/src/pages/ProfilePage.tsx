@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useState } from 'react'
+import { Building2, LockKeyhole, UserRound } from 'lucide-react'
 
 import { authQueryKey, useCurrentUser } from '../app/auth'
 import { Button, Input, PageHeader, StatusBadge } from '../components/ui'
@@ -55,7 +56,7 @@ export function ProfilePage() {
   const emailChanged = email.trim().toLowerCase() !== user.email
 
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <PageHeader
         title="Profile"
         description="Update your Carrier Hub sign-in details and password."
@@ -63,7 +64,7 @@ export function ProfilePage() {
       <div className="grid items-start gap-6 xl:grid-cols-2">
         <div className="space-y-6" aria-label="Account and agency information">
           <form
-            className="space-y-5 border border-slate-200 bg-white p-5"
+            className="form-panel space-y-5 p-6"
             onSubmit={(event: FormEvent) => {
               event.preventDefault()
               setProfileValidationError(null)
@@ -79,7 +80,17 @@ export function ProfilePage() {
               profile.mutate()
             }}
           >
-            <h2 className="font-semibold">Account details</h2>
+            <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+                <UserRound className="h-[18px] w-[18px]" aria-hidden />
+              </span>
+              <div>
+                <h2 className="font-semibold">Account details</h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Your name and sign-in email
+                </p>
+              </div>
+            </div>
             <label className="block text-sm font-medium">
               Full name
               <Input
@@ -147,8 +158,13 @@ export function ProfilePage() {
               {profile.isPending ? 'Saving…' : 'Save profile'}
             </Button>
           </form>
-          <section className="border border-slate-200 bg-white p-5">
-            <h2 className="font-semibold">Agency access</h2>
+          <section className="surface-panel p-6">
+            <div className="flex items-center gap-3">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-100 text-slate-700">
+                <Building2 className="h-[18px] w-[18px]" aria-hidden />
+              </span>
+              <h2 className="font-semibold">Agency access</h2>
+            </div>
             <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2">
               {[
                 ['Role', user.role],
@@ -175,7 +191,7 @@ export function ProfilePage() {
 
         <form
           aria-label="Change password"
-          className="space-y-5 border border-slate-200 bg-white p-5"
+          className="form-panel space-y-5 p-6"
           onSubmit={(event: FormEvent) => {
             event.preventDefault()
             setPasswordValidationError(null)
@@ -200,7 +216,17 @@ export function ProfilePage() {
             password.mutate()
           }}
         >
-          <h2 className="font-semibold">Change password</h2>
+          <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+              <LockKeyhole className="h-[18px] w-[18px]" aria-hidden />
+            </span>
+            <div>
+              <h2 className="font-semibold">Change password</h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Keep your internal account secure
+              </p>
+            </div>
+          </div>
           {[
             [
               'Current password',

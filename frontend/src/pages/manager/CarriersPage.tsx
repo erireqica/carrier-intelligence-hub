@@ -119,7 +119,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
   }
 
   return (
-    <article className="border border-slate-200 bg-white">
+    <article className="surface-panel">
       <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
         {editing ? (
           <form
@@ -424,7 +424,7 @@ export function CarriersPage() {
     createMutation.mutate()
   }
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <PageHeader
         eyebrow="Agency configuration"
         title="Carriers & Whitelist"
@@ -448,7 +448,7 @@ export function CarriersPage() {
       </p>
       {showForm && (
         <form
-          className="grid gap-4 border border-slate-200 bg-white p-5 sm:grid-cols-[1fr_180px_auto]"
+          className="form-panel grid gap-4 p-6 sm:grid-cols-[1fr_180px_auto]"
           onSubmit={submit}
         >
           <label className="text-sm font-medium">

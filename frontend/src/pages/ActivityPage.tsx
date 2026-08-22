@@ -32,18 +32,18 @@ export function ActivityPage() {
       />
     )
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <PageHeader
         title="My Activity"
         description="Your recent case, task, review, Gmail, and account actions."
       />
-      <div className="flex flex-wrap items-center gap-3 border border-slate-200 bg-white p-4">
+      <div className="filter-toolbar flex flex-wrap items-center gap-3">
         <label className="text-sm font-medium" htmlFor="activity-type">
           Action type
         </label>
         <select
           id="activity-type"
-          className="border border-slate-300 bg-white px-3 py-2 text-sm"
+          className="px-3 py-2 text-sm"
           value={group}
           onChange={(event) => {
             setGroup(event.target.value)
@@ -64,7 +64,7 @@ export function ActivityPage() {
           description="Your actions will appear here as you work in Carrier Hub."
         />
       ) : (
-        <div className="divide-y divide-slate-100 border border-slate-200 bg-white">
+        <div className="surface-panel divide-y divide-slate-100">
           <div className="hidden grid-cols-[180px_1fr_180px] gap-4 bg-slate-50 px-5 py-3 text-xs font-semibold tracking-wide text-slate-500 uppercase sm:grid">
             <span>Action</span>
             <span>Details</span>
@@ -73,8 +73,9 @@ export function ActivityPage() {
           {activity.data.items.map((event) => (
             <article
               key={event.id}
-              className="grid gap-2 px-5 py-4 sm:grid-cols-[180px_1fr_180px] sm:items-start"
+              className="relative grid gap-2 px-5 py-4 pl-10 sm:grid-cols-[180px_1fr_180px] sm:items-start"
             >
+              <span className="absolute top-5 left-5 h-2 w-2 rounded-full bg-blue-500 ring-4 ring-blue-50" />
               <div>
                 <p className="font-semibold text-slate-900">
                   {event.event_label}

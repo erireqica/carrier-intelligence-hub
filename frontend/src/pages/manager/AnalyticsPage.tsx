@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { BarChart3, Paperclip } from 'lucide-react'
 
 import {
   ErrorState,
@@ -63,10 +64,11 @@ function Breakdown({
   values: Array<{ label: string; count: number; percentage: number }>
 }) {
   return (
-    <section className="border border-slate-200 bg-white">
-      <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
-        {title}
-      </h2>
+    <section className="surface-panel">
+      <div className="section-titlebar">
+        <h2 className="font-semibold">{title}</h2>
+        <BarChart3 className="h-5 w-5 text-blue-600" aria-hidden />
+      </div>
       {values.length ? (
         <dl className="space-y-4 p-5">
           {values.map((item) => (
@@ -78,12 +80,12 @@ function Breakdown({
                 </dd>
               </div>
               <div
-                className="mt-2 h-2 bg-slate-100"
+                className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"
                 role="img"
                 aria-label={`${item.label}: ${item.count}, ${item.percentage}%`}
               >
                 <div
-                  className="h-2 bg-blue-600"
+                  className="h-2 rounded-full bg-blue-600"
                   style={{ width: `${item.percentage}%` }}
                 />
               </div>
@@ -121,26 +123,29 @@ export function AnalyticsPage() {
     range,
   )
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <PageHeader
         eyebrow="Agency oversight"
         title="Analytics"
         description="Historical carrier-AI performance, processing outcomes, and document extraction quality."
       />
-      <div className="flex flex-wrap gap-2" aria-label="Analytics time range">
+      <div
+        className="filter-toolbar flex flex-wrap gap-2"
+        aria-label="Analytics time range"
+      >
         {ranges.map(([value, label]) => (
           <button
             key={value}
             type="button"
             onClick={() => setRange(value)}
-            className={`border px-3 py-2 text-sm font-medium ${range === value ? 'border-blue-700 bg-blue-700 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
+            className={`rounded-lg border px-3 py-2 text-sm font-medium ${range === value ? 'border-blue-700 bg-blue-700 text-white shadow-sm' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
           >
             {label}
           </button>
         ))}
       </div>
       <section
-        className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6"
+        className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6"
         aria-label="Historical performance metrics"
       >
         <Metric label="Carrier messages" value={data.carrier_messages} />
@@ -174,23 +179,28 @@ export function AnalyticsPage() {
           values={data.classifications}
         />
       </section>
-      <section className="border border-slate-200 bg-white">
-        <div className="border-b border-slate-200 px-5 py-4">
-          <h2 className="font-semibold">Carrier message volume over time</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Received carrier messages in the selected period.
-          </p>
+      <section className="surface-panel">
+        <div className="section-titlebar">
+          <div>
+            <h2 className="font-semibold">Carrier message volume over time</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Received carrier messages in the selected period.
+            </p>
+          </div>
+          <BarChart3 className="h-5 w-5 text-blue-600" aria-hidden />
         </div>
-        <div className="flex min-h-48 items-end gap-1 overflow-x-auto p-5">
+        <div className="flex min-h-56 items-end gap-1 overflow-x-auto bg-[linear-gradient(to_bottom,transparent_24%,#eaf0f6_25%,transparent_26%,transparent_49%,#eaf0f6_50%,transparent_51%,transparent_74%,#eaf0f6_75%,transparent_76%)] p-5 pt-8">
           {data.volume_trend.map((item, index) => (
             <div
               key={item.label}
-              className="flex min-w-5 flex-1 flex-col items-center justify-end gap-2"
+              className="group flex min-w-5 flex-1 flex-col items-center justify-end gap-2"
               aria-label={`${item.label}: ${item.count} carrier messages`}
             >
-              <span className="text-xs font-medium">{item.count}</span>
+              <span className="text-xs font-semibold text-slate-600 opacity-0 transition group-hover:opacity-100">
+                {item.count}
+              </span>
               <div
-                className="w-full bg-blue-600"
+                className="w-full rounded-t-sm bg-blue-600 transition group-hover:bg-blue-500"
                 style={{
                   height: `${Math.max(item.count ? 8 : 2, (item.count / trendMax) * 120)}px`,
                 }}
@@ -206,8 +216,8 @@ export function AnalyticsPage() {
           ))}
         </div>
       </section>
-      <section className="overflow-x-auto border border-slate-200 bg-white">
-        <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
+      <section className="data-table-shell">
+        <h2 className="border-b border-slate-200 bg-slate-50 px-5 py-4 font-semibold">
           Carrier AI performance
         </h2>
         <table className="w-full min-w-[700px] text-left text-sm">
@@ -246,10 +256,11 @@ export function AnalyticsPage() {
           </p>
         )}
       </section>
-      <section className="border border-slate-200 bg-white">
-        <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
-          Attachment processing
-        </h2>
+      <section className="surface-panel">
+        <div className="section-titlebar">
+          <h2 className="font-semibold">Attachment processing</h2>
+          <Paperclip className="h-5 w-5 text-blue-600" aria-hidden />
+        </div>
         <dl className="grid gap-px bg-slate-200 sm:grid-cols-4">
           {[
             ['PDFs processed', data.attachments.pdfs_processed],

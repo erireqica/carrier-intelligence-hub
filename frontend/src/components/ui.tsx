@@ -5,6 +5,19 @@ import type {
   ReactNode,
 } from 'react'
 import { useId, useState } from 'react'
+import {
+  Activity,
+  AlertCircle,
+  AlertTriangle,
+  CheckSquare2,
+  ChevronLeft,
+  ChevronRight,
+  ClipboardCheck,
+  Clock3,
+  Inbox,
+  LoaderCircle,
+  Mail,
+} from 'lucide-react'
 
 import type { Priority } from '../lib/types'
 
@@ -14,21 +27,30 @@ export function Button({
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?:
-    'primary' | 'secondary' | 'danger' | 'dangerSecondary' | 'success' | 'info'
+    | 'primary'
+    | 'secondary'
+    | 'danger'
+    | 'dangerSecondary'
+    | 'success'
+    | 'info'
+    | 'dark'
 }) {
   const variants = {
-    primary: 'border-slate-900 bg-slate-900 text-white hover:bg-slate-700',
-    secondary: 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50',
-    danger: 'border-red-700 bg-red-700 text-white hover:bg-red-800',
+    primary:
+      'border-blue-700 bg-blue-700 text-white shadow-sm hover:border-blue-800 hover:bg-blue-800',
+    secondary:
+      'border-slate-300 bg-white text-slate-800 shadow-sm hover:border-slate-400 hover:bg-slate-50',
+    danger: 'border-red-700 bg-red-700 text-white shadow-sm hover:bg-red-800',
     dangerSecondary:
       'border-red-700 bg-white text-red-700 hover:bg-red-50 hover:text-red-800',
     success:
-      'border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800',
-    info: 'border-blue-700 bg-blue-700 text-white hover:bg-blue-800',
+      'border-emerald-700 bg-emerald-700 text-white shadow-sm hover:bg-emerald-800',
+    info: 'border-blue-700 bg-blue-700 text-white shadow-sm hover:bg-blue-800',
+    dark: 'border-white/15 bg-white/[0.04] text-slate-200 shadow-none hover:border-white/25 hover:bg-white/[0.08]',
   }
   return (
     <button
-      className={`inline-flex min-h-10 items-center justify-center border px-4 py-2 text-sm font-semibold transition-colors focus:outline-2 focus:outline-offset-2 focus:outline-slate-900 disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${className}`}
+      className={`inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border px-4 py-2 text-sm font-semibold transition focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${className}`}
       {...props}
     />
   )
@@ -40,7 +62,7 @@ export function Input({
 }: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
-      className={`min-h-10 w-full border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-slate-600 focus:ring-2 focus:ring-slate-200 ${className}`}
+      className={`min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 shadow-xs outline-none placeholder:text-slate-400 focus:border-blue-500 focus:ring-3 focus:ring-blue-100 ${className}`}
       {...props}
     />
   )
@@ -58,18 +80,20 @@ export function PageHeader({
   action?: ReactNode
 }) {
   return (
-    <header className="flex flex-col gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-end sm:justify-between">
+    <header className="flex flex-col gap-4 border-b border-slate-200/80 pb-6 sm:flex-row sm:items-end sm:justify-between">
       <div>
         {eyebrow && (
-          <p className="text-xs font-semibold tracking-[0.12em] text-slate-500 uppercase">
+          <p className="text-[0.7rem] font-bold tracking-[0.16em] text-blue-700 uppercase">
             {eyebrow}
           </p>
         )}
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950">
+        <h1 className="mt-1.5 text-3xl font-semibold tracking-[-0.025em] text-slate-950">
           {title}
         </h1>
         {description && (
-          <p className="mt-2 max-w-3xl text-sm text-slate-600">{description}</p>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+            {description}
+          </p>
         )}
       </div>
       {action}
@@ -93,8 +117,9 @@ export function Badge({
   }
   return (
     <span
-      className={`inline-flex border px-2 py-0.5 text-xs font-semibold ${tones[tone] ?? tones.neutral}`}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[0.7rem] font-bold tracking-wide uppercase ${tones[tone] ?? tones.neutral}`}
     >
+      <span className="h-1.5 w-1.5 rounded-full bg-current opacity-65" />
       {children}
     </span>
   )
@@ -127,9 +152,13 @@ export function LoadingState({
 }) {
   return (
     <div
-      className="border border-slate-200 bg-white p-8 text-sm text-slate-600"
+      className="surface-panel flex min-h-40 items-center justify-center gap-3 p-8 text-sm font-medium text-slate-600"
       role="status"
     >
+      <LoaderCircle
+        className="h-5 w-5 animate-spin text-blue-600"
+        aria-hidden
+      />
       {label}
     </div>
   )
@@ -143,16 +172,25 @@ export function ErrorState({
   retry?: () => void
 }) {
   return (
-    <div className="border border-red-200 bg-red-50 p-5" role="alert">
-      <h2 className="font-semibold text-red-900">
-        Unable to load this information
-      </h2>
-      <p className="mt-1 text-sm text-red-800">{message}</p>
-      {retry && (
-        <Button className="mt-4" variant="secondary" onClick={retry}>
-          Try again
-        </Button>
-      )}
+    <div
+      className="flex gap-3 rounded-xl border border-red-200 bg-red-50 p-5 shadow-sm"
+      role="alert"
+    >
+      <AlertCircle
+        className="mt-0.5 h-5 w-5 shrink-0 text-red-700"
+        aria-hidden
+      />
+      <div>
+        <h2 className="font-semibold text-red-900">
+          Unable to load this information
+        </h2>
+        <p className="mt-1 text-sm text-red-800">{message}</p>
+        {retry && (
+          <Button className="mt-4" variant="secondary" onClick={retry}>
+            Try again
+          </Button>
+        )}
+      </div>
     </div>
   )
 }
@@ -167,8 +205,11 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="border border-slate-200 bg-white px-6 py-10 text-center">
-      <h2 className="font-semibold text-slate-900">{title}</h2>
+    <div className="surface-panel px-6 py-12 text-center">
+      <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-slate-100 text-slate-500">
+        <Inbox className="h-5 w-5" aria-hidden />
+      </div>
+      <h2 className="mt-4 font-semibold text-slate-900">{title}</h2>
       <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-600">
         {description}
       </p>
@@ -186,14 +227,37 @@ export function Metric({
   value: ReactNode
   attention?: boolean
 }) {
+  const normalized = label.toLowerCase()
+  const Icon = attention
+    ? AlertTriangle
+    : normalized.includes('task')
+      ? CheckSquare2
+      : normalized.includes('review')
+        ? ClipboardCheck
+        : normalized.includes('gmail') || normalized.includes('label')
+          ? Mail
+          : normalized.includes('time') || normalized.includes('oldest')
+            ? Clock3
+            : normalized.includes('processed') || normalized.includes('message')
+              ? Inbox
+              : Activity
   return (
-    <div className="border border-slate-200 bg-white p-5">
-      <p className="text-sm font-medium text-slate-600">{label}</p>
-      <p
-        className={`mt-2 text-3xl font-semibold ${attention && value ? 'text-red-700' : 'text-slate-950'}`}
-      >
-        {value}
-      </p>
+    <div className="surface-panel group p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium text-slate-600">{label}</p>
+          <p
+            className={`mt-2 text-3xl font-semibold tracking-tight ${attention && value ? 'text-red-700' : 'text-slate-950'}`}
+          >
+            {value}
+          </p>
+        </div>
+        <span
+          className={`flex h-9 w-9 items-center justify-center rounded-lg ${attention && value ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'}`}
+        >
+          <Icon className="h-[18px] w-[18px]" aria-hidden />
+        </span>
+      </div>
     </div>
   )
 }
@@ -276,7 +340,7 @@ function PaginationControls({
 
   return (
     <nav
-      className="flex items-start justify-between gap-3 text-sm"
+      className="flex items-start justify-between gap-3 text-sm text-slate-600"
       aria-label={label}
     >
       <Button
@@ -284,6 +348,7 @@ function PaginationControls({
         disabled={page <= 1}
         onClick={() => navigateTo(page - 1)}
       >
+        <ChevronLeft className="h-4 w-4" aria-hidden />
         Previous
       </Button>
       <form
@@ -294,7 +359,7 @@ function PaginationControls({
         <div className="flex items-center gap-2">
           <span>Page</span>
           <input
-            className="min-h-10 w-14 border border-slate-300 bg-white px-2 py-1 text-center text-sm text-slate-950 outline-none focus:border-slate-600 focus:ring-2 focus:ring-slate-200"
+            className="min-h-10 w-14 rounded-lg border border-slate-300 bg-white px-2 py-1 text-center text-sm font-semibold text-slate-950 outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-100"
             type="number"
             inputMode="numeric"
             min={1}
@@ -327,6 +392,7 @@ function PaginationControls({
         onClick={() => navigateTo(page + 1)}
       >
         Next
+        <ChevronRight className="h-4 w-4" aria-hidden />
       </Button>
     </nav>
   )

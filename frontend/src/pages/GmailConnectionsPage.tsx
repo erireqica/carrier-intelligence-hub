@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import { Mail, PlugZap, RefreshCw, Unplug } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 
 import { useCurrentUser } from '../app/auth'
@@ -107,7 +108,7 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
       </p>
     )
   return (
-    <div className="mt-5 overflow-x-auto">
+    <div className="data-table-shell mt-5">
       <table className="w-full min-w-[920px] text-left text-sm">
         <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
           <tr>
@@ -274,26 +275,31 @@ function ConnectionCard({
   })
   const actionError = sync.error ?? reconnect.error ?? disconnect.error
   return (
-    <article className="border border-slate-200 bg-white p-5">
+    <article className="surface-panel p-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="font-semibold">{connection.gmail_address}</h2>
-            <StatusBadge status={connection.status} />
+        <div className="flex items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-700">
+            <Mail className="h-5 w-5" aria-hidden />
+          </span>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-semibold">{connection.gmail_address}</h2>
+              <StatusBadge status={connection.status} />
+            </div>
+            {isManager ? (
+              <p className="mt-2 border-l-2 border-blue-500 pl-3 text-sm">
+                <span className="font-semibold text-slate-900">
+                  Connected agent
+                </span>
+                <br />
+                {connection.owner.full_name} · {connection.owner.email}
+              </p>
+            ) : (
+              <p className="mt-1 text-sm text-slate-500">
+                Connected {formatDate(connection.connected_at)}
+              </p>
+            )}
           </div>
-          {isManager ? (
-            <p className="mt-2 border-l-2 border-blue-500 pl-3 text-sm">
-              <span className="font-semibold text-slate-900">
-                Connected agent
-              </span>
-              <br />
-              {connection.owner.full_name} · {connection.owner.email}
-            </p>
-          ) : (
-            <p className="mt-1 text-sm text-slate-500">
-              Connected {formatDate(connection.connected_at)}
-            </p>
-          )}
         </div>
         <div className="flex flex-wrap gap-2">
           {!isManager &&
@@ -306,6 +312,7 @@ function ConnectionCard({
                 onClick={() => reconnect.mutate()}
                 disabled={reconnect.isPending || disconnect.isPending}
               >
+                <PlugZap className="h-4 w-4" aria-hidden />
                 {reconnect.isPending
                   ? 'Opening Google…'
                   : connection.can_apply_workflow_labels
@@ -321,6 +328,10 @@ function ConnectionCard({
                 onClick={() => sync.mutate()}
                 disabled={sync.isPending || disconnect.isPending}
               >
+                <RefreshCw
+                  className={`h-4 w-4 ${sync.isPending ? 'animate-spin' : ''}`}
+                  aria-hidden
+                />
                 {sync.isPending ? 'Syncing…' : 'Sync now'}
               </Button>
             )}
@@ -339,6 +350,7 @@ function ConnectionCard({
                 }}
                 disabled={disconnect.isPending || sync.isPending}
               >
+                <Unplug className="h-4 w-4" aria-hidden />
                 {disconnect.isPending ? 'Disconnecting…' : 'Disconnect'}
               </Button>
             )}
@@ -443,7 +455,7 @@ export function GmailConnectionsPage() {
     (connection) => connection.status !== 'DISCONNECTED',
   )
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <PageHeader
         title="Gmail Connections"
         description={
@@ -462,6 +474,7 @@ export function GmailConnectionsPage() {
                   : 'Google OAuth is not configured'
               }
             >
+              <PlugZap className="h-4 w-4" aria-hidden />
               {connect.isPending ? 'Opening Google…' : 'Connect Gmail'}
             </Button>
           ) : undefined

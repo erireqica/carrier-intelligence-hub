@@ -63,7 +63,7 @@ describe('AppShell navigation', () => {
   it('uses a fixed dynamic-viewport desktop shell', () => {
     const { container } = renderShell('AGENT')
     const shell = container.firstElementChild
-    expect(shell).toHaveClass('min-h-dvh', 'lg:pl-[248px]')
+    expect(shell).toHaveClass('min-h-dvh', 'lg:pl-[268px]')
     const sidebar = container.querySelector('aside')
     expect(sidebar).toHaveClass(
       'lg:fixed',

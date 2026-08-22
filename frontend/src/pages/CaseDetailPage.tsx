@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useState } from 'react'
+import { Mail, Paperclip } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 
 import { useCurrentUser } from '../app/auth'
@@ -320,7 +321,7 @@ export function CaseDetailPage() {
     (agent) => agent.role === 'AGENT' && agent.is_active,
   )
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <Link className="text-sm font-semibold text-blue-700" to="/cases">
         ← Back to cases
       </Link>
@@ -383,7 +384,7 @@ export function CaseDetailPage() {
         />
       )}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="border border-slate-200 bg-white p-4">
+        <div className="surface-panel p-4">
           <p className="text-xs font-semibold text-slate-500 uppercase">
             Policy Status
           </p>
@@ -391,7 +392,7 @@ export function CaseDetailPage() {
             {item.policy_status.replaceAll('_', ' ')}
           </p>
         </div>
-        <div className="border border-slate-200 bg-white p-4">
+        <div className="surface-panel p-4">
           <p className="text-xs font-semibold text-slate-500 uppercase">
             Assigned agent
           </p>
@@ -441,7 +442,7 @@ export function CaseDetailPage() {
           ],
           ['Effective date', formatBusinessDate(item.effective_date)],
         ].map(([label, value]) => (
-          <div key={label} className="border border-slate-200 bg-white p-4">
+          <div key={label} className="surface-panel p-4">
             <p className="text-xs font-semibold text-slate-500 uppercase">
               {label}
             </p>
@@ -451,7 +452,7 @@ export function CaseDetailPage() {
       </section>
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(300px,0.6fr)]">
         <div className="space-y-6">
-          <div className="border border-slate-200 bg-white">
+          <div className="surface-panel">
             <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
               Required actions
             </h2>
@@ -510,13 +511,26 @@ export function CaseDetailPage() {
               ))}
             </div>
           </div>
-          <div className="border border-slate-200 bg-white">
-            <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
-              Carrier communications
-            </h2>
+          <div className="surface-panel">
+            <div className="section-titlebar">
+              <div className="flex items-center gap-3">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+                  <Mail className="h-[18px] w-[18px]" aria-hidden />
+                </span>
+                <div>
+                  <h2 className="font-semibold">Carrier communications</h2>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Source messages associated with this policy
+                  </p>
+                </div>
+              </div>
+            </div>
             <div className="divide-y divide-slate-100">
               {item.messages.map((message) => (
-                <article key={message.id} className="px-5 py-5">
+                <article key={message.id} className="relative px-5 py-5 pl-14">
+                  <span className="absolute top-6 left-5 flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                    <Mail className="h-3.5 w-3.5" aria-hidden />
+                  </span>
                   <div className="flex flex-wrap items-center gap-2">
                     <StatusBadge status={message.processing_status} />
                     <span className="text-xs font-semibold text-slate-500">
@@ -575,10 +589,13 @@ export function CaseDetailPage() {
               ))}
             </div>
           </div>
-          <div className="border border-slate-200 bg-white">
-            <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
-              Attachments
-            </h2>
+          <div className="surface-panel">
+            <div className="section-titlebar">
+              <div className="flex items-center gap-3">
+                <Paperclip className="h-5 w-5 text-blue-600" aria-hidden />
+                <h2 className="font-semibold">Attachments</h2>
+              </div>
+            </div>
             {item.attachments.length ? (
               <div className="divide-y divide-slate-100">
                 {item.attachments.map((attachment) => (
@@ -634,7 +651,7 @@ export function CaseDetailPage() {
           </div>
         </div>
         <aside className="space-y-6">
-          <div className="border border-slate-200 bg-white">
+          <div className="surface-panel">
             <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
               Evidence
             </h2>
@@ -671,7 +688,7 @@ export function CaseDetailPage() {
               )}
             </div>
           </div>
-          <div className="border border-slate-200 bg-white">
+          <div className="surface-panel">
             <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
               Activity
             </h2>

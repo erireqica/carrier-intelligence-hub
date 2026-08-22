@@ -41,13 +41,16 @@ export function ReviewsPage() {
       />
     )
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <PageHeader
         eyebrow="Human verification"
         title="Review Queue"
         description="Messages that require an agent's judgment before Carrier Hub can continue."
       />
-      <div className="flex flex-wrap gap-2" aria-label="Review views">
+      <div
+        className="filter-toolbar flex flex-wrap gap-2"
+        aria-label="Review views"
+      >
         {(
           [
             ['ACTIONABLE', 'Needs attention'],
@@ -58,7 +61,7 @@ export function ReviewsPage() {
         ).map(([value, label]) => (
           <button
             key={value}
-            className={`border px-4 py-2 text-sm font-semibold ${view === value ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'}`}
+            className={`rounded-lg border px-4 py-2 text-sm font-semibold transition ${view === value ? 'border-blue-700 bg-blue-700 text-white shadow-sm' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
             onClick={() => {
               setView(value)
               setPage(1)
@@ -86,7 +89,7 @@ export function ReviewsPage() {
           {reviews.data.items.map((item) => (
             <article
               key={item.id}
-              className="border border-slate-200 bg-white p-5"
+              className="surface-panel surface-panel-interactive p-5"
             >
               <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
                 <div>
@@ -118,14 +121,14 @@ export function ReviewsPage() {
                 <div className="flex shrink-0 items-start gap-2">
                   {item.case_id && (
                     <Link
-                      className="border border-slate-300 px-3 py-2 text-sm font-semibold"
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold hover:bg-slate-50"
                       to={`/cases/${item.case_id}`}
                     >
                       Open case
                     </Link>
                   )}
                   <Link
-                    className="border border-slate-900 bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+                    className="rounded-lg border border-blue-700 bg-blue-700 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-800"
                     to={`/reviews/${item.id}`}
                   >
                     {['RESOLVED', 'DISMISSED'].includes(item.status)

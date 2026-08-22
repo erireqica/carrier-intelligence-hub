@@ -77,7 +77,7 @@ export function TasksPage() {
   const eligibleAgents = agents.data?.filter((agent) => agent.role === 'AGENT')
 
   return (
-    <div className="space-y-6">
+    <div className="app-page space-y-6">
       <PageHeader
         title="Tasks"
         description={
@@ -86,10 +86,10 @@ export function TasksPage() {
             : 'Your current policy follow-up work.'
         }
       />
-      <div className="flex flex-wrap gap-3 border border-slate-200 bg-white p-4">
+      <div className="filter-toolbar flex flex-wrap gap-3">
         <select
           aria-label="Task status"
-          className="border border-slate-300 bg-white px-3 py-2 text-sm"
+          className="px-3 py-2 text-sm"
           value={view}
           onChange={(event) => {
             setView(event.target.value as TaskView)
@@ -105,7 +105,7 @@ export function TasksPage() {
         </select>
         <select
           aria-label="Task priority"
-          className="border border-slate-300 bg-white px-3 py-2 text-sm"
+          className="px-3 py-2 text-sm"
           value={priority}
           onChange={(event) => {
             setPriority(event.target.value)
@@ -120,7 +120,7 @@ export function TasksPage() {
         {isManager && (
           <select
             aria-label="Assigned agent"
-            className="border border-slate-300 bg-white px-3 py-2 text-sm"
+            className="px-3 py-2 text-sm"
             value={agentId}
             onChange={(event) => {
               setAgentId(event.target.value)
@@ -153,7 +153,7 @@ export function TasksPage() {
           description="No tasks match this view."
         />
       ) : (
-        <div className="overflow-x-auto border border-slate-200 bg-white">
+        <div className="data-table-shell">
           <table className="w-full min-w-[900px] text-left text-sm">
             <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
               <tr>
@@ -168,7 +168,7 @@ export function TasksPage() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {tasks.data.items.map((task) => (
-                <tr key={task.id}>
+                <tr key={task.id} className="hover:bg-blue-50/30">
                   <td className="px-4 py-4 font-medium">{task.title}</td>
                   <td className="px-4 py-4">
                     {task.client_name}
@@ -197,7 +197,7 @@ export function TasksPage() {
                     <td className="px-4 py-4">
                       <select
                         aria-label={`Update ${task.title}`}
-                        className="border border-slate-300 bg-white px-2 py-1.5"
+                        className="px-2 py-1.5"
                         value={task.status}
                         disabled={statusMutation.isPending}
                         onChange={(event) =>
