@@ -10,6 +10,7 @@ from app.api.schemas.domain import (
     CaseDetail,
     CaseListResponse,
     DashboardResponse,
+    ManualTaskCreate,
     ReviewItemResponse,
     ReviewListResponse,
     ReviewUpdate,
@@ -118,6 +119,13 @@ def get_tasks(
         assigned_agent_id=assigned_agent_id,
         task_view=task_view,
     )
+
+
+@router.post("/cases/{case_id}/tasks", response_model=TaskItem, status_code=201)
+def create_manual_task(
+    case_id: int, data: ManualTaskCreate, current: CsrfUser, db: DbSession
+) -> TaskItem:
+    return operations_service.create_manual_task(db, current, case_id, data)
 
 
 @router.patch("/tasks/{task_id}", response_model=TaskItem)

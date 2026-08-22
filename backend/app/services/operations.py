@@ -1,5 +1,5 @@
 import math
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, status
@@ -18,6 +18,7 @@ from app.api.schemas.domain import (
     CaseListItem,
     CaseListResponse,
     EvidenceItem,
+    ManualTaskCreate,
     MessageAnalysisResponse,
     MessageItem,
     PageInfo,
@@ -106,9 +107,23 @@ def task_item(task: Task, agency_timezone: str) -> TaskItem:
         priority=task.priority,
         due_at=business_date(task.due_at, agency_timezone),
         status=task.status,
+        created_at=task.created_at,
         completed_at=task.completed_at,
         assigned_agent=agent_brief(task.assigned_agent),
+        is_manual=task.created_by_user_id is not None,
+        created_by=agent_brief(task.created_by) if task.created_by else None,
+        completed_by=agent_brief(task.completed_by) if task.completed_by else None,
     )
+
+
+def task_due_at(value: date | None, timezone_name: str) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        timezone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        timezone = UTC
+    return datetime.combine(value, time(17, 0), timezone).astimezone(UTC)
 
 
 def case_item(case: PolicyCase, agency_timezone: str, current: AuthContext) -> CaseListItem:
@@ -246,6 +261,8 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
             selectinload(PolicyCase.messages).selectinload(CarrierMessage.attachments),
             selectinload(PolicyCase.messages).joinedload(CarrierMessage.analysis),
             selectinload(PolicyCase.tasks).joinedload(Task.assigned_agent),
+            selectinload(PolicyCase.tasks).joinedload(Task.created_by),
+            selectinload(PolicyCase.tasks).joinedload(Task.completed_by),
             selectinload(PolicyCase.evidence).joinedload(CaseEvidence.attachment),
         )
     )
@@ -434,7 +451,12 @@ def list_tasks(
         else_=4,
     )
     tasks = db.scalars(
-        query.options(joinedload(Task.case), joinedload(Task.assigned_agent))
+        query.options(
+            joinedload(Task.case),
+            joinedload(Task.assigned_agent),
+            joinedload(Task.created_by),
+            joinedload(Task.completed_by),
+        )
         .order_by(status_order, Task.due_at.asc().nullslast(), Task.created_at.asc(), Task.id.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -445,10 +467,66 @@ def list_tasks(
     )
 
 
+def create_manual_task(
+    db: Session,
+    current: AuthContext,
+    case_id: int,
+    data: ManualTaskCreate,
+) -> TaskItem:
+    if current.user.role is not UserRole.AGENT:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent access required")
+    case = db.scalar(
+        select(PolicyCase).where(
+            PolicyCase.id == case_id,
+            PolicyCase.agency_id == current.user.agency_id,
+            PolicyCase.assigned_agent_id == current.user.id,
+        )
+    )
+    if case is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
+    if case.dismissed_at is not None:
+        raise HTTPException(status_code=409, detail="Restore this case before adding tasks")
+
+    task = Task(
+        agency_id=case.agency_id,
+        case_id=case.id,
+        assigned_agent_id=current.user.id,
+        created_by_user_id=current.user.id,
+        title=data.title,
+        description=data.description,
+        priority=data.priority,
+        due_at=task_due_at(data.due_date, current.agency.timezone),
+        status=TaskStatus.OPEN,
+    )
+    db.add(task)
+    db.flush()
+    record_audit_event(
+        db,
+        agency_id=case.agency_id,
+        actor_user_id=current.user.id,
+        case_id=case.id,
+        task_id=task.id,
+        event_type="TASK_CREATED_MANUALLY",
+        description=f'{current.user.full_name} added task "{task.title}"',
+        metadata={
+            "origin": "MANUAL",
+            "priority": task.priority.value,
+            "due_date": data.due_date.isoformat() if data.due_date else None,
+        },
+    )
+    db.commit()
+    return task_item(task, current.agency.timezone)
+
+
 def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpdate) -> TaskItem:
     task = db.scalar(
         select(Task)
-        .options(joinedload(Task.case), joinedload(Task.assigned_agent))
+        .options(
+            joinedload(Task.case),
+            joinedload(Task.assigned_agent),
+            joinedload(Task.created_by),
+            joinedload(Task.completed_by),
+        )
         .where(Task.id == task_id, Task.agency_id == current.user.agency_id)
     )
     if task is None:
@@ -469,6 +547,9 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
     if status_changed:
         task.status = update.status
         task.completed_at = utc_now() if update.status is TaskStatus.COMPLETED else None
+        task.completed_by_user_id = (
+            current.user.id if update.status is TaskStatus.COMPLETED else None
+        )
 
     if status_changed:
         record_audit_event(

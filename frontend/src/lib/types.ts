@@ -89,8 +89,19 @@ export type TaskItem = {
   priority: Priority
   due_at: string | null
   status: TaskStatus
+  created_at: string
   completed_at: string | null
   assigned_agent: AgentBrief
+  is_manual: boolean
+  created_by: AgentBrief | null
+  completed_by: AgentBrief | null
+}
+
+export type ManualTaskInput = {
+  title: string
+  description: string | null
+  priority: Priority
+  due_date: string | null
 }
 
 export type ActivityItem = {

@@ -15,6 +15,7 @@ import type {
   GmailMessageListResponse,
   GmailSyncResult,
   HumanAnalysisInput,
+  ManualTaskInput,
   MessageAnalysis,
   MessageProcessingResult,
   PageInfo,
@@ -214,6 +215,11 @@ export const assignCase = (id: number, assignedAgentId: number) =>
   apiRequest<CaseDetail>(`/cases/${id}/assignment`, {
     method: 'PATCH',
     body: JSON.stringify({ assigned_agent_id: assignedAgentId }),
+  })
+export const createManualTask = (caseId: number, data: ManualTaskInput) =>
+  apiRequest<TaskItem>(`/cases/${caseId}/tasks`, {
+    method: 'POST',
+    body: JSON.stringify(data),
   })
 export const getTasks = (params = '') =>
   apiRequest<{ items: TaskItem[]; page: PageInfo }>(

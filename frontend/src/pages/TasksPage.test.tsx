@@ -44,7 +44,15 @@ describe('TasksPage mutations', () => {
           priority: 'HIGH',
           due_at: '2026-08-28',
           status: 'OPEN',
+          created_at: '2026-08-22T10:00:00Z',
           completed_at: null,
+          is_manual: true,
+          created_by: {
+            id: 2,
+            full_name: 'Elena Torres',
+            email: 'agent.one@demo.local',
+          },
+          completed_by: null,
           assigned_agent: {
             id: 2,
             full_name: 'Elena Torres',
@@ -71,6 +79,9 @@ describe('TasksPage mutations', () => {
       expect.stringContaining('view=TODO'),
     )
     expect(await screen.findByText('Aug 28, 2026')).toBeInTheDocument()
+    expect(
+      screen.getByText(/Added manually by Elena Torres/),
+    ).toBeInTheDocument()
     const status = await screen.findByLabelText('Update Contact client')
     fireEvent.change(status, { target: { value: 'COMPLETED' } })
     await waitFor(() =>
@@ -102,7 +113,11 @@ describe('TasksPage mutations', () => {
           priority: 'NORMAL',
           due_at: null,
           status: 'OPEN',
+          created_at: '2026-08-20T10:00:00Z',
           completed_at: null,
+          is_manual: false,
+          created_by: null,
+          completed_by: null,
           assigned_agent: {
             id: manager.user.id,
             full_name: manager.user.full_name,
@@ -153,7 +168,11 @@ describe('TasksPage mutations', () => {
           priority: 'NORMAL',
           due_at: null,
           status: 'IN_PROGRESS',
+          created_at: '2026-08-20T10:00:00Z',
           completed_at: null,
+          is_manual: false,
+          created_by: null,
+          completed_by: null,
           assigned_agent: agent,
         },
       ],

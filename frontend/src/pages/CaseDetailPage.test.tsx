@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   assignCase,
   correctCase,
+  createManualTask,
   getAgents,
   getCase,
   getMe,
@@ -23,6 +24,7 @@ import { CaseDetailPage } from './CaseDetailPage'
 vi.mock('../lib/api', () => ({
   assignCase: vi.fn(),
   correctCase: vi.fn(),
+  createManualTask: vi.fn(),
   dismissCase: vi.fn(),
   getAgents: vi.fn(),
   getCase: vi.fn(),
@@ -34,7 +36,7 @@ vi.mock('../lib/api', () => ({
 afterEach(cleanup)
 
 describe('CaseDetailPage carrier messages', () => {
-  it('renders truthful lifecycle text when semantic analysis is unavailable', async () => {
+  it('renders lifecycle text and filters dismissed tasks', async () => {
     vi.mocked(getMe).mockResolvedValue(authFixture('AGENT'))
     vi.mocked(getCase).mockResolvedValue({
       id: 1,
@@ -82,7 +84,11 @@ describe('CaseDetailPage carrier messages', () => {
           priority: 'HIGH',
           due_at: '2026-08-28',
           status: 'OPEN',
+          created_at: '2026-08-20T10:00:00Z',
           completed_at: null,
+          is_manual: false,
+          created_by: null,
+          completed_by: null,
           assigned_agent: {
             id: 2,
             full_name: 'Elena Torres',
@@ -99,11 +105,61 @@ describe('CaseDetailPage carrier messages', () => {
           priority: 'NORMAL',
           due_at: null,
           status: 'IN_PROGRESS',
+          created_at: '2026-08-20T10:00:00Z',
           completed_at: null,
+          is_manual: false,
+          created_by: null,
+          completed_by: null,
           assigned_agent: {
             id: 3,
             full_name: 'Marcus Lee',
             email: 'agent.two@demo.local',
+          },
+        },
+        {
+          id: 7,
+          case_id: 1,
+          client_name: 'Synthetic Client',
+          policy_number: null,
+          title: 'Dismissed automated task',
+          description: 'Generated from a carrier message.',
+          priority: 'NORMAL',
+          due_at: null,
+          status: 'DISMISSED',
+          created_at: '2026-08-20T10:00:00Z',
+          completed_at: null,
+          is_manual: false,
+          created_by: null,
+          completed_by: null,
+          assigned_agent: {
+            id: 2,
+            full_name: 'Elena Torres',
+            email: 'agent.one@demo.local',
+          },
+        },
+        {
+          id: 8,
+          case_id: 1,
+          client_name: 'Synthetic Client',
+          policy_number: null,
+          title: 'Dismissed manual task',
+          description: 'Added by the assigned agent.',
+          priority: 'LOW',
+          due_at: null,
+          status: 'DISMISSED',
+          created_at: '2026-08-20T11:00:00Z',
+          completed_at: null,
+          is_manual: true,
+          created_by: {
+            id: 2,
+            full_name: 'Elena Torres',
+            email: 'agent.one@demo.local',
+          },
+          completed_by: null,
+          assigned_agent: {
+            id: 2,
+            full_name: 'Elena Torres',
+            email: 'agent.one@demo.local',
           },
         },
       ],
@@ -140,6 +196,37 @@ describe('CaseDetailPage carrier messages', () => {
     expect(
       screen.queryByLabelText('Update Other assignee task'),
     ).not.toBeInTheDocument()
+    expect(screen.getByText('Submit authorization')).toBeInTheDocument()
+    expect(screen.getByText('Other assignee task')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Dismissed automated task'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText('Dismissed manual task')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show dismissed (2)' }))
+
+    const automatedTask = screen.getByText('Dismissed automated task')
+    const manualTask = screen.getByText('Dismissed manual task')
+    const automatedRow = automatedTask.closest('[data-task-status]')
+    const manualRow = manualTask.closest('[data-task-status]')
+    expect(automatedRow).toHaveAttribute('data-task-status', 'DISMISSED')
+    expect(manualRow).toHaveAttribute('data-task-status', 'DISMISSED')
+    expect(automatedRow).toHaveClass('bg-slate-50/80')
+    expect(manualRow).toHaveClass('bg-slate-50/80')
+    expect(automatedTask).toHaveClass('line-through')
+    expect(manualTask).toHaveClass('line-through')
+    expect(screen.getAllByText('DISMISSED')).toHaveLength(2)
+    expect(screen.getByText('Submit authorization')).toBeInTheDocument()
+    expect(screen.getByText('Other assignee task')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide dismissed' }))
+
+    expect(
+      screen.queryByText('Dismissed automated task'),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText('Dismissed manual task')).not.toBeInTheDocument()
+    expect(screen.getByText('Submit authorization')).toBeInTheDocument()
+    expect(screen.getByText('Other assignee task')).toBeInTheDocument()
     const restore = screen.getByRole('button', { name: 'Restore case' })
     expect(restore).toHaveClass('bg-emerald-700')
     expect(
@@ -287,7 +374,11 @@ describe('CaseDetailPage carrier messages', () => {
           priority: 'HIGH' as const,
           due_at: null,
           status: 'OPEN' as const,
+          created_at: '2026-08-20T10:00:00Z',
           completed_at: null,
+          is_manual: false,
+          created_by: null,
+          completed_by: null,
           assigned_agent: agent,
         },
       ],
@@ -332,6 +423,106 @@ describe('CaseDetailPage carrier messages', () => {
     ).not.toBeInTheDocument()
     expect(
       screen.getByText('Status managed by Elena Torres'),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Add task' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('lets the assigned agent add a manual task with attribution', async () => {
+    const auth = authFixture('AGENT')
+    const item = {
+      id: 4,
+      client_name: 'Manual Task Client',
+      policy_number: 'MT-4',
+      policy_status: 'ACTIVE' as const,
+      priority: 'NORMAL' as const,
+      summary: 'Active policy.',
+      deadline: null,
+      updated_at: '2026-08-20T10:00:00Z',
+      carrier: { id: 1, name: 'Americo', code: 'AMR' },
+      assigned_agent: {
+        id: auth.user.id,
+        full_name: auth.user.full_name,
+        email: auth.user.email,
+      },
+      needs_review: false,
+      dismissed_at: null,
+      can_manage_lifecycle: true,
+      premium_amount: null,
+      currency: null,
+      effective_date: null,
+      messages: [],
+      attachments: [],
+      tasks: [],
+      evidence: [],
+      activity: [],
+    }
+    const manualTask = {
+      id: 40,
+      case_id: 4,
+      client_name: item.client_name,
+      policy_number: item.policy_number,
+      title: 'Call client to confirm mailing address',
+      description: 'Confirm before mailing the policy package.',
+      priority: 'HIGH' as const,
+      due_at: '2026-08-29',
+      status: 'OPEN' as const,
+      created_at: '2026-08-22T12:00:00Z',
+      completed_at: null,
+      assigned_agent: item.assigned_agent,
+      is_manual: true,
+      created_by: item.assigned_agent,
+      completed_by: null,
+    }
+    vi.mocked(getMe).mockResolvedValue(auth)
+    vi.mocked(getCase)
+      .mockResolvedValueOnce(item)
+      .mockResolvedValue({ ...item, tasks: [manualTask] })
+    vi.mocked(createManualTask).mockResolvedValue(manualTask)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/cases/4']}>
+          <Routes>
+            <Route path="/cases/:caseId" element={<CaseDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(
+      screen.queryByRole('button', { name: /dismissed/i }),
+    ).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Add task' }))
+    expect(screen.getByRole('form', { name: 'Add task' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Task title'), {
+      target: { value: manualTask.title },
+    })
+    fireEvent.change(screen.getByLabelText(/Notes/), {
+      target: { value: manualTask.description },
+    })
+    fireEvent.change(screen.getByLabelText('Priority'), {
+      target: { value: 'HIGH' },
+    })
+    fireEvent.change(screen.getByLabelText(/Due date/), {
+      target: { value: '2026-08-29' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add task' }))
+
+    await waitFor(() =>
+      expect(createManualTask).toHaveBeenCalledWith(4, {
+        title: manualTask.title,
+        description: manualTask.description,
+        priority: 'HIGH',
+        due_date: '2026-08-29',
+      }),
+    )
+    expect(await screen.findByText(manualTask.title)).toBeInTheDocument()
+    expect(
+      screen.getByText(/Added manually by Elena Torres/),
     ).toBeInTheDocument()
   })
 })

@@ -13,7 +13,11 @@ import {
   PriorityBadge,
   StatusBadge,
 } from '../components/ui'
-import { businessDaysFromToday, formatBusinessDate } from '../lib/format'
+import {
+  businessDaysFromToday,
+  formatBusinessDate,
+  formatDate,
+} from '../lib/format'
 import { getAgents, getTasks, updateTask } from '../lib/api'
 import type { TaskStatus } from '../lib/types'
 
@@ -183,6 +187,18 @@ export function TasksPage() {
                     {task.description && (
                       <p className="mt-1 max-w-sm line-clamp-2 text-xs font-normal leading-5 text-slate-500">
                         {task.description}
+                      </p>
+                    )}
+                    {task.is_manual && task.created_by && (
+                      <p className="mt-1.5 text-xs font-normal text-slate-500">
+                        Added manually by {task.created_by.full_name} ·{' '}
+                        {formatDate(task.created_at)}
+                      </p>
+                    )}
+                    {task.completed_by && task.completed_at && (
+                      <p className="mt-1 text-xs font-normal text-emerald-700">
+                        Completed by {task.completed_by.full_name} ·{' '}
+                        {formatDate(task.completed_at)}
                       </p>
                     )}
                   </td>

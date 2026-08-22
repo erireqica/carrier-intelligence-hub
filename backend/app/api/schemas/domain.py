@@ -82,8 +82,12 @@ class TaskItem(BaseModel):
     priority: Priority
     due_at: date | None
     status: TaskStatus
+    created_at: datetime
     completed_at: datetime | None
     assigned_agent: AgentBrief
+    is_manual: bool
+    created_by: AgentBrief | None
+    completed_by: AgentBrief | None
 
 
 class TaskListResponse(BaseModel):
@@ -95,6 +99,30 @@ class TaskUpdate(BaseModel):
     status: TaskStatus
 
     model_config = ConfigDict(extra="forbid")
+
+
+class ManualTaskCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    description: str | None = Field(default=None, max_length=5_000)
+    priority: Priority = Priority.NORMAL
+    due_date: date | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Task title is required")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def normalize_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
 
 
 class CaseAssignmentInput(BaseModel):

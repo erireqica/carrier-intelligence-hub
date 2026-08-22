@@ -436,6 +436,76 @@ def test_reprocessing_reconciles_stale_tasks_and_replaces_evidence(
     assert first_evidence_ids.isdisjoint({item.id for item in evidence})
 
 
+def test_reprocessing_never_reconciles_a_manual_task_by_matching_title(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Manual Task Safety",
+        policy="MANUAL-SAFE-1",
+        subject_suffix="manual-task-reprocessing",
+    )
+    initial = analysis_result(client="Manual Task Safety", policy="MANUAL-SAFE-1")
+    process_message(seeded_db, message.id, analyzer=FakeAnalyzer(initial))
+    seeded_db.refresh(message)
+    policy_case = seeded_db.get(PolicyCase, message.case_id)
+    assert policy_case is not None and policy_case.assigned_agent_id is not None
+    manual = Task(
+        agency_id=message.agency_id,
+        case_id=policy_case.id,
+        assigned_agent_id=policy_case.assigned_agent_id,
+        created_by_user_id=policy_case.assigned_agent_id,
+        title="Obtain premium amount from carrier",
+        description="Agent-authored notes that AI reconciliation must preserve.",
+        priority=Priority.URGENT,
+        due_at=datetime(2026, 9, 1, 22, 0, tzinfo=UTC),
+        status=TaskStatus.IN_PROGRESS,
+    )
+    seeded_db.add(manual)
+    seeded_db.commit()
+    original = (
+        manual.title,
+        manual.description,
+        manual.priority,
+        manual.due_at,
+        manual.status,
+        manual.assigned_agent_id,
+        manual.created_by_user_id,
+    )
+
+    missing_action = ActionItem(
+        title=manual.title,
+        description="AI-generated carrier follow-up.",
+        priority=Priority.NORMAL,
+        explicit_due_date=None,
+        due_text=None,
+    )
+    retried = initial.model_copy(update={"action_items": [*initial.action_items, missing_action]})
+    message.processing_status = ProcessingStatus.FAILED
+    message.last_processing_error_code = "MATERIALIZATION_FAILED"
+    seeded_db.commit()
+    process_message(seeded_db, message.id, analyzer=FakeAnalyzer(retried))
+
+    seeded_db.refresh(manual)
+    assert (
+        manual.title,
+        manual.description,
+        manual.priority,
+        manual.due_at,
+        manual.status,
+        manual.assigned_agent_id,
+        manual.created_by_user_id,
+    ) == original
+    assert manual.source_carrier_message_id is None
+    generated = seeded_db.scalar(
+        select(Task).where(
+            Task.source_carrier_message_id == message.id,
+            Task.title == missing_action.title,
+        )
+    )
+    assert generated is not None and generated.id != manual.id
+
+
 def test_pdf_attachment_is_downloaded_in_memory_extracted_and_joined_to_source(
     seeded_db: Session,
 ) -> None:
@@ -732,10 +802,22 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
         agency_id=existing.agency_id,
         case_id=existing.id,
         assigned_agent_id=former_owner.id,
+        created_by_user_id=former_owner.id,
+        completed_by_user_id=former_owner.id,
         title="Historical completed handoff task",
         priority=Priority.NORMAL,
         status=TaskStatus.COMPLETED,
         completed_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    manual = Task(
+        agency_id=existing.agency_id,
+        case_id=existing.id,
+        assigned_agent_id=former_owner.id,
+        created_by_user_id=former_owner.id,
+        title="Call client to confirm mailing address",
+        description="Manually added work must follow active Case ownership.",
+        priority=Priority.NORMAL,
+        status=TaskStatus.OPEN,
     )
     resolved = ReviewItem(
         agency_id=existing.agency_id,
@@ -747,7 +829,7 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
         reason="Historical resolved review",
         resolved_at=datetime(2026, 8, 2, tzinfo=UTC),
     )
-    seeded_db.add_all([completed, resolved])
+    seeded_db.add_all([completed, manual, resolved])
     seeded_db.commit()
     legacy_message = create_received_message(
         seeded_db,
@@ -798,6 +880,7 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
 
     seeded_db.refresh(existing)
     seeded_db.refresh(completed)
+    seeded_db.refresh(manual)
     seeded_db.refresh(resolved)
     seeded_db.refresh(legacy_message)
     seeded_db.refresh(legacy_review)
@@ -807,6 +890,11 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
     assert existing.assignment_source is CaseAssignmentSource.GMAIL_HANDOFF
     assert completed.assigned_agent_id == former_owner.id
     assert completed.status is TaskStatus.COMPLETED
+    assert completed.created_by_user_id == former_owner.id
+    assert completed.completed_by_user_id == former_owner.id
+    assert manual.assigned_agent_id == new_owner.id
+    assert manual.created_by_user_id == former_owner.id
+    assert manual.source_carrier_message_id is None
     assert resolved.assigned_reviewer_id == former_owner.id
     assert resolved.status is ReviewStatus.RESOLVED
     assert legacy_message.case_id == existing.id

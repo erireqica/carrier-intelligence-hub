@@ -1188,6 +1188,7 @@ def _finalize(
                 task = db.scalar(
                     select(Task).where(
                         Task.case_id == case.id,
+                        Task.source_carrier_message_id.is_not(None),
                         Task.title == action.title,
                         Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
                     )

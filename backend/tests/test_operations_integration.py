@@ -1182,6 +1182,142 @@ def test_manager_assigns_case_and_active_work_to_an_active_agent(
     assert forbidden.status_code == 403
 
 
+def test_manual_task_creation_rbac_attribution_and_reassignment(
+    client: TestClient, db: Session, login
+) -> None:
+    policy_case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "Mary Smith"))
+    assert policy_case is not None and policy_case.assigned_agent_id is not None
+    creator = db.get(User, policy_case.assigned_agent_id)
+    target = db.scalar(
+        select(User).where(
+            User.agency_id == policy_case.agency_id,
+            User.role == UserRole.AGENT,
+            User.id != creator.id,
+        )
+    )
+    assert creator is not None and target is not None
+    payload = {
+        "title": "Call client to confirm mailing address",
+        "description": "Confirm the address before the policy package is mailed.",
+        "priority": "HIGH",
+        "due_date": "2026-08-29",
+    }
+
+    other_auth = login(client, target.email)
+    assert (
+        client.post(
+            f"/api/v1/cases/{policy_case.id}/tasks",
+            json=payload,
+            headers={"X-CSRF-Token": other_auth["csrf_token"]},
+        ).status_code
+        == 404
+    )
+    manager_auth = login(client, "manager@demo.local")
+    assert (
+        client.post(
+            f"/api/v1/cases/{policy_case.id}/tasks",
+            json=payload,
+            headers={"X-CSRF-Token": manager_auth["csrf_token"]},
+        ).status_code
+        == 403
+    )
+
+    creator_auth = login(client, creator.email)
+    headers = {"X-CSRF-Token": creator_auth["csrf_token"]}
+    created = client.post(f"/api/v1/cases/{policy_case.id}/tasks", json=payload, headers=headers)
+    assert created.status_code == 201
+    created_item = created.json()
+    assert created_item["status"] == "OPEN"
+    assert created_item["priority"] == "HIGH"
+    assert created_item["due_at"] == "2026-08-29"
+    assert created_item["is_manual"] is True
+    assert created_item["created_by"]["id"] == creator.id
+    assert created_item["completed_by"] is None
+    manual_task = db.get(Task, created_item["id"])
+    assert manual_task is not None
+    assert manual_task.source_carrier_message_id is None
+    assert manual_task.source_action_index is None
+    assert manual_task.created_by_user_id == creator.id
+
+    detail = client.get(f"/api/v1/cases/{policy_case.id}").json()
+    assert created_item["id"] in {item["id"] for item in detail["tasks"]}
+    listed = client.get("/api/v1/tasks?view=ALL&page_size=100").json()["items"]
+    assert created_item["id"] in {item["id"] for item in listed}
+    event = db.scalar(
+        select(AuditEvent).where(
+            AuditEvent.task_id == manual_task.id,
+            AuditEvent.event_type == "TASK_CREATED_MANUALLY",
+        )
+    )
+    assert event is not None
+    assert event.actor_user_id == creator.id
+    assert creator.full_name in event.description
+    assert manual_task.title in event.description
+
+    dismissed = client.post(f"/api/v1/cases/{policy_case.id}/dismiss", headers=headers)
+    assert dismissed.status_code == 200
+    rejected = client.post(f"/api/v1/cases/{policy_case.id}/tasks", json=payload, headers=headers)
+    assert rejected.status_code == 409
+    restored = client.post(f"/api/v1/cases/{policy_case.id}/restore", headers=headers)
+    assert restored.status_code == 200
+
+    terminal = client.post(
+        f"/api/v1/cases/{policy_case.id}/tasks",
+        json={**payload, "title": "Record historical confirmation", "due_date": None},
+        headers=headers,
+    ).json()
+    completed = client.patch(
+        f"/api/v1/tasks/{terminal['id']}",
+        json={"status": "COMPLETED"},
+        headers=headers,
+    )
+    assert completed.status_code == 200
+    assert completed.json()["completed_by"]["id"] == creator.id
+    assert completed.json()["completed_at"] is not None
+    reopened = client.patch(
+        f"/api/v1/tasks/{terminal['id']}",
+        json={"status": "OPEN"},
+        headers=headers,
+    )
+    assert reopened.status_code == 200
+    assert reopened.json()["completed_by"] is None
+    assert reopened.json()["completed_at"] is None
+    completed = client.patch(
+        f"/api/v1/tasks/{terminal['id']}",
+        json={"status": "COMPLETED"},
+        headers=headers,
+    )
+    assert completed.status_code == 200
+
+    manager_auth = login(client, "manager@demo.local")
+    reassigned = client.patch(
+        f"/api/v1/cases/{policy_case.id}/assignment",
+        json={"assigned_agent_id": target.id},
+        headers={"X-CSRF-Token": manager_auth["csrf_token"]},
+    )
+    assert reassigned.status_code == 200
+    db.refresh(manual_task)
+    terminal_task = db.get(Task, terminal["id"])
+    assert terminal_task is not None
+    assert manual_task.assigned_agent_id == target.id
+    assert manual_task.created_by_user_id == creator.id
+    assert terminal_task.assigned_agent_id == creator.id
+    assert terminal_task.created_by_user_id == creator.id
+    assert terminal_task.completed_by_user_id == creator.id
+
+    target_auth = login(client, target.email)
+    target_detail = client.get(f"/api/v1/cases/{policy_case.id}").json()
+    target_manual = next(item for item in target_detail["tasks"] if item["id"] == manual_task.id)
+    assert target_manual["assigned_agent"]["id"] == target.id
+    assert target_manual["created_by"]["id"] == creator.id
+    inaccessible_terminal = client.patch(
+        f"/api/v1/tasks/{terminal_task.id}",
+        json={"status": "OPEN"},
+        headers={"X-CSRF-Token": target_auth["csrf_token"]},
+    )
+    assert inaccessible_terminal.status_code == 404
+
+
 def test_analytics_does_not_duplicate_agent_workload(
     client: TestClient, db: Session, login
 ) -> None:

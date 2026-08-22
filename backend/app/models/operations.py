@@ -233,6 +233,12 @@ class Task(TimestampMixin, Base):
     source_carrier_message_id: Mapped[int | None] = mapped_column(ForeignKey("carrier_messages.id"))
     source_action_index: Mapped[int | None]
     assigned_agent_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    completed_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     priority: Mapped[Priority] = mapped_column(
@@ -245,7 +251,9 @@ class Task(TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     case: Mapped[PolicyCase] = relationship(back_populates="tasks")
-    assigned_agent: Mapped[User] = relationship()
+    assigned_agent: Mapped[User] = relationship(foreign_keys=[assigned_agent_id])
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_user_id])
+    completed_by: Mapped[User | None] = relationship(foreign_keys=[completed_by_user_id])
     source_message: Mapped[CarrierMessage | None] = relationship()
 
 

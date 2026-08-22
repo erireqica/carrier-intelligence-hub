@@ -5,8 +5,11 @@ import {
   CalendarDays,
   ClipboardCheck,
   DollarSign,
+  Eye,
+  EyeOff,
   Mail,
   Paperclip,
+  Plus,
   ShieldCheck,
   UserRound,
 } from 'lucide-react'
@@ -27,6 +30,7 @@ import { evidenceSourceLabel, humanFieldLabel } from '../lib/humanize'
 import {
   assignCase,
   correctCase,
+  createManualTask,
   dismissCase,
   getAgents,
   getCase,
@@ -36,8 +40,10 @@ import {
 import type {
   CaseCorrectionInput,
   CaseDetail,
+  ManualTaskInput,
   PolicyStatus,
   Priority,
+  TaskItem,
   TaskStatus,
 } from '../lib/types'
 
@@ -267,12 +273,127 @@ function CaseCorrectionForm({
   )
 }
 
+const emptyManualTask: ManualTaskInput = {
+  title: '',
+  description: null,
+  priority: 'NORMAL',
+  due_date: null,
+}
+
+function ManualTaskForm({
+  caseId,
+  onCancel,
+  onCreated,
+}: {
+  caseId: number
+  onCancel: () => void
+  onCreated: (task: TaskItem) => Promise<void>
+}) {
+  const [form, setForm] = useState<ManualTaskInput>(emptyManualTask)
+  const mutation = useMutation({
+    mutationFn: () => createManualTask(caseId, form),
+    onSuccess: onCreated,
+  })
+  const fieldClass =
+    'mt-1 min-h-10 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm'
+
+  return (
+    <form
+      className="border-b border-blue-100 bg-blue-50/60 p-5"
+      aria-label="Add task"
+      onSubmit={(event: FormEvent) => {
+        event.preventDefault()
+        mutation.mutate()
+      }}
+    >
+      <div className="mb-4">
+        <h3 className="font-semibold text-slate-950">Add an action</h3>
+        <p className="mt-1 text-xs leading-5 text-slate-600">
+          This task stays with the Case and follows its active owner if the Case
+          is reassigned.
+        </p>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <label className="text-sm font-medium sm:col-span-2">
+          Task title
+          <Input
+            className="mt-1"
+            maxLength={300}
+            value={form.title}
+            onChange={(event) =>
+              setForm({ ...form, title: event.target.value })
+            }
+            placeholder="Call client to confirm mailing address"
+            autoFocus
+            required
+          />
+        </label>
+        <label className="text-sm font-medium sm:col-span-2">
+          Notes <span className="font-normal text-slate-500">(optional)</span>
+          <textarea
+            className={`${fieldClass} min-h-20 resize-y`}
+            maxLength={5000}
+            value={form.description ?? ''}
+            onChange={(event) =>
+              setForm({ ...form, description: event.target.value || null })
+            }
+            placeholder="Add any context the assigned agent will need."
+          />
+        </label>
+        <label className="text-sm font-medium">
+          Priority
+          <select
+            className={fieldClass}
+            value={form.priority}
+            onChange={(event) =>
+              setForm({ ...form, priority: event.target.value as Priority })
+            }
+          >
+            {['LOW', 'NORMAL', 'HIGH', 'URGENT'].map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm font-medium">
+          Due date{' '}
+          <span className="font-normal text-slate-500">(optional)</span>
+          <Input
+            className="mt-1"
+            type="date"
+            value={form.due_date ?? ''}
+            onChange={(event) =>
+              setForm({ ...form, due_date: event.target.value || null })
+            }
+          />
+        </label>
+      </div>
+      {mutation.error && (
+        <p className="mt-3 text-sm text-red-700" role="alert">
+          {mutation.error.message}
+        </p>
+      )}
+      <div className="mt-4 flex gap-2">
+        <Button type="submit" disabled={mutation.isPending}>
+          {mutation.isPending ? 'Adding…' : 'Add task'}
+        </Button>
+        <Button type="button" variant="secondary" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  )
+}
+
 export function CaseDetailPage() {
   const { caseId = '' } = useParams()
   const queryClient = useQueryClient()
   const auth = useCurrentUser()
   const isManager = auth.data?.user.role === 'MANAGER'
   const [correcting, setCorrecting] = useState(false)
+  const [addingTask, setAddingTask] = useState(false)
+  const [showDismissedTasks, setShowDismissedTasks] = useState(false)
   const agents = useQuery({
     queryKey: ['manager', 'agents'],
     queryFn: getAgents,
@@ -326,6 +447,17 @@ export function CaseDetailPage() {
       />
     )
   const item = detail.data
+  const canAddTask =
+    !item.dismissed_at &&
+    !isManager &&
+    item.assigned_agent?.id === auth.data!.user.id
+  const dismissedTaskCount = item.tasks.filter(
+    (task) => task.status === 'DISMISSED',
+  ).length
+  const activeTaskCount = item.tasks.length - dismissedTaskCount
+  const visibleTasks = showDismissedTasks
+    ? item.tasks
+    : item.tasks.filter((task) => task.status !== 'DISMISSED')
   const eligibleAgents = agents.data?.filter(
     (agent) => agent.role === 'AGENT' && agent.is_active,
   )
@@ -496,24 +628,123 @@ export function CaseDetailPage() {
                   </p>
                 </div>
               </div>
-              <span className="text-xs font-semibold text-slate-500">
-                {item.tasks.length} tasks
-              </span>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+                  {activeTaskCount} active
+                </span>
+                {dismissedTaskCount > 0 && (
+                  <button
+                    type="button"
+                    className={`inline-flex min-h-9 items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-semibold shadow-sm transition-colors focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2 focus-visible:outline-none ${
+                      showDismissedTasks
+                        ? 'border-blue-200 bg-blue-50 text-blue-800 hover:bg-blue-100'
+                        : 'border-slate-200 bg-white text-slate-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-800'
+                    }`}
+                    aria-label={
+                      showDismissedTasks
+                        ? 'Hide dismissed'
+                        : `Show dismissed (${dismissedTaskCount})`
+                    }
+                    aria-pressed={showDismissedTasks}
+                    onClick={() => setShowDismissedTasks((visible) => !visible)}
+                  >
+                    {showDismissedTasks ? (
+                      <EyeOff className="h-4 w-4" aria-hidden />
+                    ) : (
+                      <Eye className="h-4 w-4" aria-hidden />
+                    )}
+                    <span>
+                      {showDismissedTasks ? 'Hide dismissed' : 'Show dismissed'}
+                    </span>
+                    <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[0.68rem] leading-none text-slate-600 ring-1 ring-slate-200">
+                      {dismissedTaskCount}
+                    </span>
+                  </button>
+                )}
+                {canAddTask && !addingTask && (
+                  <Button
+                    className="min-h-9 px-3 py-1.5"
+                    variant="secondary"
+                    onClick={() => setAddingTask(true)}
+                  >
+                    <Plus className="h-4 w-4" aria-hidden />
+                    Add task
+                  </Button>
+                )}
+              </div>
             </div>
+            {addingTask && canAddTask && (
+              <ManualTaskForm
+                caseId={item.id}
+                onCancel={() => setAddingTask(false)}
+                onCreated={async (task) => {
+                  queryClient.setQueryData<CaseDetail>(
+                    ['case', caseId],
+                    (current) =>
+                      current
+                        ? { ...current, tasks: [...current.tasks, task] }
+                        : current,
+                  )
+                  setAddingTask(false)
+                  await Promise.all([
+                    queryClient.invalidateQueries({
+                      queryKey: ['case', caseId],
+                    }),
+                    queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+                    queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+                    queryClient.invalidateQueries({ queryKey: ['activity'] }),
+                    queryClient.invalidateQueries({
+                      queryKey: ['manager', 'audit-events'],
+                    }),
+                  ])
+                }}
+              />
+            )}
             <div className="divide-y divide-slate-100">
-              {item.tasks.map((task) => (
+              {visibleTasks.map((task) => (
                 <div
                   key={task.id}
-                  className="flex items-start justify-between gap-4 px-5 py-4"
+                  data-task-status={task.status}
+                  className={`flex items-start justify-between gap-4 px-5 py-4 ${
+                    task.status === 'DISMISSED'
+                      ? 'bg-slate-50/80 text-slate-500'
+                      : ''
+                  }`}
                 >
                   <div>
-                    <p className="font-medium">{task.title}</p>
-                    <p className="mt-1 text-sm text-slate-600">
+                    <p
+                      className={`font-medium ${
+                        task.status === 'DISMISSED'
+                          ? 'line-through decoration-slate-400'
+                          : ''
+                      }`}
+                    >
+                      {task.title}
+                    </p>
+                    <p
+                      className={`mt-1 text-sm ${
+                        task.status === 'DISMISSED'
+                          ? 'text-slate-500'
+                          : 'text-slate-600'
+                      }`}
+                    >
                       {task.description}
                     </p>
                     {task.due_at && (
                       <p className="mt-2 text-xs text-slate-500">
                         Due {formatBusinessDate(task.due_at)}
+                      </p>
+                    )}
+                    {task.is_manual && task.created_by && (
+                      <p className="mt-2 text-xs text-slate-500">
+                        Added manually by {task.created_by.full_name} ·{' '}
+                        {formatDate(task.created_at)}
+                      </p>
+                    )}
+                    {task.completed_by && task.completed_at && (
+                      <p className="mt-1 text-xs text-emerald-700">
+                        Completed by {task.completed_by.full_name} ·{' '}
+                        {formatDate(task.completed_at)}
                       </p>
                     )}
                   </div>
