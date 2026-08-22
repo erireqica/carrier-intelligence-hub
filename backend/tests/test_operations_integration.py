@@ -689,6 +689,7 @@ def test_agents_connected_inbox_count_excludes_disconnected_history(
 
     response = client.get("/api/v1/manager/agents")
 
+    assert all(item["role"] == "AGENT" for item in response.json()["items"])
     listed = next(item for item in response.json()["items"] if item["id"] == agent.id)
     assert listed["gmail_connections"] == 1
 
@@ -849,6 +850,52 @@ def test_dashboard_gmail_health_states(client: TestClient, db: Session, login) -
     assert dashboard.json()["gmail_health"] == "NOT_CONNECTED"
 
 
+def test_agent_dashboard_reports_active_in_progress_and_due_soon_tasks(
+    client: TestClient, db: Session, login
+) -> None:
+    agent = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert agent is not None
+    case = db.scalar(
+        select(PolicyCase).where(
+            PolicyCase.assigned_agent_id == agent.id,
+            PolicyCase.dismissed_at.is_(None),
+        )
+    )
+    assert case is not None
+    login(client, agent.email)
+    before = client.get("/api/v1/dashboard").json()["metrics"]
+    now = utc_now()
+    db.add_all(
+        [
+            Task(
+                agency_id=case.agency_id,
+                case_id=case.id,
+                assigned_agent_id=agent.id,
+                title="Due-soon in-progress task",
+                priority=case.priority,
+                status=TaskStatus.IN_PROGRESS,
+                due_at=now + timedelta(days=2),
+            ),
+            Task(
+                agency_id=case.agency_id,
+                case_id=case.id,
+                assigned_agent_id=agent.id,
+                title="Later open task",
+                priority=case.priority,
+                status=TaskStatus.OPEN,
+                due_at=now + timedelta(days=9),
+            ),
+        ]
+    )
+    db.commit()
+
+    after = client.get("/api/v1/dashboard").json()["metrics"]
+
+    assert after["open_tasks"] == before["open_tasks"] + 2
+    assert after["in_progress_tasks"] == before["in_progress_tasks"] + 1
+    assert after["due_soon_tasks"] == before["due_soon_tasks"] + 1
+
+
 @pytest.mark.parametrize(
     ("connection_status", "expected_connected", "expected_health"),
     [
@@ -903,6 +950,28 @@ def test_dashboard_gmail_health_respects_agent_scope(
     assert client.get("/api/v1/dashboard").json()["gmail_health"] == "NOT_CONNECTED"
     login(client, "manager@demo.local")
     assert client.get("/api/v1/dashboard").json()["gmail_health"] == "CONNECTED"
+
+
+def test_manager_dashboard_workload_contains_agents_only(
+    client: TestClient, db: Session, login
+) -> None:
+    manager = db.scalar(select(User).where(User.role == UserRole.MANAGER))
+    assert manager is not None
+    login(client, manager.email)
+
+    workload = client.get("/api/v1/dashboard").json()["workload"]
+
+    assert manager.id not in {item["agent"]["id"] for item in workload}
+    assert {item["agent"]["id"] for item in workload} == set(
+        db.scalars(
+            select(User.id).where(
+                User.agency_id == manager.agency_id,
+                User.role == UserRole.AGENT,
+                User.is_active.is_(True),
+                User.removed_at.is_(None),
+            )
+        ).all()
+    )
 
 
 def test_task_patch_validation_and_change_specific_audits(

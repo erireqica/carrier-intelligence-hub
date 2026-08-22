@@ -8,7 +8,6 @@ import {
   ErrorState,
   Input,
   LoadingState,
-  PageHeader,
   StatusBadge,
 } from '../components/ui'
 import {
@@ -262,22 +261,57 @@ export function ReviewDetailPage() {
       <Link className="text-sm font-semibold text-blue-700" to="/reviews">
         ← Back to review queue
       </Link>
-      <PageHeader
-        title={
-          isManager
-            ? 'This email needs agent review'
-            : 'This email needs your review'
-        }
-        description={`${review.carrier_name} · ${review.message_subject}`}
-        action={<StatusBadge status={review.status} />}
-      />
+      <section className="overflow-hidden rounded-2xl bg-[#12243c] text-white shadow-[0_18px_46px_rgb(15_23_42/14%)]">
+        <div className="relative p-6 sm:p-8">
+          <span className="absolute -top-20 -right-16 h-64 w-64 rounded-full border border-white/10" />
+          <div className="relative flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-[0.68rem] font-bold tracking-[0.16em] text-blue-200 uppercase">
+                Decision workspace
+              </p>
+              <h1 className="mt-2 max-w-3xl text-3xl font-semibold tracking-tight sm:text-4xl">
+                {isManager
+                  ? 'This email needs agent review'
+                  : 'This email needs your review'}
+              </h1>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+                {review.carrier_name} · {review.message_subject}
+              </p>
+            </div>
+            <div className="self-start sm:self-auto">
+              <StatusBadge status={review.status} />
+            </div>
+          </div>
+        </div>
+        <ol className="grid border-t border-white/10 bg-white/[0.035] text-xs font-semibold text-slate-300 sm:grid-cols-4">
+          {[
+            'Identify issue',
+            'Inspect source',
+            'Compare interpretation',
+            'Make decision',
+          ].map((label, index) => (
+            <li
+              key={label}
+              className="flex items-center gap-2 border-white/10 px-4 py-3 sm:border-r sm:last:border-r-0"
+            >
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-400/20 text-[0.65rem] text-blue-200">
+                {index + 1}
+              </span>
+              {label}
+            </li>
+          ))}
+        </ol>
+      </section>
       {isManager && !isFinalized && (
         <p className="border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
           <strong>Manager view —</strong> review decisions are completed by the
           assigned agent.
         </p>
       )}
-      <section className="border border-amber-200 bg-amber-50 p-5">
+      <section className="rounded-xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+        <p className="mb-2 text-[0.66rem] font-bold tracking-[0.14em] text-amber-700 uppercase">
+          01 · Identify the issue
+        </p>
         <h2 className="font-semibold text-amber-950">
           {isManager ? 'What needs attention' : 'What needs your attention'}
         </h2>
@@ -347,6 +381,9 @@ export function ReviewDetailPage() {
       )}
       {proposal && (
         <section className="surface-panel p-5">
+          <p className="mb-2 text-[0.66rem] font-bold tracking-[0.14em] text-blue-700 uppercase">
+            03 · Compare the interpretation
+          </p>
           <h2 className="font-semibold">What Carrier Hub found</h2>
           <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
             {[
@@ -383,6 +420,9 @@ export function ReviewDetailPage() {
       <section className="grid items-start gap-6 xl:grid-cols-2">
         <div className="surface-panel h-fit self-start space-y-5 p-5">
           <div>
+            <p className="mb-2 text-[0.66rem] font-bold tracking-[0.14em] text-blue-700 uppercase">
+              02 · Inspect the source
+            </p>
             <h2 className="font-semibold">Email content</h2>
             <p className="mt-1 text-sm text-slate-600">
               Review the original email and any attachments to identify the
@@ -455,7 +495,12 @@ export function ReviewDetailPage() {
             >
               <fieldset className="space-y-5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="font-semibold">Confirm or correct</h2>
+                  <div>
+                    <p className="mb-2 text-[0.66rem] font-bold tracking-[0.14em] text-blue-700 uppercase">
+                      04 · Make a decision
+                    </p>
+                    <h2 className="font-semibold">Confirm or correct</h2>
+                  </div>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="text-sm font-medium">

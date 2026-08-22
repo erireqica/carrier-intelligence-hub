@@ -25,7 +25,9 @@ body {
   min-width: 320px;
   min-height: 100dvh;
   margin: 0;
-  background: #f3f6fa;
+  background:
+    linear-gradient(rgb(255 255 255 / 32%) 1px, transparent 1px), #f3f6fa;
+  background-size: 100% 64px;
   color: var(--app-ink);
 }
 
@@ -103,6 +105,18 @@ input[type='checkbox'] {
   margin-inline: auto;
 }
 
+.app-page > * {
+  animation: page-reveal 280ms ease-out both;
+}
+
+.app-page > :nth-child(2) {
+  animation-delay: 35ms;
+}
+
+.app-page > :nth-child(3) {
+  animation-delay: 70ms;
+}
+
 main > div {
   width: 100%;
   max-width: 96rem;
@@ -176,7 +190,9 @@ main :where(.border-green-300.bg-green-50) {
   border: 1px solid var(--app-border);
   border-radius: 0.75rem;
   background: var(--app-surface);
-  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+  box-shadow:
+    0 1px 2px rgb(15 23 42 / 4%),
+    0 10px 30px rgb(15 23 42 / 2.5%);
 }
 
 .surface-panel-interactive:hover {
@@ -213,6 +229,24 @@ main :where(.border-green-300.bg-green-50) {
 
 .data-table-shell table thead {
   background: #f8fafc;
+}
+
+.data-table-shell table thead th {
+  position: relative;
+}
+
+.data-table-shell table thead th::after {
+  position: absolute;
+  right: 0;
+  bottom: 0.7rem;
+  width: 1px;
+  height: 1rem;
+  background: #e2e8f0;
+  content: '';
+}
+
+.data-table-shell table thead th:last-child::after {
+  display: none;
 }
 
 .data-table-shell table th {
@@ -277,6 +311,39 @@ main :where(.border-green-300.bg-green-50) {
     0 0 0 5rem rgb(59 130 246 / 4%),
     0 0 0 10rem rgb(59 130 246 / 3%);
   content: '';
+}
+
+.communication-timeline-item::before {
+  position: absolute;
+  top: 2.15rem;
+  bottom: -1.35rem;
+  left: 2.1rem;
+  width: 1px;
+  background: #dbe3ed;
+  content: '';
+}
+
+.communication-timeline-item:last-child::before {
+  display: none;
+}
+
+@media (min-width: 1536px) {
+  .analytics-command-grid,
+  .dashboard-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.7fr) minmax(250px, 0.7fr);
+  }
+}
+
+@keyframes page-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

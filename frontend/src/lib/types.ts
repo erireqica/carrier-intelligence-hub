@@ -300,6 +300,8 @@ export type Dashboard = {
   metrics: {
     urgent_cases: number
     open_tasks: number
+    in_progress_tasks: number
+    due_soon_tasks: number
     overdue_tasks: number
     review_items: number
     processing_failures: number

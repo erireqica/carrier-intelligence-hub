@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { UserPlus, UsersRound } from 'lucide-react'
 
 import { useCurrentUser } from '../../app/auth'
 import {
@@ -79,6 +80,7 @@ export function AgentsPage() {
         description="Create Agent access and manage current operational accounts."
         action={
           <Button onClick={() => setShowCreate((value) => !value)}>
+            <UserPlus className="h-4 w-4" aria-hidden />
             Add agent
           </Button>
         }
@@ -147,6 +149,22 @@ export function AgentsPage() {
         </p>
       )}
       <div className="data-table-shell">
+        <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+              <UsersRound className="h-[18px] w-[18px]" aria-hidden />
+            </span>
+            <div>
+              <h2 className="font-semibold text-slate-950">Agency roster</h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Access and current operational load
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-semibold text-slate-500">
+            {agents.data.page.total} users
+          </span>
+        </div>
         <table className="w-full min-w-[980px] text-left text-sm">
           <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
             <tr>
@@ -170,10 +188,23 @@ export function AgentsPage() {
             {agents.data.items.map((agent) => (
               <tr key={agent.id}>
                 <td className="px-4 py-4 font-medium">
-                  {agent.full_name}
-                  <p className="text-xs font-normal text-slate-500">
-                    {agent.email}
-                  </p>
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-white">
+                      {agent.full_name
+                        .split(' ')
+                        .map((part) => part[0])
+                        .join('')
+                        .slice(0, 2)}
+                    </span>
+                    <div>
+                      <p className="font-semibold text-slate-900">
+                        {agent.full_name}
+                      </p>
+                      <p className="text-xs font-normal text-slate-500">
+                        {agent.email}
+                      </p>
+                    </div>
+                  </div>
                 </td>
                 <td className="px-4 py-4">
                   <Badge tone="blue">{agent.role}</Badge>

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { ArrowUpRight, CalendarClock, ListChecks } from 'lucide-react'
 
 import { useCurrentUser } from '../app/auth'
 import {
@@ -79,6 +80,7 @@ export function TasksPage() {
   return (
     <div className="app-page space-y-6">
       <PageHeader
+        eyebrow={isManager ? 'Agency execution' : 'My work queue'}
         title="Tasks"
         description={
           isManager
@@ -86,7 +88,10 @@ export function TasksPage() {
             : 'Your current policy follow-up work.'
         }
       />
-      <div className="filter-toolbar flex flex-wrap gap-3">
+      <div className="filter-toolbar flex flex-wrap items-center gap-3">
+        <span className="mr-1 flex h-9 w-9 items-center justify-center rounded-lg bg-slate-900 text-white">
+          <ListChecks className="h-4 w-4" aria-hidden />
+        </span>
         <select
           aria-label="Task status"
           className="px-3 py-2 text-sm"
@@ -168,11 +173,30 @@ export function TasksPage() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {tasks.data.items.map((task) => (
-                <tr key={task.id} className="hover:bg-blue-50/30">
-                  <td className="px-4 py-4 font-medium">{task.title}</td>
+                <tr key={task.id} className="group hover:bg-blue-50/30">
+                  <td className="relative px-4 py-4 pl-6 font-medium">
+                    <span
+                      className={`absolute inset-y-3 left-0 w-1 rounded-r ${task.priority === 'URGENT' ? 'bg-red-500' : task.priority === 'HIGH' ? 'bg-amber-500' : 'bg-blue-500'}`}
+                    />
+                    <p className="font-semibold text-slate-900">{task.title}</p>
+                    {task.description && (
+                      <p className="mt-1 max-w-sm line-clamp-2 text-xs font-normal leading-5 text-slate-500">
+                        {task.description}
+                      </p>
+                    )}
+                  </td>
                   <td className="px-4 py-4">
-                    {task.client_name}
-                    <p className="text-xs text-slate-500">
+                    <a
+                      className="inline-flex items-center gap-1 font-semibold text-slate-900 hover:text-blue-700"
+                      href={`/cases/${task.case_id}`}
+                    >
+                      {task.client_name}
+                      <ArrowUpRight
+                        className="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-100"
+                        aria-hidden
+                      />
+                    </a>
+                    <p className="mt-0.5 text-xs text-slate-500">
                       {task.policy_number}
                     </p>
                   </td>
@@ -180,7 +204,13 @@ export function TasksPage() {
                     <PriorityBadge priority={task.priority} />
                   </td>
                   <td className="px-4 py-4">
-                    {formatBusinessDate(task.due_at)}
+                    <span className="inline-flex items-center gap-1.5">
+                      <CalendarClock
+                        className="h-3.5 w-3.5 text-slate-400"
+                        aria-hidden
+                      />
+                      {formatBusinessDate(task.due_at)}
+                    </span>
                     <div className="mt-1">
                       {dueState(
                         task.due_at,

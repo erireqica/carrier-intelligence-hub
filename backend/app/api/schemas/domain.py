@@ -343,6 +343,8 @@ class ReviewDismissRequest(BaseModel):
 class DashboardMetrics(BaseModel):
     urgent_cases: int
     open_tasks: int
+    in_progress_tasks: int
+    due_soon_tasks: int
     overdue_tasks: int
     review_items: int
     processing_failures: int

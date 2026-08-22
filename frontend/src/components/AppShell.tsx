@@ -239,7 +239,7 @@ export function AppShell() {
             ))}
           </nav>
         </header>
-        <main className="p-5 sm:p-6 lg:p-8 xl:p-10">
+        <main className="p-5 sm:p-6 lg:p-8 xl:px-10 xl:py-9">
           <Outlet />
         </main>
       </div>

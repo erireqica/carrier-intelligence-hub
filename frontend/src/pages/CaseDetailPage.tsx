@@ -1,6 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { type FormEvent, useState } from 'react'
-import { Mail, Paperclip } from 'lucide-react'
+import {
+  Activity,
+  CalendarDays,
+  ClipboardCheck,
+  DollarSign,
+  Mail,
+  Paperclip,
+  ShieldCheck,
+  UserRound,
+} from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 
 import { useCurrentUser } from '../app/auth'
@@ -9,7 +18,6 @@ import {
   ErrorState,
   Input,
   LoadingState,
-  PageHeader,
   PriorityBadge,
   StatusBadge,
 } from '../components/ui'
@@ -325,37 +333,117 @@ export function CaseDetailPage() {
       <Link className="text-sm font-semibold text-blue-700" to="/cases">
         ← Back to cases
       </Link>
-      <PageHeader
-        eyebrow={`${item.carrier.name} · ${item.policy_number ?? 'Policy number pending'}`}
-        title={item.client_name}
-        action={
-          <div className="flex w-full flex-col items-start gap-3 self-start sm:w-auto sm:items-end sm:self-end">
-            <div className="flex flex-wrap items-center gap-2 self-start sm:self-end">
-              <PriorityBadge priority={item.priority} />
-              <StatusBadge status={item.policy_status} />
+      <section className="case-identity overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-6 border-b border-slate-100 p-6 sm:p-7 lg:flex-row lg:items-end lg:justify-between">
+          <div className="flex min-w-0 items-start gap-4">
+            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[#12243c] text-blue-200 shadow-md">
+              <ShieldCheck className="h-6 w-6" aria-hidden />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[0.68rem] font-bold tracking-[0.16em] text-blue-700 uppercase">
+                {item.carrier.name} ·{' '}
+                {item.policy_number ?? 'Policy number pending'}
+              </p>
+              <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">
+                {item.client_name}
+              </h1>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <PriorityBadge priority={item.priority} />
+                <StatusBadge status={item.policy_status} />
+                <span className="text-xs text-slate-500">
+                  Status reflects the latest carrier information
+                </span>
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2 self-start sm:self-end">
-              {!item.dismissed_at && item.can_manage_lifecycle && (
-                <Button variant="secondary" onClick={() => setCorrecting(true)}>
-                  Correct case information
-                </Button>
-              )}
-              {item.can_manage_lifecycle && (
-                <Button
-                  variant={item.dismissed_at ? 'success' : 'danger'}
-                  disabled={lifecycleMutation.isPending}
-                  onClick={() => lifecycleMutation.mutate()}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {!item.dismissed_at && item.can_manage_lifecycle && (
+              <Button variant="secondary" onClick={() => setCorrecting(true)}>
+                Correct case information
+              </Button>
+            )}
+            {item.can_manage_lifecycle && (
+              <Button
+                variant={item.dismissed_at ? 'success' : 'danger'}
+                disabled={lifecycleMutation.isPending}
+                onClick={() => lifecycleMutation.mutate()}
+              >
+                {item.dismissed_at ? 'Restore case' : 'Dismiss case'}
+              </Button>
+            )}
+          </div>
+        </div>
+        <div className="grid divide-y divide-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">
+          <div className="flex items-start gap-3 px-5 py-4">
+            <UserRound className="mt-0.5 h-4 w-4 text-blue-600" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <p className="text-[0.66rem] font-bold tracking-wider text-slate-500 uppercase">
+                Assigned agent
+              </p>
+              {isManager && !item.dismissed_at ? (
+                <select
+                  aria-label="Assigned agent"
+                  className="mt-1 min-h-9 w-full border border-slate-300 bg-white px-2 py-1 text-sm"
+                  value={item.assigned_agent?.id ?? ''}
+                  disabled={assignmentMutation.isPending || agents.isPending}
+                  onChange={(event) =>
+                    assignmentMutation.mutate(Number(event.target.value))
+                  }
                 >
-                  {item.dismissed_at ? 'Restore case' : 'Dismiss case'}
-                </Button>
+                  {!item.assigned_agent && <option value="">Unassigned</option>}
+                  {item.assigned_agent &&
+                    !eligibleAgents?.some(
+                      (agent) => agent.id === item.assigned_agent?.id,
+                    ) && (
+                      <option value={item.assigned_agent.id} disabled>
+                        {item.assigned_agent.full_name} (requires reassignment)
+                      </option>
+                    )}
+                  {eligibleAgents?.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.full_name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="mt-1 text-sm font-semibold text-slate-900">
+                  {item.assigned_agent?.full_name ?? 'Unassigned'}
+                </p>
               )}
             </div>
           </div>
-        }
-      />
-      <p className="text-sm text-slate-500">
-        Policy status is based on the latest carrier information.
-      </p>
+          {[
+            [CalendarDays, 'Key deadline', formatBusinessDate(item.deadline)],
+            [
+              DollarSign,
+              'Premium',
+              item.premium_amount
+                ? `${item.currency ?? 'USD'} ${item.premium_amount}`
+                : '—',
+            ],
+            [
+              CalendarDays,
+              'Effective date',
+              formatBusinessDate(item.effective_date),
+            ],
+          ].map(([Icon, label, value]) => (
+            <div
+              key={label as string}
+              className="flex items-start gap-3 px-5 py-4"
+            >
+              <Icon className="mt-0.5 h-4 w-4 text-blue-600" aria-hidden />
+              <div>
+                <p className="text-[0.66rem] font-bold tracking-wider text-slate-500 uppercase">
+                  {label as string}
+                </p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">
+                  {value as string}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
       {item.dismissed_at && (
         <p className="border border-slate-300 bg-slate-50 p-4 text-sm text-slate-700">
           This Case is dismissed from active work. Restore it to update tasks or
@@ -383,79 +471,30 @@ export function CaseDetailPage() {
           }}
         />
       )}
-      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="surface-panel p-4">
-          <p className="text-xs font-semibold text-slate-500 uppercase">
-            Policy Status
-          </p>
-          <p className="mt-2 font-medium text-slate-900">
-            {item.policy_status.replaceAll('_', ' ')}
-          </p>
-        </div>
-        <div className="surface-panel p-4">
-          <p className="text-xs font-semibold text-slate-500 uppercase">
-            Assigned agent
-          </p>
-          {isManager && !item.dismissed_at ? (
-            <select
-              aria-label="Assigned agent"
-              className="mt-2 min-h-10 w-full border border-slate-300 bg-white px-3 py-2 text-sm"
-              value={item.assigned_agent?.id ?? ''}
-              disabled={assignmentMutation.isPending || agents.isPending}
-              onChange={(event) =>
-                assignmentMutation.mutate(Number(event.target.value))
-              }
-            >
-              {!item.assigned_agent && <option value="">Unassigned</option>}
-              {item.assigned_agent &&
-                !eligibleAgents?.some(
-                  (agent) => agent.id === item.assigned_agent?.id,
-                ) && (
-                  <option value={item.assigned_agent.id} disabled>
-                    {item.assigned_agent.full_name} (requires reassignment)
-                  </option>
-                )}
-              {eligibleAgents?.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.full_name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <p className="mt-2 font-medium text-slate-900">
-              {item.assigned_agent?.full_name ?? 'Unassigned'}
-            </p>
-          )}
-          {assignmentMutation.error && (
-            <p className="mt-2 text-xs text-red-700" role="alert">
-              {assignmentMutation.error.message}
-            </p>
-          )}
-        </div>
-        {[
-          ['Key deadline', formatBusinessDate(item.deadline)],
-          [
-            'Premium',
-            item.premium_amount
-              ? `${item.currency ?? 'USD'} ${item.premium_amount}`
-              : '—',
-          ],
-          ['Effective date', formatBusinessDate(item.effective_date)],
-        ].map(([label, value]) => (
-          <div key={label} className="surface-panel p-4">
-            <p className="text-xs font-semibold text-slate-500 uppercase">
-              {label}
-            </p>
-            <p className="mt-2 font-medium text-slate-900">{value}</p>
-          </div>
-        ))}
-      </section>
+      {assignmentMutation.error && (
+        <p className="text-sm text-red-700" role="alert">
+          {assignmentMutation.error.message}
+        </p>
+      )}
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(300px,0.6fr)]">
         <div className="space-y-6">
           <div className="surface-panel">
-            <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
-              Required actions
-            </h2>
+            <div className="section-titlebar">
+              <div className="flex items-center gap-3">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
+                  <ClipboardCheck className="h-[18px] w-[18px]" aria-hidden />
+                </span>
+                <div>
+                  <h2 className="font-semibold">Required actions</h2>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Operational work for this policy
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs font-semibold text-slate-500">
+                {item.tasks.length} tasks
+              </span>
+            </div>
             <div className="divide-y divide-slate-100">
               {item.tasks.map((task) => (
                 <div
@@ -527,7 +566,10 @@ export function CaseDetailPage() {
             </div>
             <div className="divide-y divide-slate-100">
               {item.messages.map((message) => (
-                <article key={message.id} className="relative px-5 py-5 pl-14">
+                <article
+                  key={message.id}
+                  className="communication-timeline-item relative px-5 py-5 pl-16"
+                >
                   <span className="absolute top-6 left-5 flex h-7 w-7 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
                     <Mail className="h-3.5 w-3.5" aria-hidden />
                   </span>
@@ -652,9 +694,17 @@ export function CaseDetailPage() {
         </div>
         <aside className="space-y-6">
           <div className="surface-panel">
-            <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
-              Evidence
-            </h2>
+            <div className="section-titlebar">
+              <div className="flex items-center gap-3">
+                <ShieldCheck className="h-5 w-5 text-blue-600" aria-hidden />
+                <div>
+                  <h2 className="font-semibold">Evidence</h2>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Source-backed extracted values
+                  </p>
+                </div>
+              </div>
+            </div>
             <div className="divide-y divide-slate-100">
               {item.evidence.length ? (
                 groupEvidence(item.evidence).map(([source, evidenceItems]) => (
@@ -689,12 +739,24 @@ export function CaseDetailPage() {
             </div>
           </div>
           <div className="surface-panel">
-            <h2 className="border-b border-slate-200 px-5 py-4 font-semibold">
-              Activity
-            </h2>
-            <div className="max-h-[30rem] divide-y divide-slate-100 overflow-y-auto">
+            <div className="section-titlebar">
+              <div className="flex items-center gap-3">
+                <Activity className="h-5 w-5 text-blue-600" aria-hidden />
+                <div>
+                  <h2 className="font-semibold">Activity</h2>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Auditable case history
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="max-h-[30rem] overflow-y-auto px-5 py-2">
               {item.activity.map((event) => (
-                <div key={event.id} className="px-5 py-4">
+                <div
+                  key={event.id}
+                  className="relative border-l border-slate-200 py-3 pl-5"
+                >
+                  <span className="absolute top-4 -left-1 h-2 w-2 rounded-full bg-blue-600 ring-4 ring-blue-50" />
                   <p className="text-sm font-medium">{event.description}</p>
                   <p className="mt-1 text-xs text-slate-500">
                     {formatDate(event.created_at)}

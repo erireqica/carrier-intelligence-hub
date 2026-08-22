@@ -1,6 +1,7 @@
 import { Navigate, createBrowserRouter } from 'react-router-dom'
 
 import { AppShell } from '../components/AppShell'
+import { LazyAnalyticsPage } from '../components/LazyAnalyticsPage'
 import { ActivityPage } from '../pages/ActivityPage'
 import {
   AgentRoute,
@@ -13,7 +14,6 @@ import { DashboardPage } from '../pages/DashboardPage'
 import { GmailConnectionsPage } from '../pages/GmailConnectionsPage'
 import { LoginPage } from '../pages/LoginPage'
 import { AgentsPage } from '../pages/manager/AgentsPage'
-import { AnalyticsPage } from '../pages/manager/AnalyticsPage'
 import { CarriersPage } from '../pages/manager/CarriersPage'
 import { SystemLogsPage } from '../pages/manager/SystemLogsPage'
 import { ProfilePage } from '../pages/ProfilePage'
@@ -22,7 +22,10 @@ import { ReviewDetailPage } from '../pages/ReviewDetailPage'
 import { TasksPage } from '../pages/TasksPage'
 
 export const managerRoutes = [
-  { path: 'manager/analytics', element: <AnalyticsPage /> },
+  {
+    path: 'manager/analytics',
+    element: <LazyAnalyticsPage />,
+  },
   { path: 'manager/agents', element: <AgentsPage /> },
   { path: 'manager/carriers', element: <CarriersPage /> },
   { path: 'manager/system-logs', element: <SystemLogsPage /> },

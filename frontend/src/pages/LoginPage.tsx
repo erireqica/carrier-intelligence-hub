@@ -76,6 +76,22 @@ export function LoginPage() {
               </div>
             ))}
           </div>
+          <ol
+            className="mt-10 flex max-w-2xl items-center text-xs font-semibold text-slate-300"
+            aria-label="Carrier communication workflow"
+          >
+            {['Monitor', 'Interpret', 'Act'].map((step, index) => (
+              <li key={step} className="flex flex-1 items-center gap-2">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-blue-300/30 bg-blue-400/10 text-[0.65rem] text-blue-200">
+                  {index + 1}
+                </span>
+                <span>{step}</span>
+                {index < 2 && (
+                  <span className="mx-2 h-px flex-1 bg-white/15" aria-hidden />
+                )}
+              </li>
+            ))}
+          </ol>
         </div>
         <p className="relative z-10 max-w-xl border-t border-white/10 pt-6 text-sm leading-6 text-slate-300">
           Sign in with your agency account, then connect Gmail securely with

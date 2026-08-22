@@ -111,6 +111,7 @@ def _category_clause(category: str):
 
 
 def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
+    dashboard_now = utc_now()
     case_scope = scoped_cases_query(current).where(PolicyCase.dismissed_at.is_(None))
     task_filters = [Task.agency_id == current.user.agency_id]
     gmail_filters = [GmailConnection.agency_id == current.user.agency_id]
@@ -139,6 +140,34 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
         )
         or 0
     )
+    in_progress_tasks = (
+        db.scalar(
+            select(func.count())
+            .select_from(Task)
+            .join(PolicyCase, Task.case_id == PolicyCase.id)
+            .where(
+                *task_filters,
+                PolicyCase.dismissed_at.is_(None),
+                Task.status == TaskStatus.IN_PROGRESS,
+            )
+        )
+        or 0
+    )
+    due_soon_tasks = (
+        db.scalar(
+            select(func.count())
+            .select_from(Task)
+            .join(PolicyCase, Task.case_id == PolicyCase.id)
+            .where(
+                *task_filters,
+                PolicyCase.dismissed_at.is_(None),
+                Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+                Task.due_at >= dashboard_now,
+                Task.due_at <= dashboard_now + timedelta(days=7),
+            )
+        )
+        or 0
+    )
     overdue_tasks = (
         db.scalar(
             select(func.count())
@@ -148,7 +177,7 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
                 *task_filters,
                 PolicyCase.dismissed_at.is_(None),
                 Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
-                Task.due_at < utc_now(),
+                Task.due_at < dashboard_now,
             )
         )
         or 0
@@ -324,7 +353,11 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
                 & Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
             )
             .outerjoin(PolicyCase, Task.case_id == PolicyCase.id)
-            .where(User.agency_id == current.user.agency_id, User.is_active.is_(True))
+            .where(
+                User.agency_id == current.user.agency_id,
+                User.role == UserRole.AGENT,
+                User.is_active.is_(True),
+            )
             .group_by(User.id)
             .order_by(User.full_name)
         ).all()
@@ -344,6 +377,8 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
         metrics=DashboardMetrics(
             urgent_cases=urgent_cases,
             open_tasks=open_tasks,
+            in_progress_tasks=in_progress_tasks,
+            due_soon_tasks=due_soon_tasks,
             overdue_tasks=overdue_tasks,
             review_items=review_items,
             processing_failures=failures,
@@ -383,6 +418,7 @@ def list_agents(
 ) -> AgentListResponse:
     query = select(User).where(
         User.agency_id == current.user.agency_id,
+        User.role == UserRole.AGENT,
         User.removed_at.is_(None),
     )
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0

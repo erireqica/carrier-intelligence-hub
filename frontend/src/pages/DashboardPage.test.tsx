@@ -16,6 +16,8 @@ const dashboardBase: Omit<Dashboard, 'gmail_health'> = {
   metrics: {
     urgent_cases: 0,
     open_tasks: 0,
+    in_progress_tasks: 0,
+    due_soon_tasks: 0,
     overdue_tasks: 0,
     review_items: 0,
     processing_failures: 0,
@@ -52,6 +54,36 @@ function renderDashboard(role: 'AGENT' | 'MANAGER' = 'AGENT') {
 }
 
 describe('DashboardPage Gmail health', () => {
+  it('uses an agent-focused workload summary instead of agency live operations', async () => {
+    vi.mocked(getDashboard).mockResolvedValue({
+      ...dashboardBase,
+      gmail_health: 'CONNECTED',
+    })
+    renderDashboard('AGENT')
+
+    expect(await screen.findByText("Today's workload")).toBeInTheDocument()
+    expect(screen.getByText('Active tasks')).toBeInTheDocument()
+    expect(screen.getByText('In progress')).toBeInTheDocument()
+    expect(screen.getByText('Due soon')).toBeInTheDocument()
+    expect(screen.queryByText('Live agency operations')).not.toBeInTheDocument()
+  })
+
+  it('reserves live agency operations and pipeline health for managers', async () => {
+    vi.mocked(getDashboard).mockResolvedValue({
+      ...dashboardBase,
+      gmail_health: 'CONNECTED',
+    })
+    renderDashboard('MANAGER')
+
+    expect(
+      await screen.findByText('Live agency operations'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Pipeline health')).toBeInTheDocument()
+    expect(
+      screen.getByText('All processing and label queues are currently clear.'),
+    ).toBeInTheDocument()
+  })
+
   it('shows an attention state for unhealthy existing connections', async () => {
     vi.mocked(getDashboard).mockResolvedValue({
       ...dashboardBase,
