@@ -163,7 +163,7 @@ export function TasksPage() {
           description="No tasks match this view."
         />
       ) : (
-        <div className="data-table-shell">
+        <div className="data-table-shell responsive-data-table">
           <table className="w-full min-w-[900px] text-left text-sm">
             <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
               <tr>
@@ -179,7 +179,10 @@ export function TasksPage() {
             <tbody className="divide-y divide-slate-100">
               {tasks.data.items.map((task) => (
                 <tr key={task.id} className="group hover:bg-blue-50/30">
-                  <td className="relative px-4 py-4 pl-6 font-medium">
+                  <td
+                    className="relative px-4 py-4 pl-6 font-medium"
+                    data-label="Task"
+                  >
                     <span
                       className={`absolute inset-y-3 left-0 w-1 rounded-r ${task.priority === 'URGENT' ? 'bg-red-500' : task.priority === 'HIGH' ? 'bg-amber-500' : 'bg-blue-500'}`}
                     />
@@ -202,7 +205,7 @@ export function TasksPage() {
                       </p>
                     )}
                   </td>
-                  <td className="px-4 py-4">
+                  <td className="px-4 py-4" data-label="Client / policy">
                     <a
                       className="inline-flex items-center gap-1 font-semibold text-slate-900 hover:text-blue-700"
                       href={`/cases/${task.case_id}`}
@@ -217,10 +220,10 @@ export function TasksPage() {
                       {task.policy_number}
                     </p>
                   </td>
-                  <td className="px-4 py-4">
+                  <td className="px-4 py-4" data-label="Priority">
                     <PriorityBadge priority={task.priority} />
                   </td>
-                  <td className="px-4 py-4">
+                  <td className="px-4 py-4" data-label="Due">
                     {formatBusinessDate(task.due_at)}
                     <div className="mt-1">
                       {dueState(
@@ -230,17 +233,17 @@ export function TasksPage() {
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-4">
+                  <td className="px-4 py-4" data-label="Status">
                     <StatusBadge status={task.status} />
                   </td>
-                  <td className="px-4 py-4">
+                  <td className="px-4 py-4" data-label="Assigned agent">
                     <span className="flex items-center gap-2">
                       <Avatar user={task.assigned_agent} size="sm" />
                       <span>{task.assigned_agent.full_name}</span>
                     </span>
                   </td>
                   {!isManager && (
-                    <td className="px-4 py-4">
+                    <td className="px-4 py-4" data-label="Controls">
                       <select
                         aria-label={`Update ${task.title}`}
                         className="px-2 py-1.5"

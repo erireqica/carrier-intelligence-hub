@@ -10,11 +10,14 @@ import {
   LayoutDashboard,
   LogOut,
   Mail,
+  Menu,
   ShieldCheck,
   UserRound,
   UsersRound,
+  X,
   type LucideIcon,
 } from 'lucide-react'
+import { useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 
 import { useCurrentUser } from '../app/auth'
@@ -76,6 +79,42 @@ function NavigationLink({
   )
 }
 
+function MobileNavigationLink({
+  label,
+  to,
+  icon: Icon,
+  onNavigate,
+}: {
+  label: string
+  to: string
+  icon: LucideIcon
+  onNavigate: () => void
+}) {
+  return (
+    <NavLink
+      to={to}
+      onClick={onNavigate}
+      className={({ isActive }) =>
+        `group flex min-w-0 items-center gap-2.5 rounded-lg border px-3 py-2.5 text-sm font-semibold transition ${
+          isActive
+            ? 'border-blue-200 bg-blue-50 text-blue-800 shadow-sm'
+            : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'
+        }`
+      }
+    >
+      {({ isActive }) => (
+        <>
+          <Icon
+            className={`h-4 w-4 shrink-0 ${isActive ? 'text-blue-700' : 'text-slate-500'}`}
+            aria-hidden
+          />
+          <span className="truncate">{label}</span>
+        </>
+      )}
+    </NavLink>
+  )
+}
+
 export function AppShell() {
   const auth = useCurrentUser()
   const user = auth.data!.user
@@ -91,6 +130,11 @@ export function AppShell() {
     )
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const allNavigation = [
+    ...primaryNavigation,
+    ...(user.role === 'MANAGER' ? managerNavigation : []),
+  ]
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: async () => {
@@ -190,16 +234,16 @@ export function AppShell() {
                   : 'My operations'}
               </span>
             </div>
-            <div className="ml-auto flex items-center gap-3">
+            <div className="ml-auto flex items-center gap-2 sm:gap-3">
               <div className="hidden text-right sm:block">
                 <p className="text-sm font-semibold text-slate-900">
                   {user.full_name}
                 </p>
                 <p className="text-xs text-slate-500">{user.agency.name}</p>
               </div>
-              <Avatar user={user} className="hidden sm:flex lg:hidden" />
+              <Avatar user={user} size="sm" className="lg:hidden" />
               <Button
-                className="lg:hidden"
+                className="px-3 sm:px-4 lg:hidden"
                 variant="secondary"
                 onClick={() => logoutMutation.mutate()}
                 disabled={logoutMutation.isPending}
@@ -207,16 +251,69 @@ export function AppShell() {
                 <LogOut className="h-4 w-4" aria-hidden />
                 <span className="hidden sm:inline">Sign out</span>
               </Button>
+              <button
+                type="button"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-700 shadow-sm hover:border-slate-400 hover:bg-slate-50 sm:hidden"
+                aria-label={
+                  mobileMenuOpen ? 'Close navigation' : 'Open navigation'
+                }
+                aria-expanded={mobileMenuOpen}
+                aria-controls="mobile-navigation-menu"
+                onClick={() => setMobileMenuOpen((open) => !open)}
+              >
+                {mobileMenuOpen ? (
+                  <X className="h-[18px] w-[18px]" aria-hidden />
+                ) : (
+                  <Menu className="h-[18px] w-[18px]" aria-hidden />
+                )}
+              </button>
             </div>
           </div>
+          {mobileMenuOpen && (
+            <nav
+              id="mobile-navigation-menu"
+              className="mt-4 border-t border-slate-200 pt-4 sm:hidden"
+              aria-label="Mobile navigation menu"
+            >
+              <p className="mb-2 text-[0.65rem] font-bold tracking-[0.14em] text-slate-500 uppercase">
+                Workspace
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {primaryNavigation.map(([label, to, icon]) => (
+                  <MobileNavigationLink
+                    key={to}
+                    label={label === 'Gmail Connections' ? 'Gmail' : label}
+                    to={to}
+                    icon={icon}
+                    onNavigate={() => setMobileMenuOpen(false)}
+                  />
+                ))}
+              </div>
+              {user.role === 'MANAGER' && (
+                <>
+                  <p className="mt-4 mb-2 text-[0.65rem] font-bold tracking-[0.14em] text-slate-500 uppercase">
+                    Management
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {managerNavigation.map(([label, to, icon]) => (
+                      <MobileNavigationLink
+                        key={to}
+                        label={label}
+                        to={to}
+                        icon={icon}
+                        onNavigate={() => setMobileMenuOpen(false)}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+            </nav>
+          )}
           <nav
-            className="mobile-nav mt-4 flex gap-5 overflow-x-auto pb-1 lg:hidden"
+            className="mobile-nav mt-4 hidden gap-5 overflow-x-auto pb-1 sm:flex lg:hidden"
             aria-label="Mobile navigation"
           >
-            {[
-              ...primaryNavigation,
-              ...(user.role === 'MANAGER' ? managerNavigation : []),
-            ].map(([label, to, Icon]) => (
+            {allNavigation.map(([label, to, Icon]) => (
               <NavLink
                 key={to}
                 to={to}

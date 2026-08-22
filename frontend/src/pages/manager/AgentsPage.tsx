@@ -149,8 +149,8 @@ export function AgentsPage() {
           {error.message}
         </p>
       )}
-      <div className="data-table-shell">
-        <div className="flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
+      <div className="data-table-shell responsive-data-table">
+        <div className="record-list-heading flex items-center justify-between border-b border-slate-200 bg-white px-5 py-4">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-50 text-blue-700">
               <UsersRound className="h-[18px] w-[18px]" aria-hidden />
@@ -188,7 +188,7 @@ export function AgentsPage() {
           <tbody className="divide-y divide-slate-100">
             {agents.data.items.map((agent) => (
               <tr key={agent.id}>
-                <td className="px-4 py-4 font-medium">
+                <td className="px-4 py-4 font-medium" data-label="User">
                   <div className="flex items-center gap-3">
                     <Avatar user={agent} />
                     <div>
@@ -201,26 +201,34 @@ export function AgentsPage() {
                     </div>
                   </div>
                 </td>
-                <td className="px-4 py-4">
+                <td className="px-4 py-4" data-label="Role">
                   <Badge tone="blue">{agent.role}</Badge>
                 </td>
-                <td className="px-4 py-4">
+                <td className="px-4 py-4" data-label="Status">
                   <StatusBadge
                     status={agent.is_active ? 'ACTIVE' : 'DISABLED'}
                   />
                 </td>
-                <td className="px-4 py-4">{agent.open_tasks}</td>
-                <td className="px-4 py-4">{agent.urgent_cases}</td>
-                <td className="px-4 py-4">
+                <td className="px-4 py-4" data-label="Open tasks">
+                  {agent.open_tasks}
+                </td>
+                <td className="px-4 py-4" data-label="Urgent cases">
+                  {agent.urgent_cases}
+                </td>
+                <td className="px-4 py-4" data-label="Connected inboxes">
                   {agent.gmail_connections} connected
                 </td>
-                <td className="px-4 py-4">
+                <td className="px-4 py-4" data-label="Last login">
                   {formatDateTime(
                     agent.last_login_at,
                     auth.data!.user.agency.timezone,
                   )}
                 </td>
-                <td className="px-4 py-4">
+                <td
+                  className="px-4 py-4"
+                  data-label="Actions"
+                  data-mobile-span="full"
+                >
                   {agent.role === 'AGENT' && (
                     <div className="flex gap-2">
                       <Button

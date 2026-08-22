@@ -157,7 +157,7 @@ export function CasesPage() {
           }
         />
       ) : (
-        <div className="data-table-shell">
+        <div className="data-table-shell responsive-data-table">
           <table className="w-full min-w-[900px] text-left text-sm">
             <thead className="bg-slate-50 text-xs tracking-wide text-slate-500 uppercase">
               <tr>
@@ -172,7 +172,7 @@ export function CasesPage() {
             <tbody className="divide-y divide-slate-100">
               {cases.data.items.map((item) => (
                 <tr key={item.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-4">
+                  <td className="px-4 py-4" data-label="Case">
                     <Link
                       className="font-semibold text-blue-800"
                       to={`/cases/${item.id}`}
@@ -180,6 +180,7 @@ export function CasesPage() {
                       {item.client_name}
                     </Link>
                     <p className="mt-1 text-xs text-slate-500">
+                      <span className="sm:hidden">{item.carrier.name} · </span>
                       {item.policy_number ?? 'Policy number pending'}
                       {item.needs_review ? ' · Needs review' : ''}
                     </p>
@@ -189,14 +190,20 @@ export function CasesPage() {
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-4">{item.carrier.name}</td>
-                  <td className="px-4 py-4">
+                  <td
+                    className="px-4 py-4"
+                    data-label="Carrier"
+                    data-mobile-hide="true"
+                  >
+                    {item.carrier.name}
+                  </td>
+                  <td className="px-4 py-4" data-label="Policy status">
                     <StatusBadge status={item.policy_status} />
                   </td>
-                  <td className="px-4 py-4">
+                  <td className="px-4 py-4" data-label="Priority">
                     <PriorityBadge priority={item.priority} />
                   </td>
-                  <td className="px-4 py-4">
+                  <td className="px-4 py-4" data-label="Assigned agent">
                     {item.assigned_agent ? (
                       <span className="flex items-center gap-2">
                         <Avatar user={item.assigned_agent} size="sm" />
@@ -206,7 +213,7 @@ export function CasesPage() {
                       'Unassigned'
                     )}
                   </td>
-                  <td className="px-4 py-4 text-slate-600">
+                  <td className="px-4 py-4 text-slate-600" data-label="Updated">
                     {formatDate(item.updated_at)}
                   </td>
                 </tr>

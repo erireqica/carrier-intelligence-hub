@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { Pagination } from './ui'
+import { Pagination, StatusBadge } from './ui'
 
 function submit(input: HTMLElement) {
   fireEvent.submit(input.closest('form')!)
@@ -95,5 +95,21 @@ describe('Pagination', () => {
     rerender(<Pagination page={6} pages={8} onPageChange={onPageChange} />)
 
     expect(screen.getByLabelText('Go to page')).toHaveValue(6)
+  })
+})
+
+describe('StatusBadge', () => {
+  it('uses semantic tones for operational states', () => {
+    const { rerender } = render(<StatusBadge status="CONNECTED" />)
+    expect(screen.getByText('CONNECTED')).toHaveClass('text-emerald-800')
+
+    rerender(<StatusBadge status="NEEDS_REAUTH" />)
+    expect(screen.getByText('NEEDS REAUTH')).toHaveClass('text-amber-900')
+
+    rerender(<StatusBadge status="ERROR" />)
+    expect(screen.getByText('ERROR')).toHaveClass('text-red-800')
+
+    rerender(<StatusBadge status="DISMISSED" />)
+    expect(screen.getByText('DISMISSED')).toHaveClass('text-slate-700')
   })
 })

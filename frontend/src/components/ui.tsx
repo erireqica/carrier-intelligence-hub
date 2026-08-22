@@ -132,16 +132,51 @@ export function PriorityBadge({ priority }: { priority: Priority }) {
   return <Badge tone={tone}>{priority}</Badge>
 }
 
+const neutralStatuses = new Set([
+  'DISABLED',
+  'DISCONNECTED',
+  'DISMISSED',
+  'IGNORED',
+  'INACTIVE',
+  'UNKNOWN',
+])
+const greenStatuses = new Set([
+  'ACTIVE',
+  'APPLIED',
+  'COMPLETED',
+  'CONNECTED',
+  'HEALTHY',
+  'ISSUED',
+  'PROCESSED',
+  'RESOLVED',
+  'SUCCESS',
+])
+const amberStatuses = new Set([
+  'NEEDS_ATTENTION',
+  'NEEDS_OCR',
+  'NEEDS_PERMISSION',
+  'NEEDS_REAUTH',
+  'NEEDS_REVIEW',
+  'OPEN',
+  'PENDING',
+  'RETRY_WAIT',
+  'WARNING',
+])
+
 export function StatusBadge({ status }: { status: string }) {
-  const tone = status.includes('FAIL')
-    ? 'red'
-    : status.includes('REVIEW') || status === 'PENDING' || status === 'OPEN'
-      ? 'amber'
-      : status.includes('COMPLETE') ||
-          status === 'ISSUED' ||
-          status === 'PROCESSED'
-        ? 'green'
-        : 'blue'
+  const normalized = status.toUpperCase()
+  const tone =
+    normalized.includes('FAIL') ||
+    normalized === 'ERROR' ||
+    normalized === 'REVOKED'
+      ? 'red'
+      : neutralStatuses.has(normalized)
+        ? 'neutral'
+        : greenStatuses.has(normalized)
+          ? 'green'
+          : amberStatuses.has(normalized) || normalized.includes('REVIEW')
+            ? 'amber'
+            : 'blue'
   return <Badge tone={tone}>{status.replaceAll('_', ' ')}</Badge>
 }
 

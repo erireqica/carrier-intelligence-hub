@@ -109,14 +109,14 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
       </p>
     )
   return (
-    <div className="data-table-shell mt-5">
+    <div className="data-table-shell responsive-data-table mt-5">
       <table className="w-full min-w-[920px] text-left text-sm">
         <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
           <tr>
+            <th className="px-3 py-2">Subject</th>
             <th className="px-3 py-2">Received</th>
             <th className="px-3 py-2">Carrier</th>
             <th className="px-3 py-2">Sender</th>
-            <th className="px-3 py-2">Subject</th>
             <th className="px-3 py-2">State</th>
             <th className="px-3 py-2">Gmail workflow</th>
             <th className="px-3 py-2">Attachments</th>
@@ -129,11 +129,23 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
               process.isPending && process.variables === message.id
             return (
               <tr key={message.id}>
-                <td className="px-3 py-3">{formatDate(message.received_at)}</td>
-                <td className="px-3 py-3">{message.carrier.name}</td>
-                <td className="px-3 py-3">{message.sender}</td>
-                <td className="px-3 py-3 font-medium">{message.subject}</td>
-                <td className="px-3 py-3">
+                <td className="px-3 py-3 font-medium" data-label="Subject">
+                  {message.subject}
+                </td>
+                <td className="px-3 py-3" data-label="Received">
+                  {formatDate(message.received_at)}
+                </td>
+                <td className="px-3 py-3" data-label="Carrier">
+                  {message.carrier.name}
+                </td>
+                <td
+                  className="px-3 py-3 break-all"
+                  data-label="Sender"
+                  data-mobile-span="full"
+                >
+                  {message.sender}
+                </td>
+                <td className="px-3 py-3" data-label="State">
                   <StatusBadge
                     status={
                       isRetrying ? 'PROCESSING' : message.processing_status
@@ -161,13 +173,18 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
                     </p>
                   ) : null}
                 </td>
-                <td className="px-3 py-3 text-xs text-slate-600">
+                <td
+                  className="px-3 py-3 text-xs text-slate-600"
+                  data-label="Gmail workflow"
+                >
                   {message.label_sync_status
                     ? labelSyncText[message.label_sync_status]
                     : 'Not queued'}
                 </td>
-                <td className="px-3 py-3">{message.attachment_count}</td>
-                <td className="px-3 py-3">
+                <td className="px-3 py-3" data-label="Attachments">
+                  {message.attachment_count}
+                </td>
+                <td className="px-3 py-3" data-label="Action">
                   {isRetrying ? (
                     <span className="text-slate-500">Analyzing…</span>
                   ) : message.review_id && message.can_open_review ? (

@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -58,6 +59,27 @@ describe('AppShell navigation', () => {
     expect(screen.queryByText('My Activity')).not.toBeInTheDocument()
     expect(screen.getAllByText('Tasks').length).toBeGreaterThan(0)
     expect(screen.queryByText('My Tasks')).not.toBeInTheDocument()
+  })
+
+  it('provides a compact, role-aware mobile navigation menu', () => {
+    renderShell('MANAGER')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }))
+
+    const menu = screen.getByRole('navigation', {
+      name: 'Mobile navigation menu',
+    })
+    expect(within(menu).getByText('Dashboard')).toBeInTheDocument()
+    expect(within(menu).getByText('Analytics')).toBeInTheDocument()
+    expect(within(menu).getByText('System Logs')).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Close navigation' }),
+    ).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close navigation' }))
+    expect(
+      screen.queryByRole('navigation', { name: 'Mobile navigation menu' }),
+    ).not.toBeInTheDocument()
   })
 
   it('uses a fixed dynamic-viewport desktop shell', () => {

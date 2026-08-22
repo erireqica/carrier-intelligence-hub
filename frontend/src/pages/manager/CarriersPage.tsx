@@ -120,7 +120,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
 
   return (
     <article className="surface-panel">
-      <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+      <header className="flex flex-col items-stretch justify-between gap-4 border-b border-slate-200 px-5 py-4 sm:flex-row sm:items-start">
         {editing ? (
           <form
             className="grid flex-1 gap-3 sm:grid-cols-[1fr_140px]"
@@ -189,7 +189,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
           </div>
         )}
         {!editing && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button
               variant="secondary"
               onClick={beginEditing}
@@ -233,10 +233,10 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
             {visibleDomains.map((item) => (
               <li
                 key={item.id}
-                className="flex justify-between border border-slate-200 px-3 py-2 text-sm"
+                className="flex flex-col gap-3 rounded-lg border border-slate-200 px-3 py-2.5 text-sm sm:flex-row sm:items-center sm:justify-between"
               >
                 <span>{item.domain}</span>
-                <span className="flex items-center gap-2">
+                <span className="flex flex-wrap items-center gap-2">
                   <StatusBadge
                     status={item.is_enabled ? 'ACTIVE' : 'DISABLED'}
                   />
@@ -279,7 +279,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
             />
           </div>
           <form
-            className="mt-3 flex gap-2"
+            className="mt-3 flex flex-col gap-2 sm:flex-row"
             onSubmit={(event) => {
               event.preventDefault()
               domainMutation.mutate()
@@ -315,10 +315,10 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
               {carrier.senders.map((item) => (
                 <li
                   key={item.id}
-                  className="flex justify-between border border-slate-200 px-3 py-2 text-sm"
+                  className="flex flex-col gap-3 rounded-lg border border-slate-200 px-3 py-2.5 text-sm sm:flex-row sm:items-center sm:justify-between"
                 >
                   <span>{item.email}</span>
-                  <span className="flex items-center gap-2">
+                  <span className="flex flex-wrap items-center gap-2">
                     <StatusBadge
                       status={item.is_enabled ? 'ACTIVE' : 'DISABLED'}
                     />
@@ -358,7 +358,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
             </p>
           )}
           <form
-            className="mt-3 flex gap-2"
+            className="mt-3 flex flex-col gap-2 sm:flex-row"
             onSubmit={(event) => {
               event.preventDefault()
               senderMutation.mutate()

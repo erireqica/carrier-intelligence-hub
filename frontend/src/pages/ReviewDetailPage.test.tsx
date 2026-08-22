@@ -204,6 +204,17 @@ describe('ReviewDetailPage', () => {
     )
 
     expect(await screen.findByText('Email content')).toBeInTheDocument()
+    const sourceHeading = screen.getByText('Email content')
+    const comparisonHeading = screen.getByText('What Carrier Hub found')
+    const decisionHeading = screen.getByText('Confirm or correct')
+    expect(
+      sourceHeading.compareDocumentPosition(comparisonHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      comparisonHeading.compareDocumentPosition(decisionHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
     expect(screen.getByText('Email subject')).toBeInTheDocument()
     expect(screen.getAllByText('Email body').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Pending requirements').length).toBeGreaterThan(

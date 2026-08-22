@@ -12,10 +12,26 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { useEffect, useState } from 'react'
 
 import type { Analytics } from '../lib/types'
 
 type Range = Analytics['range']
+
+function useReducedMotion() {
+  const [reduced, setReduced] = useState(false)
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const update = () => setReduced(media.matches)
+    update()
+    media.addEventListener?.('change', update)
+    return () => media.removeEventListener?.('change', update)
+  }, [])
+
+  return reduced
+}
 
 function tickInterval(range: Range, bucketCount: number) {
   if (range === '7d') return 1
@@ -67,6 +83,7 @@ export function VolumeAreaChart({
   range: Range
 }) {
   const ticks = visibleTicks(data, range)
+  const reducedMotion = useReducedMotion()
   return (
     <>
       <div className="h-72 w-full" aria-hidden="true">
@@ -115,6 +132,7 @@ export function VolumeAreaChart({
               strokeWidth={2.5}
               fill="url(#volumeFill)"
               activeDot={{ r: 5, strokeWidth: 3, stroke: '#dbeafe' }}
+              isAnimationActive={!reducedMotion}
               animationDuration={650}
             />
           </AreaChart>
@@ -146,12 +164,13 @@ export function OutcomeDonut({
   data: Analytics['outcomes']
   total: number
 }) {
+  const reducedMotion = useReducedMotion()
   const chartData = data.length
     ? data
     : [{ label: 'No outcomes', count: 1, percentage: 100 }]
   return (
     <div className="grid items-center gap-4 sm:grid-cols-[180px_1fr] xl:grid-cols-1 2xl:grid-cols-[180px_1fr]">
-      <div className="relative mx-auto h-44 w-44">
+      <div className="relative mx-auto h-44 w-44" aria-hidden="true">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
@@ -162,6 +181,7 @@ export function OutcomeDonut({
               outerRadius={78}
               paddingAngle={2}
               stroke="none"
+              isAnimationActive={!reducedMotion}
               animationDuration={650}
             >
               {chartData.map((item, index) => (
@@ -208,6 +228,16 @@ export function OutcomeDonut({
           </div>
         ))}
       </div>
+      <p className="sr-only">
+        {data.length
+          ? data
+              .map(
+                (item) =>
+                  `${item.label}: ${item.count}, ${item.percentage} percent`,
+              )
+              .join('. ')
+          : 'No processing outcomes are available.'}
+      </p>
     </div>
   )
 }
@@ -217,6 +247,7 @@ export function CarrierPerformanceChart({
 }: {
   data: Analytics['carrier_performance']
 }) {
+  const reducedMotion = useReducedMotion()
   if (!data.length)
     return (
       <p className="py-12 text-center text-sm text-slate-500">
@@ -226,7 +257,10 @@ export function CarrierPerformanceChart({
   return (
     <div
       className="h-64 w-full"
-      aria-label="Carrier automation and review rates"
+      role="img"
+      aria-label={`Carrier automation rates. ${data
+        .map((item) => `${item.carrier_name}: ${item.automation_rate} percent`)
+        .join('. ')}`}
     >
       <ResponsiveContainer width="100%" height="100%">
         <BarChart
@@ -265,6 +299,7 @@ export function CarrierPerformanceChart({
             fill="#2563eb"
             radius={[0, 4, 4, 0]}
             maxBarSize={18}
+            isAnimationActive={!reducedMotion}
           />
         </BarChart>
       </ResponsiveContainer>

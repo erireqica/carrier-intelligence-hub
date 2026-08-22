@@ -96,14 +96,19 @@ function ReadOnlyProposal({
   proposal,
   status,
   resolutionNotes,
+  className = '',
 }: {
   proposal: AnalysisResult
   status: string
   resolutionNotes: string | null
+  className?: string
 }) {
   return (
-    <section className="surface-panel space-y-5 p-5">
+    <section className={`surface-panel space-y-5 p-5 ${className}`}>
       <div>
+        <p className="mb-2 text-[0.66rem] font-bold tracking-[0.14em] text-blue-700 uppercase">
+          04 · Decision record
+        </p>
         <h2 className="font-semibold">Confirmed analysis</h2>
         <p className="mt-1 text-sm text-slate-600">
           This review is display-only. No editable controls are available in
@@ -180,6 +185,47 @@ function ReadOnlyProposal({
           <p className="mt-1 text-sm text-slate-700">{resolutionNotes}</p>
         </div>
       )}
+    </section>
+  )
+}
+
+function ProposalSummary({ proposal }: { proposal: AnalysisResult }) {
+  return (
+    <section className="surface-panel h-fit self-start p-5">
+      <p className="mb-2 text-[0.66rem] font-bold tracking-[0.14em] text-blue-700 uppercase">
+        03 · Compare the interpretation
+      </p>
+      <h2 className="font-semibold">What Carrier Hub found</h2>
+      <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2">
+        {[
+          ['Classification', humanize(proposal.classification)],
+          ['Client', proposal.client_name ?? 'Not found'],
+          ['Policy number', proposal.policy_number ?? 'Not found'],
+          ['Policy status', humanize(proposal.policy_status)],
+          ['Priority', humanize(proposal.priority)],
+          [
+            'Deadline',
+            proposal.deadline.explicit_date ??
+              proposal.deadline.raw_text ??
+              'Not found',
+          ],
+          [
+            'Premium',
+            proposal.premium_amount
+              ? `${proposal.currency ?? ''} ${proposal.premium_amount}`.trim()
+              : 'Not found',
+          ],
+          ['Effective date', proposal.effective_date ?? 'Not found'],
+        ].map(([label, value]) => (
+          <div key={label}>
+            <dt className="text-slate-500">{label}</dt>
+            <dd className="mt-1 font-medium text-slate-900">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-5 border-t border-slate-100 pt-4 text-sm leading-6 text-slate-700">
+        {proposal.summary}
+      </p>
     </section>
   )
 }
@@ -379,44 +425,6 @@ export function ReviewDetailPage() {
           cannot resolve an ownership conflict.
         </p>
       )}
-      {proposal && (
-        <section className="surface-panel p-5">
-          <p className="mb-2 text-[0.66rem] font-bold tracking-[0.14em] text-blue-700 uppercase">
-            03 · Compare the interpretation
-          </p>
-          <h2 className="font-semibold">What Carrier Hub found</h2>
-          <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            {[
-              ['Classification', humanize(proposal.classification)],
-              ['Client', proposal.client_name ?? 'Not found'],
-              ['Policy number', proposal.policy_number ?? 'Not found'],
-              ['Policy status', humanize(proposal.policy_status)],
-              ['Priority', humanize(proposal.priority)],
-              [
-                'Deadline',
-                proposal.deadline.explicit_date ??
-                  proposal.deadline.raw_text ??
-                  'Not found',
-              ],
-              [
-                'Premium',
-                proposal.premium_amount
-                  ? `${proposal.currency ?? ''} ${proposal.premium_amount}`.trim()
-                  : 'Not found',
-              ],
-              ['Effective date', proposal.effective_date ?? 'Not found'],
-            ].map(([label, value]) => (
-              <div key={label}>
-                <dt className="text-slate-500">{label}</dt>
-                <dd className="mt-1 font-medium text-slate-900">{value}</dd>
-              </div>
-            ))}
-          </dl>
-          <p className="mt-4 text-sm leading-6 text-slate-700">
-            {proposal.summary}
-          </p>
-        </section>
-      )}
       <section className="grid items-start gap-6 xl:grid-cols-2">
         <div className="surface-panel h-fit self-start space-y-5 p-5">
           <div>
@@ -478,16 +486,19 @@ export function ReviewDetailPage() {
           )}
         </div>
 
+        {proposal && <ProposalSummary proposal={proposal} />}
+
         {proposal && form ? (
           isManager || isFinalized || isOwnershipBlocked ? (
             <ReadOnlyProposal
               proposal={proposal}
               status={review.status}
               resolutionNotes={review.resolution_notes}
+              className="xl:col-span-2"
             />
           ) : (
             <form
-              className="surface-panel space-y-5 p-5"
+              className="surface-panel space-y-5 p-5 xl:col-span-2"
               onSubmit={(event) => {
                 event.preventDefault()
                 apply.mutate()
@@ -804,7 +815,7 @@ export function ReviewDetailPage() {
             </form>
           )
         ) : (
-          <section className="surface-panel space-y-5 p-5">
+          <section className="surface-panel space-y-5 p-5 xl:col-span-2">
             <div>
               <h2 className="font-semibold">No structured proposal</h2>
               <p className="mt-2 text-sm leading-6 text-slate-600">
