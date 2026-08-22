@@ -1,34 +1,50 @@
-from sqlalchemy import func, or_, select
+from collections import Counter
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.api.schemas.domain import (
     ActivityItem,
     AgentListItem,
+    AgentListResponse,
+    AnalyticsBreakdownItem,
     AnalyticsResponse,
+    AnalyticsTrendItem,
+    AttachmentAnalytics,
     AuditLogItem,
     AuditLogResponse,
+    CarrierAnalyticsItem,
     DashboardMetrics,
     DashboardResponse,
     WorkloadItem,
 )
 from app.core.time import utc_now
 from app.models.audit import AuditEvent
-from app.models.carriers import Carrier
 from app.models.enums import (
+    AttachmentStatus,
     AuditSeverity,
     GmailConnectionStatus,
     GmailHealth,
     GmailLabelSyncStatus,
+    MessageClassification,
     ProcessingStatus,
     ReviewStatus,
     TaskStatus,
     UserRole,
 )
 from app.models.gmail_labels import GmailThreadLabelSync
-from app.models.operations import CarrierMessage, PolicyCase, ReviewItem, Task
+from app.models.operations import Attachment, CarrierMessage, PolicyCase, ReviewItem, Task
 from app.models.organization import GmailConnection, User
 from app.services.auth import AuthContext
-from app.services.operations import agent_brief, case_item, page_info, scoped_cases_query
+from app.services.operations import (
+    agent_brief,
+    case_item,
+    page_info,
+    scoped_cases_query,
+    valid_page,
+)
 
 AUDIT_CATEGORY_LABELS = {
     "ACCESS": "Access",
@@ -42,7 +58,7 @@ AUDIT_CATEGORY_LABELS = {
 
 
 def audit_category(event_type: str) -> str:
-    if event_type.startswith(("USER_", "PROFILE_", "PASSWORD_")):
+    if event_type.startswith(("USER_", "PROFILE_", "PASSWORD_", "AGENT_")):
         return "ACCESS"
     if event_type.startswith("TASK_"):
         return "TASKS"
@@ -66,6 +82,7 @@ def _category_clause(category: str):
         AuditEvent.event_type.like("USER\\_%", escape="\\"),
         AuditEvent.event_type.like("PROFILE\\_%", escape="\\"),
         AuditEvent.event_type.like("PASSWORD\\_%", escape="\\"),
+        AuditEvent.event_type.like("AGENT\\_%", escape="\\"),
     )
     tasks = AuditEvent.event_type.like("TASK\\_%", escape="\\")
     reviews = or_(
@@ -361,127 +378,290 @@ def dashboard(db: Session, current: AuthContext) -> DashboardResponse:
     )
 
 
-def list_agents(db: Session, current: AuthContext) -> list[AgentListItem]:
+def list_agents(
+    db: Session, current: AuthContext, *, page: int, page_size: int = 10
+) -> AgentListResponse:
+    query = select(User).where(
+        User.agency_id == current.user.agency_id,
+        User.removed_at.is_(None),
+    )
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    page = valid_page(page, page_size, total)
     users = db.scalars(
-        select(User).where(User.agency_id == current.user.agency_id).order_by(User.full_name)
+        query.order_by(
+            case((User.role == UserRole.AGENT, 0), else_=1),
+            User.is_active.desc(),
+            User.full_name,
+            User.id,
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     ).all()
-    output: list[AgentListItem] = []
-    for user in users:
-        open_tasks = (
-            db.scalar(
-                select(func.count())
-                .select_from(Task)
-                .where(
-                    Task.assigned_agent_id == user.id,
-                    Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
-                )
-            )
-            or 0
-        )
-        urgent_cases = (
-            db.scalar(
-                select(func.count())
-                .select_from(PolicyCase)
-                .where(PolicyCase.assigned_agent_id == user.id, PolicyCase.priority == "URGENT")
-            )
-            or 0
-        )
-        gmail_count = (
-            db.scalar(
-                select(func.count())
-                .select_from(GmailConnection)
-                .where(
-                    GmailConnection.user_id == user.id,
-                    GmailConnection.status != GmailConnectionStatus.DISCONNECTED,
-                )
-            )
-            or 0
-        )
-        output.append(
-            AgentListItem(
-                id=user.id,
-                full_name=user.full_name,
-                email=user.email,
-                role=user.role,
-                is_active=user.is_active,
-                last_login_at=user.last_login_at,
-                open_tasks=open_tasks,
-                urgent_cases=urgent_cases,
-                gmail_connections=gmail_count,
-            )
-        )
-    return output
+    output = [agent_list_item(db, user) for user in users]
+    return AgentListResponse(items=output, page=page_info(page, page_size, total))
 
 
-def analytics(db: Session, current: AuthContext) -> AnalyticsResponse:
-    agency_id = current.user.agency_id
-    cases_by_status = dict(
-        db.execute(
-            select(PolicyCase.current_policy_status, func.count())
-            .where(PolicyCase.agency_id == agency_id)
-            .group_by(PolicyCase.current_policy_status)
-        ).all()
-    )
-    cases_by_carrier = dict(
-        db.execute(
-            select(PolicyCase.carrier_id, func.count())
-            .where(PolicyCase.agency_id == agency_id)
-            .group_by(PolicyCase.carrier_id)
-        ).all()
-    )
-    carrier_names = dict(
-        db.execute(select(Carrier.id, Carrier.name).where(Carrier.agency_id == agency_id)).all()
-    )
-    workload_rows = db.execute(
-        select(User, func.count(Task.id))
-        .outerjoin(
-            Task,
-            (Task.assigned_agent_id == User.id)
-            & Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+def agent_list_item(db: Session, user: User) -> AgentListItem:
+    open_tasks = (
+        db.scalar(
+            select(func.count())
+            .select_from(Task)
+            .where(
+                Task.assigned_agent_id == user.id,
+                Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+            )
         )
-        .where(User.agency_id == agency_id, User.is_active.is_(True))
-        .group_by(User.id)
-        .order_by(User.full_name, User.id)
-    ).all()
-    task_counts = db.execute(
-        select(
-            func.count().filter(Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS])),
-            func.count().filter(
-                Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]), Task.due_at < utc_now()
-            ),
-        ).where(Task.agency_id == agency_id)
-    ).one()
-    message_counts = db.execute(
-        select(
-            func.count().filter(CarrierMessage.processing_status == ProcessingStatus.PROCESSED),
-            func.count().filter(CarrierMessage.processing_status == ProcessingStatus.FAILED),
-        ).where(CarrierMessage.agency_id == agency_id)
-    ).one()
-    return AnalyticsResponse(
-        cases_by_status={key.value: value for key, value in cases_by_status.items()},
-        cases_by_carrier={carrier_names[key]: value for key, value in cases_by_carrier.items()},
-        workload_by_agent=[
-            WorkloadItem(agent=agent_brief(user), open_tasks=count) for user, count in workload_rows
-        ],
-        urgent_high_cases=db.scalar(
+        or 0
+    )
+    urgent_cases = (
+        db.scalar(
             select(func.count())
             .select_from(PolicyCase)
-            .where(PolicyCase.agency_id == agency_id, PolicyCase.priority.in_(["URGENT", "HIGH"]))
+            .where(PolicyCase.assigned_agent_id == user.id, PolicyCase.priority == "URGENT")
         )
-        or 0,
-        open_tasks=task_counts[0],
-        overdue_tasks=task_counts[1],
-        open_reviews=db.scalar(
+        or 0
+    )
+    gmail_count = (
+        db.scalar(
             select(func.count())
-            .select_from(ReviewItem)
+            .select_from(GmailConnection)
             .where(
-                ReviewItem.agency_id == agency_id,
-                ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+                GmailConnection.user_id == user.id,
+                GmailConnection.status != GmailConnectionStatus.DISCONNECTED,
             )
         )
-        or 0,
-        processed_messages=message_counts[0],
-        failed_messages=message_counts[1],
+        or 0
+    )
+    return AgentListItem(
+        id=user.id,
+        full_name=user.full_name,
+        email=user.email,
+        role=user.role,
+        is_active=user.is_active,
+        last_login_at=user.last_login_at,
+        open_tasks=open_tasks,
+        urgent_cases=urgent_cases,
+        gmail_connections=gmail_count,
+    )
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    return round(numerator * 100 / denominator, 1) if denominator else None
+
+
+def analytics(
+    db: Session,
+    current: AuthContext,
+    *,
+    time_range: str = "30d",
+) -> AnalyticsResponse:
+    timezone = ZoneInfo(current.agency.timezone)
+    today = datetime.now(timezone).date()
+    days = {"7d": 7, "30d": 30, "90d": 90}.get(time_range)
+    start_date = today - timedelta(days=days - 1) if days else None
+    start_at = (
+        datetime.combine(start_date, datetime.min.time(), timezone).astimezone(UTC)
+        if start_date
+        else None
+    )
+    end_at = datetime.combine(today + timedelta(days=1), datetime.min.time(), timezone).astimezone(
+        UTC
+    )
+    query = (
+        select(CarrierMessage)
+        .options(joinedload(CarrierMessage.carrier))
+        .where(
+            CarrierMessage.agency_id == current.user.agency_id,
+            CarrierMessage.received_at < end_at,
+        )
+    )
+    if start_at is not None:
+        query = query.where(CarrierMessage.received_at >= start_at)
+    messages = list(db.scalars(query.order_by(CarrierMessage.received_at)).unique().all())
+    message_ids = [message.id for message in messages]
+    reviewed_ids = (
+        set(
+            db.scalars(
+                select(ReviewItem.carrier_message_id).where(
+                    ReviewItem.agency_id == current.user.agency_id,
+                    ReviewItem.carrier_message_id.in_(message_ids),
+                )
+            ).all()
+        )
+        if message_ids
+        else set()
+    )
+    handled_statuses = {
+        ProcessingStatus.PROCESSED,
+        ProcessingStatus.NEEDS_REVIEW,
+        ProcessingStatus.FAILED,
+        ProcessingStatus.IGNORED,
+    }
+    handled = [message for message in messages if message.processing_status in handled_statuses]
+    handled_ids = {message.id for message in handled}
+    reviewed_handled_ids = reviewed_ids & handled_ids
+    successful = [
+        message for message in messages if message.processing_status is ProcessingStatus.PROCESSED
+    ]
+    automatic = [message for message in successful if message.id not in reviewed_ids]
+    failures = [
+        message for message in handled if message.processing_status is ProcessingStatus.FAILED
+    ]
+    durations = [
+        (message.processed_at - message.processing_started_at).total_seconds()
+        for message in messages
+        if message.processing_status is ProcessingStatus.PROCESSED
+        and message.processing_started_at is not None
+        and message.processed_at is not None
+        and message.processed_at >= message.processing_started_at
+    ]
+
+    outcomes = Counter()
+    for message in messages:
+        if message.processing_status is ProcessingStatus.FAILED:
+            outcomes["Failed"] += 1
+        elif message.id in reviewed_ids:
+            outcomes["Human review"] += 1
+        elif message.processing_status in {ProcessingStatus.PROCESSED, ProcessingStatus.IGNORED}:
+            outcomes["Automatic"] += 1
+        else:
+            outcomes["Still processing"] += 1
+    total = len(messages)
+    outcome_items = [
+        AnalyticsBreakdownItem(
+            label=label, count=outcomes[label], percentage=_rate(outcomes[label], total) or 0
+        )
+        for label in ("Automatic", "Human review", "Failed", "Still processing")
+    ]
+
+    classification_labels = {
+        MessageClassification.POLICY_ISSUED: "Policy Issued",
+        MessageClassification.PENDING_REQUIREMENTS: "Pending Requirements",
+        MessageClassification.LAPSE_NOTICE: "Lapse Notice",
+        MessageClassification.COMMISSION_UPDATE: "Commission Update",
+        MessageClassification.OTHER: "Other",
+    }
+    classifications = Counter(
+        message.classification for message in messages if message.classification
+    )
+    classified_total = sum(classifications.values())
+    classification_items = [
+        AnalyticsBreakdownItem(
+            label=classification_labels[classification],
+            count=classifications[classification],
+            percentage=_rate(classifications[classification], classified_total) or 0,
+        )
+        for classification in classification_labels
+        if classifications[classification]
+    ]
+
+    carrier_groups: dict[int, list[CarrierMessage]] = {}
+    for message in messages:
+        carrier_groups.setdefault(message.carrier_id, []).append(message)
+    carrier_items = []
+    for carrier_id, group in carrier_groups.items():
+        group_handled = [
+            message for message in group if message.processing_status in handled_statuses
+        ]
+        group_handled_ids = {message.id for message in group_handled}
+        group_reviewed = reviewed_ids & group_handled_ids
+        group_successful = [
+            message for message in group if message.processing_status is ProcessingStatus.PROCESSED
+        ]
+        group_auto = [message for message in group_successful if message.id not in group_reviewed]
+        group_failed = [
+            message
+            for message in group_handled
+            if message.processing_status is ProcessingStatus.FAILED
+        ]
+        carrier_items.append(
+            CarrierAnalyticsItem(
+                carrier_id=carrier_id,
+                carrier_name=group[0].carrier.name,
+                messages=len(group),
+                automation_rate=_rate(len(group_auto), len(group_successful)),
+                review_rate=_rate(len(group_reviewed), len(group_handled)),
+                failure_rate=_rate(len(group_failed), len(group_handled)),
+            )
+        )
+    carrier_items.sort(key=lambda item: (-item.messages, item.carrier_name.casefold()))
+
+    attachments = (
+        list(
+            db.scalars(
+                select(Attachment)
+                .join(CarrierMessage)
+                .where(
+                    CarrierMessage.agency_id == current.user.agency_id,
+                    CarrierMessage.id.in_(message_ids),
+                    or_(
+                        func.lower(Attachment.mime_type) == "application/pdf",
+                        func.lower(Attachment.filename).like("%.pdf"),
+                    ),
+                )
+            ).all()
+        )
+        if message_ids
+        else []
+    )
+    pdf_attempts = [
+        item for item in attachments if item.processing_status is not AttachmentStatus.PENDING
+    ]
+    extracted = sum(item.processing_status is AttachmentStatus.EXTRACTED for item in pdf_attempts)
+    needs_ocr = sum(item.processing_status is AttachmentStatus.NEEDS_OCR for item in pdf_attempts)
+    failed_pdf = sum(
+        item.processing_status in {AttachmentStatus.FAILED, AttachmentStatus.UNSUPPORTED}
+        for item in pdf_attempts
+    )
+
+    local_dates = [message.received_at.astimezone(timezone).date() for message in messages]
+    trend_counts: Counter[str] = Counter()
+    if time_range in {"7d", "30d"}:
+        assert start_date is not None and days is not None
+        labels = [(start_date + timedelta(days=index)).isoformat() for index in range(days)]
+        trend_counts.update(date_value.isoformat() for date_value in local_dates)
+    elif time_range == "90d":
+        assert start_date is not None
+        labels = []
+        for index in range(13):
+            bucket_start = start_date + timedelta(days=index * 7)
+            if bucket_start > today:
+                break
+            labels.append(bucket_start.isoformat())
+        for date_value in local_dates:
+            index = min((date_value - start_date).days // 7, len(labels) - 1)
+            trend_counts[labels[index]] += 1
+    else:
+        first = min(local_dates, default=today).replace(day=1)
+        labels = []
+        cursor = first
+        while cursor <= today:
+            labels.append(cursor.strftime("%Y-%m"))
+            cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+        trend_counts.update(date_value.strftime("%Y-%m") for date_value in local_dates)
+
+    return AnalyticsResponse(
+        range=time_range,
+        start_date=start_date,
+        end_date=today,
+        carrier_messages=total,
+        automation_rate=_rate(len(automatic), len(successful)),
+        review_rate=_rate(len(reviewed_handled_ids), len(handled)),
+        failure_rate=_rate(len(failures), len(handled)),
+        average_processing_seconds=round(sum(durations) / len(durations), 1) if durations else None,
+        pdf_extraction_success_rate=_rate(extracted, len(pdf_attempts)),
+        outcomes=outcome_items,
+        volume_trend=[
+            AnalyticsTrendItem(label=label, count=trend_counts[label]) for label in labels
+        ],
+        classifications=classification_items,
+        carrier_performance=carrier_items,
+        attachments=AttachmentAnalytics(
+            pdfs_processed=len(pdf_attempts),
+            extracted_successfully=extracted,
+            needs_ocr=needs_ocr,
+            failed_or_unsupported=failed_pdf,
+        ),
     )
 
 

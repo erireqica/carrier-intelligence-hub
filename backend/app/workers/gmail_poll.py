@@ -17,7 +17,7 @@ from app.integrations.gmail import (
     sync_connection,
 )
 from app.models.enums import GmailConnectionStatus
-from app.models.organization import GmailConnection
+from app.models.organization import GmailConnection, User
 
 logger = logging.getLogger("carrier_hub.gmail_poll")
 SyncFunction = Callable[[Session, int], SyncResult]
@@ -42,9 +42,15 @@ def poll_once(
     session_factory: SessionFactory = SessionLocal,
 ) -> list[SyncResult]:
     with session_factory() as db:
-        query = select(GmailConnection.id).where(
-            GmailConnection.status.in_(
-                [GmailConnectionStatus.CONNECTED, GmailConnectionStatus.ERROR]
+        query = (
+            select(GmailConnection.id)
+            .join(User, User.id == GmailConnection.user_id)
+            .where(
+                GmailConnection.status.in_(
+                    [GmailConnectionStatus.CONNECTED, GmailConnectionStatus.ERROR]
+                ),
+                User.is_active.is_(True),
+                User.removed_at.is_(None),
             )
         )
         if connection_id is not None:

@@ -398,15 +398,32 @@ export type CarrierItem = {
 }
 
 export type Analytics = {
-  cases_by_status: Record<string, number>
-  cases_by_carrier: Record<string, number>
-  workload_by_agent: Array<{ agent: AgentBrief; open_tasks: number }>
-  urgent_high_cases: number
-  open_tasks: number
-  overdue_tasks: number
-  open_reviews: number
-  processed_messages: number
-  failed_messages: number
+  range: '7d' | '30d' | '90d' | 'all'
+  start_date: string | null
+  end_date: string
+  carrier_messages: number
+  automation_rate: number | null
+  review_rate: number | null
+  failure_rate: number | null
+  average_processing_seconds: number | null
+  pdf_extraction_success_rate: number | null
+  outcomes: Array<{ label: string; count: number; percentage: number }>
+  volume_trend: Array<{ label: string; count: number }>
+  classifications: Array<{ label: string; count: number; percentage: number }>
+  carrier_performance: Array<{
+    carrier_id: number
+    carrier_name: string
+    messages: number
+    automation_rate: number | null
+    review_rate: number | null
+    failure_rate: number | null
+  }>
+  attachments: {
+    pdfs_processed: number
+    extracted_successfully: number
+    needs_ocr: number
+    failed_or_unsupported: number
+  }
 }
 
 export type AuditLog = {

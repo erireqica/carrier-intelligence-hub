@@ -11,14 +11,18 @@ export function Button({
   variant = 'primary',
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'secondary' | 'danger' | 'success'
+  variant?:
+    'primary' | 'secondary' | 'danger' | 'dangerSecondary' | 'success' | 'info'
 }) {
   const variants = {
     primary: 'border-slate-900 bg-slate-900 text-white hover:bg-slate-700',
     secondary: 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50',
     danger: 'border-red-700 bg-red-700 text-white hover:bg-red-800',
+    dangerSecondary:
+      'border-red-700 bg-white text-red-700 hover:bg-red-50 hover:text-red-800',
     success:
       'border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800',
+    info: 'border-blue-700 bg-blue-700 text-white hover:bg-blue-800',
   }
   return (
     <button

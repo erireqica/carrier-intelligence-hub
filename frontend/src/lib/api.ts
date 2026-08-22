@@ -54,10 +54,12 @@ type ValidationErrorDetail = {
 
 const fieldLabels: Record<string, string> = {
   confirm_new_password: 'Confirm new password',
+  confirm_initial_password: 'Confirm initial password',
   current_password: 'Current password',
   email: 'Login email',
   full_name: 'Full name',
   new_password: 'New password',
+  initial_password: 'Initial password',
   password: 'Password',
 }
 
@@ -284,9 +286,34 @@ export const getGmailMessages = (connectionId: number, page = 1) =>
 export function redirectToOAuth(authorizationUrl: string) {
   window.location.assign(authorizationUrl)
 }
-export const getAgents = () => apiRequest<AgentItem[]>('/manager/agents')
+export const getAgents = () =>
+  apiRequest<{ items: AgentItem[]; page: PageInfo }>(
+    '/manager/agents?page=1&page_size=100',
+  ).then((response) => response.items)
+export const getAgentsPage = (page = 1) =>
+  apiRequest<{ items: AgentItem[]; page: PageInfo }>(
+    `/manager/agents?page=${page}&page_size=10`,
+  )
+export const createAgent = (data: {
+  full_name: string
+  email: string
+  initial_password: string
+  confirm_initial_password: string
+}) =>
+  apiRequest<AgentItem>('/manager/agents', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+export const setAgentEnabled = (agentId: number, isEnabled: boolean) =>
+  apiRequest<AgentItem>(`/manager/agents/${agentId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ is_enabled: isEnabled }),
+  })
+export const removeAgent = (agentId: number) =>
+  apiRequest<void>(`/manager/agents/${agentId}`, { method: 'DELETE' })
 export const getCarriers = () => apiRequest<CarrierItem[]>('/manager/carriers')
-export const getAnalytics = () => apiRequest<Analytics>('/manager/analytics')
+export const getAnalytics = (range: '7d' | '30d' | '90d' | 'all' = '30d') =>
+  apiRequest<Analytics>(`/manager/analytics?range=${range}`)
 export const getAuditLogs = (params = '') =>
   apiRequest<{ items: AuditLog[]; page: PageInfo }>(
     `/manager/audit-events${params ? `?${params}` : ''}`,
@@ -317,6 +344,9 @@ export const updateCarrier = (carrier: CarrierItem) =>
       is_enabled: carrier.is_enabled,
     }),
   })
+
+export const deleteCarrier = (carrierId: number) =>
+  apiRequest<void>(`/manager/carriers/${carrierId}`, { method: 'DELETE' })
 
 export const addCarrierDomain = (carrierId: number, domain: string) =>
   apiRequest<CarrierItem>(`/manager/carriers/${carrierId}/domains`, {

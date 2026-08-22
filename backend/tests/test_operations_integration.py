@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,7 +25,281 @@ from app.models.operations import (
     ReviewItem,
     Task,
 )
-from app.models.organization import Agency, GmailConnection, User
+from app.models.organization import Agency, AuthSession, GmailConnection, GmailOAuthCredential, User
+
+
+def test_manager_agent_account_lifecycle_revokes_access_and_preserves_history(
+    client: TestClient, db: Session, login
+) -> None:
+    agent_auth = login(client, "agent.one@demo.local")
+    assert (
+        client.post(
+            "/api/v1/manager/agents",
+            json={
+                "full_name": "Blocked",
+                "email": "blocked@demo.local",
+                "initial_password": "StrongPassword12!",
+                "confirm_initial_password": "StrongPassword12!",
+                "role": "MANAGER",
+            },
+            headers={"X-CSRF-Token": agent_auth["csrf_token"]},
+        ).status_code
+        == 403
+    )
+    manager = login(client, "manager@demo.local")
+    headers = {"X-CSRF-Token": manager["csrf_token"]}
+    created = client.post(
+        "/api/v1/manager/agents",
+        json={
+            "full_name": "New Agent",
+            "email": " New.Agent@demo.local ",
+            "initial_password": "StrongPassword12!",
+            "confirm_initial_password": "StrongPassword12!",
+            "role": "MANAGER",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    assert created.json()["role"] == "AGENT"
+    agent_id = created.json()["id"]
+    assert db.get(User, agent_id).email == "new.agent@demo.local"
+
+    signed_in = client.post(
+        "/api/v1/auth/login",
+        json={"email": "new.agent@demo.local", "password": "StrongPassword12!"},
+    )
+    assert signed_in.status_code == 200
+    connection = GmailConnection(
+        agency_id=manager["user"]["agency"]["id"],
+        user_id=agent_id,
+        gmail_address="new-agent@gmail.test",
+        status=GmailConnectionStatus.CONNECTED,
+    )
+    db.add(connection)
+    db.flush()
+    db.add(
+        GmailOAuthCredential(
+            gmail_connection_id=connection.id,
+            encrypted_refresh_token="encrypted",
+            granted_scopes=[],
+        )
+    )
+    db.commit()
+    manager = login(client, "manager@demo.local")
+    headers = {"X-CSRF-Token": manager["csrf_token"]}
+    disabled = client.patch(
+        f"/api/v1/manager/agents/{agent_id}", json={"is_enabled": False}, headers=headers
+    )
+    assert disabled.status_code == 200
+    db.expire_all()
+    assert db.get(User, agent_id).is_active is False
+    assert db.get(GmailConnection, connection.id).status is GmailConnectionStatus.DISCONNECTED
+    assert db.get(GmailConnection, connection.id).oauth_credential is None
+    assert all(
+        session.revoked_at is not None
+        for session in db.scalars(select(AuthSession).where(AuthSession.user_id == agent_id)).all()
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login",
+            json={"email": "new.agent@demo.local", "password": "StrongPassword12!"},
+        ).status_code
+        == 401
+    )
+
+    manager = login(client, "manager@demo.local")
+    headers = {"X-CSRF-Token": manager["csrf_token"]}
+    assert (
+        client.patch(
+            f"/api/v1/manager/agents/{agent_id}", json={"is_enabled": True}, headers=headers
+        ).status_code
+        == 200
+    )
+    db.expire_all()
+    assert db.get(GmailConnection, connection.id).status is GmailConnectionStatus.DISCONNECTED
+    assert client.delete(f"/api/v1/manager/agents/{agent_id}", headers=headers).status_code == 204
+    db.expire_all()
+    removed = db.get(User, agent_id)
+    assert removed is not None and removed.removed_at is not None and not removed.is_active
+    listed = client.get("/api/v1/manager/agents?page_size=100").json()["items"]
+    assert agent_id not in {item["id"] for item in listed}
+    assert {"AGENT_CREATED", "AGENT_DISABLED", "AGENT_ENABLED", "AGENT_REMOVED"} <= set(
+        db.scalars(select(AuditEvent.event_type)).all()
+    )
+
+
+def test_manager_cannot_remove_agent_with_active_case_and_carrier_delete_is_safe(
+    client: TestClient, db: Session, login
+) -> None:
+    manager = login(client, "manager@demo.local")
+    headers = {"X-CSRF-Token": manager["csrf_token"]}
+    owner = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert client.delete(f"/api/v1/manager/agents/{owner.id}", headers=headers).status_code == 409
+    created = client.post(
+        "/api/v1/manager/carriers",
+        json={"name": "Unused Carrier", "code": "UNU", "is_enabled": True},
+        headers=headers,
+    )
+    carrier_id = created.json()["id"]
+    assert (
+        client.post(
+            f"/api/v1/manager/carriers/{carrier_id}/domains",
+            json={"domain": "unused.example", "is_enabled": True},
+            headers=headers,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.delete(f"/api/v1/manager/carriers/{carrier_id}", headers=headers).status_code == 204
+    )
+    assert db.get(Carrier, carrier_id) is None
+    used = db.scalar(select(Carrier).join(PolicyCase).limit(1))
+    cases_before = db.scalar(select(func.count()).select_from(PolicyCase))
+    assert client.delete(f"/api/v1/manager/carriers/{used.id}", headers=headers).status_code == 409
+    assert db.scalar(select(func.count()).select_from(PolicyCase)) == cases_before
+    outside_agency = Agency(name="Outside Carrier Agency", timezone="UTC", is_active=True)
+    db.add(outside_agency)
+    db.flush()
+    outside_carrier = Carrier(agency_id=outside_agency.id, name="Outside Carrier", is_enabled=True)
+    db.add(outside_carrier)
+    db.commit()
+    assert (
+        client.delete(f"/api/v1/manager/carriers/{outside_carrier.id}", headers=headers).status_code
+        == 404
+    )
+    assert db.get(Carrier, outside_carrier.id) is not None
+    agent = login(client, "agent.one@demo.local")
+    assert (
+        client.delete(
+            f"/api/v1/manager/carriers/{used.id}", headers={"X-CSRF-Token": agent["csrf_token"]}
+        ).status_code
+        == 403
+    )
+
+
+def test_manager_analytics_uses_distinct_reviews_processing_times_and_pdf_statuses(
+    client: TestClient, db: Session, login
+) -> None:
+    db.query(CarrierMessage).update({CarrierMessage.received_at: datetime(2020, 1, 1, tzinfo=UTC)})
+    carrier = db.scalar(select(Carrier).order_by(Carrier.id))
+    now = utc_now()
+    statuses = [
+        ProcessingStatus.PROCESSED,
+        ProcessingStatus.PROCESSED,
+        ProcessingStatus.FAILED,
+        ProcessingStatus.RECEIVED,
+    ]
+    messages = []
+    for index, status in enumerate(statuses):
+        message = CarrierMessage(
+            agency_id=carrier.agency_id,
+            carrier_id=carrier.id,
+            sender="test@carrier.example",
+            subject=f"Analytics {index}",
+            received_at=now - timedelta(hours=index),
+            classification="POLICY_ISSUED" if index < 2 else None,
+            summary="Handled" if status is ProcessingStatus.PROCESSED else None,
+            priority="NORMAL" if status is ProcessingStatus.PROCESSED else None,
+            processing_status=status,
+            raw_content="raw",
+            cleaned_content="clean",
+            processing_started_at=now - timedelta(minutes=10) if index < 2 else None,
+            processed_at=now - timedelta(minutes=10) + timedelta(seconds=10 + index * 10)
+            if index < 2
+            else None,
+        )
+        db.add(message)
+        db.flush()
+        messages.append(message)
+    for status in (ReviewStatus.RESOLVED, ReviewStatus.DISMISSED):
+        db.add(
+            ReviewItem(
+                agency_id=carrier.agency_id,
+                carrier_message_id=messages[1].id,
+                status=status,
+                reason_code="TEST",
+                reason="Test review",
+            )
+        )
+    db.add(
+        CarrierMessage(
+            agency_id=carrier.agency_id,
+            carrier_id=carrier.id,
+            sender="future@carrier.example",
+            subject="Future message must not count",
+            received_at=now + timedelta(days=10),
+            processing_status=ProcessingStatus.RECEIVED,
+            raw_content="raw",
+            cleaned_content="clean",
+        )
+    )
+    db.add_all(
+        [
+            Attachment(
+                carrier_message_id=messages[0].id,
+                external_id="pdf-1",
+                filename="one.pdf",
+                mime_type="application/pdf",
+                size_bytes=10,
+                processing_status="EXTRACTED",
+            ),
+            Attachment(
+                carrier_message_id=messages[1].id,
+                external_id="pdf-2",
+                filename="two.pdf",
+                mime_type="application/pdf",
+                size_bytes=10,
+                processing_status="NEEDS_OCR",
+            ),
+        ]
+    )
+    other_agency = Agency(name="Other Analytics Agency", timezone="UTC", is_active=True)
+    db.add(other_agency)
+    db.flush()
+    other_carrier = Carrier(agency_id=other_agency.id, name="Other Carrier", is_enabled=True)
+    db.add(other_carrier)
+    db.flush()
+    db.add(
+        CarrierMessage(
+            agency_id=other_agency.id,
+            carrier_id=other_carrier.id,
+            sender="outside@carrier.example",
+            subject="Must stay scoped",
+            received_at=now,
+            processing_status=ProcessingStatus.RECEIVED,
+            raw_content="raw",
+            cleaned_content="clean",
+        )
+    )
+    db.commit()
+    login(client, "manager@demo.local")
+    response = client.get("/api/v1/manager/analytics?range=7d")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["carrier_messages"] == 4
+    assert data["automation_rate"] == 50.0
+    assert data["review_rate"] == 33.3
+    assert data["failure_rate"] == 33.3
+    assert data["average_processing_seconds"] == 15.0
+    assert data["pdf_extraction_success_rate"] == 50.0
+    assert {item["label"]: item["count"] for item in data["outcomes"]} == {
+        "Automatic": 1,
+        "Human review": 1,
+        "Failed": 1,
+        "Still processing": 1,
+    }
+    for value in ("30d", "90d", "all"):
+        assert client.get(f"/api/v1/manager/analytics?range={value}").status_code == 200
+    assert client.get("/api/v1/manager/analytics?range=invalid").status_code == 422
+    db.query(CarrierMessage).update({CarrierMessage.received_at: datetime(2020, 1, 1, tzinfo=UTC)})
+    db.commit()
+    empty = client.get("/api/v1/manager/analytics?range=7d").json()
+    assert empty["carrier_messages"] == 0
+    assert empty["automation_rate"] is None
+    assert empty["review_rate"] is None
+    assert empty["failure_rate"] is None
+    assert empty["average_processing_seconds"] is None
+    assert empty["pdf_extraction_success_rate"] is None
 
 
 def test_role_authorization_case_and_task_scoping(client: TestClient, db: Session, login) -> None:
@@ -93,11 +367,8 @@ def test_role_authorization_case_and_task_scoping(client: TestClient, db: Sessio
     assert client.get("/api/v1/cases").json()["page"]["total"] == 3
     analytics = client.get("/api/v1/manager/analytics")
     assert analytics.status_code == 200
-    assert analytics.json()["cases_by_carrier"] == {
-        "Aetna": 1,
-        "Americo": 1,
-        "American Amicable / AMAM": 1,
-    }
+    assert analytics.json()["range"] == "30d"
+    assert "workload_by_agent" not in analytics.json()
     task_assignment_forbidden = client.patch(
         f"/api/v1/tasks/{mary_task.id}",
         json={"assigned_agent_id": manager_auth["user"]["id"]},
@@ -154,14 +425,20 @@ def test_assigned_agent_can_dismiss_and_restore_case_without_deleting_history(
         ).status_code
         == 409
     )
+    manager_restored = client.post(
+        f"/api/v1/cases/{policy_case.id}/restore",
+        headers={"X-CSRF-Token": manager["csrf_token"]},
+    )
+    assert manager_restored.status_code == 200
+    assert manager_restored.json()["dismissed_at"] is None
+    auth = login(client, "agent.one@demo.local")
     assert (
         client.post(
-            f"/api/v1/cases/{policy_case.id}/restore",
-            headers={"X-CSRF-Token": manager["csrf_token"]},
+            f"/api/v1/cases/{policy_case.id}/dismiss",
+            headers={"X-CSRF-Token": auth["csrf_token"]},
         ).status_code
-        == 403
+        == 200
     )
-    auth = login(client, "agent.one@demo.local")
     restored = client.post(
         f"/api/v1/cases/{policy_case.id}/restore",
         headers={"X-CSRF-Token": auth["csrf_token"]},
@@ -412,7 +689,7 @@ def test_agents_connected_inbox_count_excludes_disconnected_history(
 
     response = client.get("/api/v1/manager/agents")
 
-    listed = next(item for item in response.json() if item["id"] == agent.id)
+    listed = next(item for item in response.json()["items"] if item["id"] == agent.id)
     assert listed["gmail_connections"] == 1
 
 
@@ -836,7 +1113,7 @@ def test_manager_assigns_case_and_active_work_to_an_active_agent(
     assert forbidden.status_code == 403
 
 
-def test_analytics_keeps_duplicate_display_names_separate(
+def test_analytics_does_not_duplicate_agent_workload(
     client: TestClient, db: Session, login
 ) -> None:
     agents = db.scalars(select(User).where(User.role == "AGENT").order_by(User.id)).all()
@@ -847,10 +1124,5 @@ def test_analytics_keeps_duplicate_display_names_separate(
     login(client, "manager@demo.local")
     response = client.get("/api/v1/manager/analytics")
     assert response.status_code == 200
-    matching = [
-        item
-        for item in response.json()["workload_by_agent"]
-        if item["agent"]["full_name"] == agents[0].full_name
-    ]
-    assert len(matching) == 2
-    assert {item["agent"]["id"] for item in matching} == {agents[0].id, agents[1].id}
+    assert "workload_by_agent" not in response.json()
+    assert "carrier_performance" in response.json()

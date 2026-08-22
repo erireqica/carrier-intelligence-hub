@@ -110,4 +110,31 @@ describe('DashboardPage Gmail health', () => {
       ).toBe(true),
     )
   })
+
+  it('places Agent workload directly after Pipeline health for managers', async () => {
+    vi.mocked(getDashboard).mockResolvedValue({
+      ...dashboardBase,
+      gmail_health: 'CONNECTED',
+      workload: [
+        {
+          agent: { id: 2, full_name: 'Elena Agent', email: 'elena@demo.local' },
+          open_tasks: 2,
+        },
+      ],
+    })
+    renderDashboard('MANAGER')
+    const pipeline = await screen.findByRole('heading', {
+      name: 'Pipeline health',
+    })
+    const workload = screen.getByRole('heading', { name: 'Agent workload' })
+    const recent = screen.getByRole('heading', { name: 'Recent cases' })
+    expect(
+      pipeline.compareDocumentPosition(workload) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      workload.compareDocumentPosition(recent) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
 })

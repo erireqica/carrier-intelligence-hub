@@ -21,7 +21,6 @@ const managerNavigation = [
   ['Agents', '/manager/agents'],
   ['Carriers', '/manager/carriers'],
   ['System Logs', '/manager/system-logs'],
-  ['Settings / Integrations', '/manager/settings'],
 ] as const
 
 function NavigationLink({ label, to }: { label: string; to: string }) {

@@ -367,6 +367,23 @@ describe('ReviewDetailPage', () => {
     )
     expect(await screen.findByText(/Manager view/)).toBeInTheDocument()
     expect(
+      screen.getByRole('heading', { name: 'This email needs agent review' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { name: 'What needs attention' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText('What needs your attention'),
+    ).not.toBeInTheDocument()
+    const banner = screen.getByText(/Manager view/)
+    const attention = screen.getByRole('heading', {
+      name: 'What needs attention',
+    })
+    expect(
+      banner.compareDocumentPosition(attention) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
       screen.queryByRole('button', { name: 'Confirm & apply' }),
     ).not.toBeInTheDocument()
     expect(

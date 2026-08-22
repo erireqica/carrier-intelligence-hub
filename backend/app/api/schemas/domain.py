@@ -9,6 +9,7 @@ from pydantic import (
     EmailStr,
     Field,
     field_validator,
+    model_validator,
 )
 
 from app.api.schemas.common import InternalEmail
@@ -380,6 +381,32 @@ class AgentListItem(BaseModel):
     gmail_connections: int
 
 
+class AgentListResponse(BaseModel):
+    items: list[AgentListItem]
+    page: PageInfo
+
+
+class AgentCreateInput(BaseModel):
+    full_name: str = Field(min_length=2, max_length=200)
+    email: InternalEmail = Field(max_length=320)
+    initial_password: str = Field(min_length=12, max_length=256)
+    confirm_initial_password: str = Field(min_length=12, max_length=256)
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_full_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if len(normalized) < 2:
+            raise ValueError("Full name must contain at least two characters")
+        return normalized
+
+    @model_validator(mode="after")
+    def passwords_match(self) -> AgentCreateInput:
+        if self.initial_password != self.confirm_initial_password:
+            raise ValueError("Initial password and confirmation do not match.")
+        return self
+
+
 class CarrierDomainItem(BaseModel):
     id: int
     domain: str
@@ -444,16 +471,48 @@ class EnabledUpdate(BaseModel):
     is_enabled: bool
 
 
+class AnalyticsBreakdownItem(BaseModel):
+    label: str
+    count: int
+    percentage: float
+
+
+class AnalyticsTrendItem(BaseModel):
+    label: str
+    count: int
+
+
+class CarrierAnalyticsItem(BaseModel):
+    carrier_id: int
+    carrier_name: str
+    messages: int
+    automation_rate: float | None
+    review_rate: float | None
+    failure_rate: float | None
+
+
+class AttachmentAnalytics(BaseModel):
+    pdfs_processed: int
+    extracted_successfully: int
+    needs_ocr: int
+    failed_or_unsupported: int
+
+
 class AnalyticsResponse(BaseModel):
-    cases_by_status: dict[str, int]
-    cases_by_carrier: dict[str, int]
-    workload_by_agent: list[WorkloadItem]
-    urgent_high_cases: int
-    open_tasks: int
-    overdue_tasks: int
-    open_reviews: int
-    processed_messages: int
-    failed_messages: int
+    range: Literal["7d", "30d", "90d", "all"]
+    start_date: date | None
+    end_date: date
+    carrier_messages: int
+    automation_rate: float | None
+    review_rate: float | None
+    failure_rate: float | None
+    average_processing_seconds: float | None
+    pdf_extraction_success_rate: float | None
+    outcomes: list[AnalyticsBreakdownItem]
+    volume_trend: list[AnalyticsTrendItem]
+    classifications: list[AnalyticsBreakdownItem]
+    carrier_performance: list[CarrierAnalyticsItem]
+    attachments: AttachmentAnalytics
 
 
 class AuditLogItem(BaseModel):

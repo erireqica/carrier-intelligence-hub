@@ -64,5 +64,6 @@ describe('ReviewsPage history views', () => {
       'href',
       '/reviews/7',
     )
+    expect(screen.queryByText('70%')).not.toBeInTheDocument()
   })
 })

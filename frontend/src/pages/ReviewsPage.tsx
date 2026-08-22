@@ -110,9 +110,6 @@ export function ReviewsPage() {
                   </p>
                   <p className="mt-3 text-xs text-slate-500">
                     Opened {formatDate(item.created_at)}
-                    {isManager && item.analysis_confidence !== null
-                      ? ` · Confidence ${Math.round(item.analysis_confidence * 100)}%`
-                      : ''}
                     {isManager && item.assigned_reviewer
                       ? ` · Assigned to ${item.assigned_reviewer.full_name}`
                       : ''}

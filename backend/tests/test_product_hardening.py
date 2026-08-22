@@ -5,9 +5,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditEvent
+from app.models.carriers import Carrier
 from app.models.enums import PolicyStatus, Priority, TaskStatus
 from app.models.operations import MessageAnalysis, PolicyCase, ReviewItem, Task
-from app.models.organization import User
+from app.models.organization import Agency, User
 
 
 def test_profile_update_duplicate_email_wrong_password_and_password_change(
@@ -242,7 +243,41 @@ def test_agent_case_correction_is_audited_and_preserves_ai_history(
             json=payload,
             headers={"X-CSRF-Token": manager["csrf_token"]},
         ).status_code
-        == 403
+        == 200
+    )
+    outside_agency = Agency(name="Outside Case Agency", timezone="UTC", is_active=True)
+    db.add(outside_agency)
+    db.flush()
+    outside_carrier = Carrier(
+        agency_id=outside_agency.id, name="Outside Case Carrier", is_enabled=True
+    )
+    db.add(outside_carrier)
+    db.flush()
+    outside_case = PolicyCase(
+        agency_id=outside_agency.id,
+        carrier_id=outside_carrier.id,
+        client_name="Outside Client",
+        policy_number="OUTSIDE-1",
+        current_policy_status=PolicyStatus.PENDING,
+        priority=Priority.NORMAL,
+        summary="Outside agency case.",
+    )
+    db.add(outside_case)
+    db.commit()
+    assert (
+        client.patch(
+            f"/api/v1/cases/{outside_case.id}/correction",
+            json=payload,
+            headers={"X-CSRF-Token": manager["csrf_token"]},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/api/v1/cases/{outside_case.id}/dismiss",
+            headers={"X-CSRF-Token": manager["csrf_token"]},
+        ).status_code
+        == 404
     )
     other_agent = login(client, "agent.two@demo.local")
     assert (

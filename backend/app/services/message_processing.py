@@ -914,15 +914,15 @@ def _reconcile_case_owner(
     message: CarrierMessage,
     case: PolicyCase | None,
 ) -> bool:
-    """Transfer active work for a proven same-mailbox handoff; return True on conflict."""
+    """Keep Case ownership authoritative, except for a proven same-mailbox handoff."""
     if case is None or case.assigned_agent_id is None:
+        return False
+    if not _case_has_operational_agent(db, case):
         return False
     connection = _connection(db, message)
     if connection is None or connection.status is GmailConnectionStatus.DISCONNECTED:
-        return True
+        return False
     if case.assignment_source is CaseAssignmentSource.MANAGER:
-        if not _case_has_operational_agent(db, case):
-            return True
         reconcile_case_operational_ownership(
             db,
             case,
@@ -932,8 +932,6 @@ def _reconcile_case_owner(
         )
         return False
     if case.assigned_agent_id == connection.user_id:
-        if not _case_has_operational_agent(db, case):
-            return True
         reconcile_case_operational_ownership(
             db,
             case,
@@ -943,7 +941,7 @@ def _reconcile_case_owner(
         )
         return False
     if _active_agent_id(db, connection.user_id) is None:
-        return True
+        return False
 
     former_owner_id = case.assigned_agent_id
     historical_connection_id = db.scalar(
@@ -963,7 +961,14 @@ def _reconcile_case_owner(
         .limit(1)
     )
     if historical_connection_id is None:
-        return True
+        reconcile_case_operational_ownership(
+            db,
+            case,
+            assigned_agent_id=case.assigned_agent_id,
+            assignment_source=case.assignment_source,
+            actor_user_id=None,
+        )
+        return False
 
     ownership = reconcile_case_operational_ownership(
         db,
@@ -1398,6 +1403,37 @@ def reconcile_case_owner_conflicts(
                 confidence=float(analysis.overall_confidence),
             )
         reconciled += 1
+    return reconciled
+
+
+def reconcile_legacy_case_owner_reviews(
+    db: Session,
+    *,
+    agency_id: int,
+    actor_user_id: int | None,
+) -> int:
+    """Re-evaluate only legacy mailbox-owner conflict reviews from stored analysis."""
+    cases = db.scalars(
+        select(PolicyCase)
+        .where(
+            PolicyCase.agency_id == agency_id,
+            PolicyCase.assigned_agent_id.is_not(None),
+        )
+        .order_by(PolicyCase.id)
+    ).all()
+    reconciled = sum(
+        reconcile_case_owner_conflicts(db, case, actor_user_id=actor_user_id) for case in cases
+    )
+    if reconciled:
+        record_audit_event(
+            db,
+            agency_id=agency_id,
+            actor_user_id=actor_user_id,
+            event_type="CASE_OWNER_CONFLICTS_RECONCILED",
+            description="Legacy mailbox-owner conflict reviews were safely re-evaluated",
+            metadata={"reviews_reconciled": reconciled},
+        )
+        db.commit()
     return reconciled
 
 

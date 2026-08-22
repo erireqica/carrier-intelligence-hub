@@ -9,7 +9,6 @@ describe('Manager route modules', () => {
       'manager/agents',
       'manager/carriers',
       'manager/system-logs',
-      'manager/settings',
     ])
   })
 })

@@ -358,6 +358,39 @@ def test_worker_isolates_a_broken_connection(test_engine) -> None:
         connection.close()
 
 
+def test_worker_skips_connections_owned_by_disabled_or_removed_agents(test_engine) -> None:
+    connection = test_engine.connect()
+    transaction = connection.begin()
+    TestingSession = sessionmaker(
+        bind=connection,
+        autoflush=False,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+    try:
+        with TestingSession() as db:
+            seed_demo_data(db, "worker-test-password")
+            owners = db.scalars(select(User).where(User.role == "AGENT").order_by(User.id)).all()
+            disabled = create_connection(db, owners[0], "disabled-worker@gmail.test")
+            removed = create_connection(db, owners[1], "removed-worker@gmail.test")
+            owners[0].is_active = False
+            owners[1].removed_at = utc_now()
+            db.commit()
+
+        called: list[int] = []
+
+        def fake_sync(_db: Session, connection_id: int) -> SyncResult:
+            called.append(connection_id)
+            return SyncResult(connection_id=connection_id)
+
+        assert poll_once(sync_function=fake_sync, session_factory=TestingSession) == []
+        assert called == []
+        assert disabled.id != removed.id
+    finally:
+        transaction.rollback()
+        connection.close()
+
+
 def test_worker_configures_windows_break_for_graceful_shutdown(monkeypatch) -> None:
     configured: list[tuple[object, object]] = []
     fake_sigbreak = object()

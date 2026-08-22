@@ -121,7 +121,7 @@ def case_item(case: PolicyCase, agency_timezone: str, current: AuthContext) -> C
         ),
         dismissed_at=case.dismissed_at,
         can_manage_lifecycle=(
-            current.user.role is UserRole.AGENT and case.assigned_agent_id == current.user.id
+            current.user.role is UserRole.MANAGER or case.assigned_agent_id == current.user.id
         ),
     )
 
@@ -200,17 +200,13 @@ def list_cases(
 def set_case_dismissed(
     db: Session, current: AuthContext, case_id: int, *, dismissed: bool
 ) -> CaseDetail:
-    if current.user.role is not UserRole.AGENT:
-        raise HTTPException(
-            status_code=403, detail="Case lifecycle is managed by its assigned agent"
-        )
-    case = db.scalar(
-        select(PolicyCase).where(
-            PolicyCase.id == case_id,
-            PolicyCase.agency_id == current.user.agency_id,
-            PolicyCase.assigned_agent_id == current.user.id,
-        )
+    query = select(PolicyCase).where(
+        PolicyCase.id == case_id,
+        PolicyCase.agency_id == current.user.agency_id,
     )
+    if current.user.role is UserRole.AGENT:
+        query = query.where(PolicyCase.assigned_agent_id == current.user.id)
+    case = db.scalar(query)
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
     if dismissed == (case.dismissed_at is not None):
@@ -223,9 +219,10 @@ def set_case_dismissed(
         actor_user_id=current.user.id,
         case_id=case.id,
         event_type="CASE_DISMISSED" if dismissed else "CASE_RESTORED",
-        description="Case dismissed from active work"
-        if dismissed
-        else "Case restored to active work",
+        description=(
+            f"Case {'dismissed from' if dismissed else 'restored to'} active work by "
+            f"{'manager' if current.user.role is UserRole.MANAGER else 'assigned agent'}"
+        ),
     )
     db.commit()
     return get_case_detail(db, current, case.id)
@@ -825,18 +822,13 @@ def correct_case(
     case_id: int,
     correction: CaseCorrectionInput,
 ) -> CaseDetail:
-    if current.user.role is UserRole.MANAGER:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Case corrections are completed by the assigned agent",
-        )
-    case = db.scalar(
-        select(PolicyCase).where(
-            PolicyCase.id == case_id,
-            PolicyCase.agency_id == current.user.agency_id,
-            PolicyCase.assigned_agent_id == current.user.id,
-        )
+    query = select(PolicyCase).where(
+        PolicyCase.id == case_id,
+        PolicyCase.agency_id == current.user.agency_id,
     )
+    if current.user.role is UserRole.AGENT:
+        query = query.where(PolicyCase.assigned_agent_id == current.user.id)
+    case = db.scalar(query)
     if case is None:
         raise HTTPException(status_code=404, detail="Case not found")
     if case.dismissed_at is not None:
@@ -901,7 +893,11 @@ def correct_case(
         actor_user_id=current.user.id,
         case_id=case.id,
         event_type="CASE_CORRECTED",
-        description="Case information corrected by the assigned agent",
+        description=(
+            "Case information corrected by manager"
+            if current.user.role is UserRole.MANAGER
+            else "Case information corrected by the assigned agent"
+        ),
         metadata={
             "changed_fields": changed_fields,
             "reason": correction.reason,

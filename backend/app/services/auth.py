@@ -35,7 +35,13 @@ def authenticate_user(db: Session, email: str, password: str) -> User | None:
     user = db.scalar(select(User).where(User.email == normalize_email(email)))
     password_hash = user.password_hash if user is not None else dummy_password_hash
     password_valid = verify_password(password, password_hash)
-    if user is None or not password_valid or not user.is_active or not user.agency.is_active:
+    if (
+        user is None
+        or not password_valid
+        or not user.is_active
+        or user.removed_at is not None
+        or not user.agency.is_active
+    ):
         return None
     return user
 
@@ -70,6 +76,7 @@ def resolve_session(db: Session, raw_token: str) -> AuthContext | None:
         or session.revoked_at is not None
         or session.expires_at <= now
         or not session.user.is_active
+        or session.user.removed_at is not None
         or not session.user.agency.is_active
     ):
         return None

@@ -8,12 +8,14 @@ import {
   Input,
   LoadingState,
   PageHeader,
+  Pagination,
   StatusBadge,
 } from '../../components/ui'
 import {
   addCarrierDomain,
   addCarrierSender,
   createCarrier,
+  deleteCarrier,
   getCarriers,
   removeCarrierDomain,
   removeCarrierSender,
@@ -42,6 +44,13 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
   const [name, setName] = useState(carrier.name)
   const [code, setCode] = useState(carrier.code ?? '')
   const [notes, setNotes] = useState(carrier.notes ?? '')
+  const [domainPage, setDomainPage] = useState(1)
+  const domainPages = Math.max(1, Math.ceil(carrier.domains.length / 5))
+  const safeDomainPage = Math.min(domainPage, domainPages)
+  const visibleDomains = carrier.domains.slice(
+    (safeDomainPage - 1) * 5,
+    safeDomainPage * 5,
+  )
   const refreshCarriers = () =>
     queryClient.invalidateQueries({ queryKey: ['manager', 'carriers'] })
 
@@ -56,6 +65,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
     mutationFn: () => addCarrierDomain(carrier.id, domain),
     onSuccess: async () => {
       setDomain('')
+      setDomainPage(1)
       await refreshCarriers()
     },
   })
@@ -71,13 +81,26 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
       remove
         ? removeCarrierDomain(carrier.id, id)
         : setCarrierDomainEnabled(carrier.id, id, enabled),
-    onSuccess: refreshCarriers,
+    onSuccess: async (_data, variables) => {
+      if (variables.remove) {
+        const remainingPages = Math.max(
+          1,
+          Math.ceil((carrier.domains.length - 1) / 5),
+        )
+        setDomainPage((current) => Math.min(current, remainingPages))
+      }
+      await refreshCarriers()
+    },
   })
   const senderEntryMutation = useMutation({
     mutationFn: ({ id, enabled, remove }: EntryMutation) =>
       remove
         ? removeCarrierSender(carrier.id, id)
         : setCarrierSenderEnabled(carrier.id, id, enabled),
+    onSuccess: refreshCarriers,
+  })
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteCarrier(carrier.id),
     onSuccess: refreshCarriers,
   })
 
@@ -175,7 +198,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
               Edit
             </Button>
             <Button
-              variant="secondary"
+              variant={carrier.is_enabled ? 'danger' : 'success'}
               onClick={() =>
                 carrierMutation.mutate({
                   ...carrier,
@@ -186,6 +209,20 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
             >
               {carrier.is_enabled ? 'Disable' : 'Enable'}
             </Button>
+            <Button
+              variant="dangerSecondary"
+              disabled={deleteMutation.isPending}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Permanently delete ${carrier.name}?\n\nThis removes its configuration and whitelist entries and cannot be undone.`,
+                  )
+                )
+                  deleteMutation.mutate()
+              }}
+            >
+              Delete
+            </Button>
           </div>
         )}
       </header>
@@ -193,7 +230,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
         <section>
           <h3 className="text-sm font-semibold">Approved domains</h3>
           <ul className="mt-3 space-y-2">
-            {carrier.domains.map((item) => (
+            {visibleDomains.map((item) => (
               <li
                 key={item.id}
                 className="flex justify-between border border-slate-200 px-3 py-2 text-sm"
@@ -233,6 +270,14 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
               </li>
             ))}
           </ul>
+          <div className="mt-3">
+            <Pagination
+              page={safeDomainPage}
+              pages={domainPages}
+              onPageChange={setDomainPage}
+              label={`${carrier.name} domain pagination`}
+            />
+          </div>
           <form
             className="mt-3 flex gap-2"
             onSubmit={(event) => {
@@ -261,6 +306,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
           </form>
           <MutationError error={domainMutation.error} />
           <MutationError error={domainEntryMutation.error} />
+          <MutationError error={deleteMutation.error} />
         </section>
         <section>
           <h3 className="text-sm font-semibold">Approved exact senders</h3>

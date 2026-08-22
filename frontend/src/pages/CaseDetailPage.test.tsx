@@ -293,6 +293,8 @@ describe('CaseDetailPage carrier messages', () => {
       ],
       evidence: [],
       activity: [],
+      dismissed_at: null,
+      can_manage_lifecycle: true,
     }
     vi.mocked(getCase).mockResolvedValue(item)
     vi.mocked(assignCase).mockResolvedValue(item)
@@ -310,6 +312,17 @@ describe('CaseDetailPage carrier messages', () => {
     )
 
     await screen.findByRole('option', { name: 'Elena Torres' })
+    expect(
+      screen.getByRole('button', { name: 'Correct case information' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Dismiss case' })).toHaveClass(
+      'bg-red-700',
+    )
+    const back = screen.getByRole('link', { name: '← Back to cases' })
+    const title = screen.getByRole('heading', { name: 'Managed Client' })
+    expect(
+      back.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
     fireEvent.change(screen.getByLabelText('Assigned agent'), {
       target: { value: String(agent.id) },
     })

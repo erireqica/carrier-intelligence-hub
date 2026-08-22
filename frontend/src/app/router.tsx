@@ -15,7 +15,6 @@ import { LoginPage } from '../pages/LoginPage'
 import { AgentsPage } from '../pages/manager/AgentsPage'
 import { AnalyticsPage } from '../pages/manager/AnalyticsPage'
 import { CarriersPage } from '../pages/manager/CarriersPage'
-import { SettingsPage } from '../pages/manager/SettingsPage'
 import { SystemLogsPage } from '../pages/manager/SystemLogsPage'
 import { ProfilePage } from '../pages/ProfilePage'
 import { ReviewsPage } from '../pages/ReviewsPage'
@@ -27,7 +26,6 @@ export const managerRoutes = [
   { path: 'manager/agents', element: <AgentsPage /> },
   { path: 'manager/carriers', element: <CarriersPage /> },
   { path: 'manager/system-logs', element: <SystemLogsPage /> },
-  { path: 'manager/settings', element: <SettingsPage /> },
 ]
 
 export const router = createBrowserRouter([

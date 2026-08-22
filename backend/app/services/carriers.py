@@ -1,5 +1,5 @@
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -12,6 +12,7 @@ from app.api.schemas.domain import (
     SenderWrite,
 )
 from app.models.carriers import Carrier, CarrierDomain, CarrierSender
+from app.models.operations import CarrierMessage, PolicyCase
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
 
@@ -96,6 +97,43 @@ def update_carrier(
             status_code=409, detail="A carrier with this name already exists"
         ) from error
     return carrier_item(get_carrier(db, current, carrier.id))
+
+
+def delete_carrier(db: Session, current: AuthContext, carrier_id: int) -> None:
+    carrier = get_carrier(db, current, carrier_id)
+    case_count = (
+        db.scalar(
+            select(func.count()).select_from(PolicyCase).where(PolicyCase.carrier_id == carrier.id)
+        )
+        or 0
+    )
+    message_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(CarrierMessage)
+            .where(CarrierMessage.carrier_id == carrier.id)
+        )
+        or 0
+    )
+    if case_count or message_count:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This carrier has existing policy/message history and cannot be deleted. "
+                "Disable it instead."
+            ),
+        )
+    carrier_name = carrier.name
+    record_audit_event(
+        db,
+        agency_id=current.user.agency_id,
+        actor_user_id=current.user.id,
+        event_type="CARRIER_DELETED",
+        description=f"Carrier deleted: {carrier_name}",
+        metadata={"carrier_id": carrier.id, "carrier_name": carrier_name},
+    )
+    db.delete(carrier)
+    db.commit()
 
 
 def add_domain(

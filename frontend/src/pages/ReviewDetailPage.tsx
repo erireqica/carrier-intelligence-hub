@@ -263,13 +263,23 @@ export function ReviewDetailPage() {
         ← Back to review queue
       </Link>
       <PageHeader
-        title="This email needs your review"
+        title={
+          isManager
+            ? 'This email needs agent review'
+            : 'This email needs your review'
+        }
         description={`${review.carrier_name} · ${review.message_subject}`}
         action={<StatusBadge status={review.status} />}
       />
+      {isManager && !isFinalized && (
+        <p className="border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+          <strong>Manager view —</strong> review decisions are completed by the
+          assigned agent.
+        </p>
+      )}
       <section className="border border-amber-200 bg-amber-50 p-5">
         <h2 className="font-semibold text-amber-950">
-          What needs your attention
+          {isManager ? 'What needs attention' : 'What needs your attention'}
         </h2>
         <div className="mt-3 space-y-4">
           {review.issues && review.issues.length > 0 ? (
@@ -326,12 +336,6 @@ export function ReviewDetailPage() {
           )}
         </div>
       </section>
-      {isManager && !isFinalized && (
-        <p className="border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
-          <strong>Manager view —</strong> review decisions are completed by the
-          assigned agent.
-        </p>
-      )}
       {isOwnershipBlocked && !isManager && (
         <p className="border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
           <strong>

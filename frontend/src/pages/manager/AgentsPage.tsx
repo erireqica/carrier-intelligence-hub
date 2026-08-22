@@ -1,21 +1,66 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { useCurrentUser } from '../../app/auth'
 import {
   Badge,
+  Button,
   ErrorState,
   LoadingState,
   PageHeader,
+  Pagination,
   StatusBadge,
 } from '../../components/ui'
+import {
+  createAgent,
+  getAgentsPage,
+  removeAgent,
+  setAgentEnabled,
+} from '../../lib/api'
 import { formatDateTime } from '../../lib/format'
-import { getAgents } from '../../lib/api'
+
+const emptyAgent = {
+  full_name: '',
+  email: '',
+  initial_password: '',
+  confirm_initial_password: '',
+}
 
 export function AgentsPage() {
   const auth = useCurrentUser()
+  const queryClient = useQueryClient()
+  const [page, setPage] = useState(1)
+  const [showCreate, setShowCreate] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [form, setForm] = useState(emptyAgent)
   const agents = useQuery({
-    queryKey: ['manager', 'agents'],
-    queryFn: getAgents,
+    queryKey: ['manager', 'agents', page],
+    queryFn: () => getAgentsPage(page),
+  })
+  const refresh = () =>
+    queryClient.invalidateQueries({ queryKey: ['manager', 'agents'] })
+  const refreshAndClamp = async () => {
+    const updated = await getAgentsPage(page)
+    queryClient.setQueryData(['manager', 'agents', page], updated)
+    if (updated.page.page !== page) setPage(updated.page.page)
+  }
+  const create = useMutation({
+    mutationFn: createAgent,
+    onSuccess: async () => {
+      setForm(emptyAgent)
+      setShowCreate(false)
+      setPage(1)
+      await refresh()
+    },
+  })
+  const toggle = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
+      setAgentEnabled(id, enabled),
+    onSuccess: refresh,
+  })
+  const remove = useMutation({
+    mutationFn: removeAgent,
+    onSuccess: refreshAndClamp,
   })
   if (agents.isPending) return <LoadingState label="Loading agency users…" />
   if (agents.isError)
@@ -25,28 +70,104 @@ export function AgentsPage() {
         retry={() => agents.refetch()}
       />
     )
+  const error = create.error ?? toggle.error ?? remove.error
   return (
     <div className="space-y-6">
       <PageHeader
         eyebrow="Agency"
         title="Agents"
-        description="Internal users and their current operational workload."
+        description="Create Agent access and manage current operational accounts."
+        action={
+          <Button onClick={() => setShowCreate((value) => !value)}>
+            Add agent
+          </Button>
+        }
       />
-      <div className="hidden overflow-x-auto border border-slate-200 bg-white md:block">
-        <table className="w-full min-w-[850px] text-left text-sm">
+      {showCreate && (
+        <form
+          className="grid gap-4 border border-slate-200 bg-white p-5 md:grid-cols-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            create.mutate(form)
+          }}
+        >
+          {[
+            ['Full name', 'full_name', 'text'],
+            ['Login email', 'email', 'email'],
+            [
+              'Initial password',
+              'initial_password',
+              showPassword ? 'text' : 'password',
+            ],
+            [
+              'Confirm initial password',
+              'confirm_initial_password',
+              showPassword ? 'text' : 'password',
+            ],
+          ].map(([label, field, type]) => (
+            <label key={field} className="text-sm font-medium">
+              {label}
+              <input
+                className="mt-1 w-full border border-slate-300 px-3 py-2"
+                type={type}
+                minLength={field.includes('password') ? 12 : undefined}
+                value={form[field as keyof typeof form]}
+                onChange={(event) =>
+                  setForm({ ...form, [field]: event.target.value })
+                }
+                required
+              />
+            </label>
+          ))}
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={showPassword}
+              onChange={(event) => setShowPassword(event.target.checked)}
+            />{' '}
+            Show password
+          </label>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="secondary"
+              type="button"
+              onClick={() => setShowCreate(false)}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={create.isPending}>
+              Create agent
+            </Button>
+          </div>
+        </form>
+      )}
+      {error && (
+        <p className="border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          {error.message}
+        </p>
+      )}
+      <div className="overflow-x-auto border border-slate-200 bg-white">
+        <table className="w-full min-w-[980px] text-left text-sm">
           <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
             <tr>
-              <th className="px-4 py-3">User</th>
-              <th className="px-4 py-3">Role</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">Open tasks</th>
-              <th className="px-4 py-3">Urgent cases</th>
-              <th className="px-4 py-3">Connected inboxes</th>
-              <th className="px-4 py-3">Last login</th>
+              {[
+                'User',
+                'Role',
+                'Status',
+                'Open tasks',
+                'Urgent cases',
+                'Connected inboxes',
+                'Last login',
+                'Actions',
+              ].map((label) => (
+                <th key={label} className="px-4 py-3">
+                  {label}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {agents.data.map((agent) => (
+            {agents.data.items.map((agent) => (
               <tr key={agent.id}>
                 <td className="px-4 py-4 font-medium">
                   {agent.full_name}
@@ -73,54 +194,47 @@ export function AgentsPage() {
                     auth.data!.user.agency.timezone,
                   )}
                 </td>
+                <td className="px-4 py-4">
+                  {agent.role === 'AGENT' && (
+                    <div className="flex gap-2">
+                      <Button
+                        variant={agent.is_active ? 'danger' : 'success'}
+                        onClick={() =>
+                          toggle.mutate({
+                            id: agent.id,
+                            enabled: !agent.is_active,
+                          })
+                        }
+                      >
+                        {agent.is_active ? 'Disable' : 'Enable'}
+                      </Button>
+                      <Button
+                        variant="dangerSecondary"
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Remove ${agent.full_name}? This permanently removes login access, preserves history, and cannot be undone.`,
+                            )
+                          )
+                            remove.mutate(agent.id)
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <div className="space-y-3 md:hidden">
-        {agents.data.map((agent) => (
-          <article
-            key={agent.id}
-            className="border border-slate-200 bg-white p-4"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="font-semibold">{agent.full_name}</h2>
-                <p className="text-xs text-slate-500">{agent.email}</p>
-              </div>
-              <StatusBadge status={agent.is_active ? 'ACTIVE' : 'DISABLED'} />
-            </div>
-            <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <dt className="text-slate-500">Role</dt>
-                <dd>{agent.role}</dd>
-              </div>
-              <div>
-                <dt className="text-slate-500">Open tasks</dt>
-                <dd>{agent.open_tasks}</dd>
-              </div>
-              <div>
-                <dt className="text-slate-500">Urgent cases</dt>
-                <dd>{agent.urgent_cases}</dd>
-              </div>
-              <div>
-                <dt className="text-slate-500">Connected inboxes</dt>
-                <dd>{agent.gmail_connections} connected</dd>
-              </div>
-              <div className="col-span-2">
-                <dt className="text-slate-500">Last login</dt>
-                <dd>
-                  {formatDateTime(
-                    agent.last_login_at,
-                    auth.data!.user.agency.timezone,
-                  )}
-                </dd>
-              </div>
-            </dl>
-          </article>
-        ))}
-      </div>
+      <Pagination
+        page={agents.data.page.page}
+        pages={agents.data.page.pages}
+        onPageChange={setPage}
+        label="Agents pagination"
+      />
     </div>
   )
 }

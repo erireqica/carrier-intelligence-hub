@@ -125,6 +125,35 @@ export function DashboardPage() {
           </div>
         </section>
       )}
+      {auth.data!.user.role === 'MANAGER' && data.workload.length > 0 && (
+        <section className="border border-slate-200 bg-white">
+          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+            <h2 className="font-semibold">Agent workload</h2>
+            <Link
+              className="text-sm font-semibold text-blue-700"
+              to="/manager/agents"
+            >
+              View agents
+            </Link>
+          </div>
+          <div className="grid divide-y divide-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-3">
+            {data.workload.map((item) => (
+              <div
+                key={item.agent.id}
+                className="flex items-center justify-between px-5 py-4"
+              >
+                <div>
+                  <p className="font-medium">{item.agent.full_name}</p>
+                  <p className="text-xs text-slate-500">{item.agent.email}</p>
+                </div>
+                <span className="text-2xl font-semibold">
+                  {item.open_tasks}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       <section className="grid items-start gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
         <div className="self-start border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
@@ -193,35 +222,6 @@ export function DashboardPage() {
           </div>
         </div>
       </section>
-      {auth.data!.user.role === 'MANAGER' && data.workload.length > 0 && (
-        <section className="border border-slate-200 bg-white">
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-            <h2 className="font-semibold">Agent workload</h2>
-            <Link
-              className="text-sm font-semibold text-blue-700"
-              to="/manager/agents"
-            >
-              View agents
-            </Link>
-          </div>
-          <div className="grid divide-y divide-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-3">
-            {data.workload.map((item) => (
-              <div
-                key={item.agent.id}
-                className="flex items-center justify-between px-5 py-4"
-              >
-                <div>
-                  <p className="font-medium">{item.agent.full_name}</p>
-                  <p className="text-xs text-slate-500">{item.agent.email}</p>
-                </div>
-                <span className="text-2xl font-semibold">
-                  {item.open_tasks}
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
     </div>
   )
 }

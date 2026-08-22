@@ -697,11 +697,21 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
         legacy_message.id,
         analyzer=FakeAnalyzer(analysis_result(client="John Doe", policy="AMR-98765432")),
     )
-    legacy_review = seeded_db.get(ReviewItem, legacy_result.review_id)
-    assert legacy_review is not None
-    legacy_review.case_id = None
-    legacy_review.assigned_reviewer_id = new_owner.id
+    assert legacy_result.processing_status is ProcessingStatus.PROCESSED
+    legacy_review = ReviewItem(
+        agency_id=existing.agency_id,
+        case_id=None,
+        carrier_message_id=legacy_message.id,
+        assigned_reviewer_id=new_owner.id,
+        status=ReviewStatus.OPEN,
+        reason_code="CASE_OWNER_CONFLICT",
+        reason="Legacy mailbox-owner conflict",
+    )
+    seeded_db.add(legacy_review)
     legacy_message.case_id = None
+    legacy_message.processing_status = ProcessingStatus.NEEDS_REVIEW
+    assert legacy_message.analysis is not None
+    legacy_message.analysis.validation_flags = ["CASE_OWNER_CONFLICT"]
     seeded_db.commit()
     message = create_received_message(
         seeded_db,
@@ -773,7 +783,7 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
     )
 
 
-def test_different_mailbox_policy_collision_links_review_to_current_case_owner(
+def test_different_mailbox_policy_match_preserves_case_owner_and_gmail_provenance(
     seeded_db: Session,
 ) -> None:
     agents = seeded_db.scalars(
@@ -799,21 +809,20 @@ def test_different_mailbox_policy_collision_links_review_to_current_case_owner(
         analyzer=FakeAnalyzer(analysis_result(client="John Doe", policy="AMR-98765432")),
     )
 
-    review = seeded_db.get(ReviewItem, result.review_id)
     seeded_db.refresh(existing)
     seeded_db.refresh(message)
-    assert result.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert result.processing_status is ProcessingStatus.PROCESSED
     assert result.case_id == existing.id
-    assert result.validation_flags == ("CASE_OWNER_CONFLICT",)
-    assert review is not None
-    assert review.reason_code == "CASE_OWNER_CONFLICT"
-    assert review.case_id == existing.id
-    assert review.assigned_reviewer_id == former_owner_id
+    assert result.validation_flags == ()
+    assert result.review_id is None
     assert message.case_id == existing.id
+    connection = seeded_db.get(GmailConnection, message.gmail_connection_id)
+    assert connection is not None and connection.user_id == agents[1].id
     assert existing.assigned_agent_id == former_owner_id
-    assert not seeded_db.scalars(
+    tasks = seeded_db.scalars(
         select(Task).where(Task.source_carrier_message_id == message.id)
     ).all()
+    assert tasks and all(task.assigned_agent_id == former_owner_id for task in tasks)
 
 
 def test_case_linked_active_review_uses_case_owner_not_stale_reviewer(
@@ -839,9 +848,18 @@ def test_case_linked_active_review_uses_case_owner_not_stale_reviewer(
     )
     proposed = analysis_result(client="John Doe", policy="AMR-98765432")
     result = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
-    review = seeded_db.get(ReviewItem, result.review_id)
-    assert review is not None
-    review.assigned_reviewer_id = gmail_owner.id
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    review = ReviewItem(
+        agency_id=existing.agency_id,
+        case_id=existing.id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=gmail_owner.id,
+        status=ReviewStatus.OPEN,
+        reason_code="CASE_OWNER_CONFLICT",
+        reason="Legacy stale ownership review",
+    )
+    seeded_db.add(review)
+    message.processing_status = ProcessingStatus.NEEDS_REVIEW
     seeded_db.commit()
 
     gmail_auth = login(client, gmail_owner.email)
@@ -881,21 +899,23 @@ def test_case_linked_active_review_uses_case_owner_not_stale_reviewer(
     assert review.id in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
     assert client.get(f"/api/v1/reviews/{review.id}").status_code == 200
     assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 200
-    unresolved = client.post(
+    resolved_response = client.post(
         f"/api/v1/reviews/{review.id}/apply-analysis",
         json=correction,
         headers=case_headers,
     )
-    assert unresolved.status_code == 422
-    assert unresolved.json()["detail"]["issues"][0]["code"] == "CASE_OWNER_CONFLICT"
+    assert resolved_response.status_code == 200
     seeded_db.refresh(existing)
     seeded_db.refresh(review)
     assert existing.assigned_agent_id == case_owner.id
-    assert review.status is ReviewStatus.OPEN
+    assert review.status is ReviewStatus.RESOLVED
 
     manager_auth = login(client, "manager@demo.local")
     manager_headers = {"X-CSRF-Token": manager_auth["csrf_token"]}
-    assert review.id in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
+    assert review.id in {
+        item["id"]
+        for item in client.get("/api/v1/reviews?view=RESOLVED&page_size=100").json()["items"]
+    }
     assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 200
     assert (
         client.post(
@@ -921,7 +941,7 @@ def test_case_linked_active_review_uses_case_owner_not_stale_reviewer(
             json={"resolution_notes": "Current Case owner completed the review"},
             headers=case_headers,
         ).status_code
-        == 200
+        == 409
     )
 
 
@@ -1004,11 +1024,21 @@ def test_manager_resave_reconciles_legacy_unlinked_owner_conflict_from_stored_an
             analysis_result(client="John Doe", policy="AMR-98765432", confidence=confidence)
         ),
     )
-    review = seeded_db.get(ReviewItem, result.review_id)
-    assert review is not None and message.analysis is not None
-    review.case_id = None
-    review.assigned_reviewer_id = gmail_owner.id
+    assert result.processing_status is ProcessingStatus.PROCESSED
+    assert message.analysis is not None
+    review = ReviewItem(
+        agency_id=existing.agency_id,
+        case_id=None,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=gmail_owner.id,
+        status=ReviewStatus.OPEN,
+        reason_code="CASE_OWNER_CONFLICT",
+        reason="Legacy mailbox-owner conflict",
+    )
+    seeded_db.add(review)
     message.case_id = None
+    message.processing_status = ProcessingStatus.NEEDS_REVIEW
+    message.analysis.validation_flags = ["CASE_OWNER_CONFLICT"]
     message.analysis.model_result_json = {
         key: value
         for key, value in message.analysis.model_result_json.items()

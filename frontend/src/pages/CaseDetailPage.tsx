@@ -334,7 +334,7 @@ export function CaseDetailPage() {
               <StatusBadge status={item.policy_status} />
             </div>
             <div className="flex flex-wrap gap-2 self-start sm:self-end">
-              {!isManager && !item.dismissed_at && (
+              {!item.dismissed_at && item.can_manage_lifecycle && (
                 <Button variant="secondary" onClick={() => setCorrecting(true)}>
                   Correct case information
                 </Button>

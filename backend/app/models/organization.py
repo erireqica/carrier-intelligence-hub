@@ -48,6 +48,7 @@ class User(TimestampMixin, Base):
     )
     password_hash: Mapped[str] = mapped_column(String(512), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     agency: Mapped[Agency] = relationship(back_populates="users")
