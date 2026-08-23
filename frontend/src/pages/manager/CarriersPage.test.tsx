@@ -102,6 +102,11 @@ describe('CarriersPage mutation errors', () => {
     const removeButtons = await screen.findAllByRole('button', {
       name: 'Remove',
     })
+    const domainDisable = (
+      await screen.findAllByRole('button', { name: 'Disable' })
+    ).find((button) => !button.classList.contains('bg-red-700'))
+    expect(domainDisable).toHaveClass('min-h-9', 'px-2', 'py-1')
+    expect(removeButtons[0]).toHaveClass('min-h-9', 'px-2', 'py-1')
     fireEvent.click(removeButtons[0])
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('americo.com'))
     expect(confirm).toHaveBeenCalledWith(

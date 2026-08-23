@@ -125,7 +125,7 @@ export function CasesPage() {
       </div>
       <form
         onSubmit={submit}
-        className="filter-toolbar grid gap-3 lg:grid-cols-[minmax(260px,1fr)_180px_160px_auto]"
+        className="filter-toolbar grid gap-3 lg:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_180px_160px_auto]"
       >
         <label className="sr-only" htmlFor="case-search">
           Search cases

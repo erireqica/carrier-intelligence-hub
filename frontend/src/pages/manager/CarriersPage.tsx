@@ -241,7 +241,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
                     status={item.is_enabled ? 'ACTIVE' : 'DISABLED'}
                   />
                   <button
-                    className="font-medium text-blue-700 hover:underline disabled:text-slate-400"
+                    className="inline-flex min-h-9 items-center rounded-md px-2 py-1 font-medium text-blue-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:text-slate-400"
                     disabled={domainEntryMutation.isPending}
                     onClick={() =>
                       domainEntryMutation.mutate({
@@ -253,7 +253,7 @@ function CarrierCard({ carrier }: { carrier: CarrierItem }) {
                     {item.is_enabled ? 'Disable' : 'Enable'}
                   </button>
                   <button
-                    className="font-medium text-red-700 hover:underline disabled:text-slate-400"
+                    className="inline-flex min-h-9 items-center rounded-md px-2 py-1 font-medium text-red-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300 disabled:text-slate-400"
                     disabled={domainEntryMutation.isPending}
                     onClick={() => {
                       if (confirmRemoval('domain', item.domain))

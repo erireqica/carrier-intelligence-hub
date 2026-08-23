@@ -28,6 +28,10 @@ describe('CasesPage lifecycle filtering', () => {
     expect(
       await screen.findByText('No active carrier cases yet'),
     ).toBeInTheDocument()
+    expect(screen.getByLabelText('Search cases').closest('form')).toHaveClass(
+      'lg:grid-cols-2',
+      'xl:grid-cols-[minmax(260px,1fr)_180px_160px_auto]',
+    )
     expect(mockedGetCases).toHaveBeenCalledWith(
       expect.stringContaining('lifecycle=ACTIVE'),
     )
