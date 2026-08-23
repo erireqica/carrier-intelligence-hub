@@ -62,6 +62,7 @@ const baseMessage: GmailMessage = {
   can_open_case: false,
   review_id: null,
   can_open_review: false,
+  review_action_state: 'NONE',
   last_processing_error_code: null,
   processing_failure_reason: null,
   processing_retry_state: null,
@@ -307,6 +308,7 @@ describe('GmailConnectionsPage', () => {
         processing_status: 'PROCESSED',
         review_id: 91,
         can_open_review: false,
+        review_action_state: 'UNAVAILABLE',
         case_id: 32,
         case_assigned_agent: {
           id: 3,
@@ -323,6 +325,25 @@ describe('GmailConnectionsPage', () => {
         processing_status: 'NEEDS_REVIEW',
         review_id: 92,
         can_open_review: true,
+        review_action_state: 'ACTIONABLE',
+      },
+      {
+        ...baseMessage,
+        id: 28,
+        subject: 'Dismissed case review',
+        processing_status: 'IGNORED',
+        review_id: 93,
+        can_open_review: false,
+        review_action_state: 'CASE_DISMISSED',
+      },
+      {
+        ...baseMessage,
+        id: 29,
+        subject: 'Completed case review',
+        processing_status: 'PROCESSED',
+        review_id: 94,
+        can_open_review: false,
+        review_action_state: 'CASE_COMPLETED',
       },
     ])
     renderPage()
@@ -350,6 +371,9 @@ describe('GmailConnectionsPage', () => {
     const reviewLinks = screen.getAllByRole('link', { name: 'Review' })
     expect(reviewLinks).toHaveLength(1)
     expect(reviewLinks[0]).toHaveAttribute('href', '/reviews/92')
+    expect(screen.getByText('Case dismissed')).toBeInTheDocument()
+    expect(screen.getByText('Case completed')).toBeInTheDocument()
+    expect(screen.queryByText('Review required')).not.toBeInTheDocument()
     expect(
       screen.getByText('Case assigned to another agent'),
     ).toBeInTheDocument()

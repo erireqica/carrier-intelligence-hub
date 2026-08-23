@@ -9,7 +9,12 @@ from app.core.security import hash_password
 from app.core.time import utc_now
 from app.integrations.gmail.crypto import TokenCipher
 from app.integrations.gmail.sync import SyncResult
-from app.models.enums import GmailConnectionStatus, ReviewStatus, UserRole
+from app.models.enums import (
+    GmailConnectionStatus,
+    ProcessingStatus,
+    ReviewStatus,
+    UserRole,
+)
 from app.models.operations import CarrierMessage, PolicyCase, ReviewItem
 from app.models.organization import (
     Agency,
@@ -191,6 +196,7 @@ def test_recent_message_case_access_matches_case_authorization(
     assert owner_item["can_open_case"] is False
     assert owner_item["review_id"] == review.id
     assert owner_item["can_open_review"] is False
+    assert owner_item["review_action_state"] == "UNAVAILABLE"
     assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 404
 
     login(client, "manager@demo.local")
@@ -199,6 +205,7 @@ def test_recent_message_case_access_matches_case_authorization(
     ][0]
     assert manager_item["can_open_case"] is True
     assert manager_item["can_open_review"] is True
+    assert manager_item["review_action_state"] == "ACTIONABLE"
     assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 200
 
     policy_case.assigned_agent_id = gmail_owner.id
@@ -209,7 +216,59 @@ def test_recent_message_case_access_matches_case_authorization(
     ][0]
     assert current_owner_item["can_open_case"] is True
     assert current_owner_item["can_open_review"] is True
+    assert current_owner_item["review_action_state"] == "ACTIONABLE"
     assert client.get(f"/api/v1/cases/{policy_case.id}").status_code == 200
+
+
+def test_recent_message_review_metadata_tracks_case_dismiss_and_restore(
+    client: TestClient,
+    db: Session,
+    login,
+) -> None:
+    policy_case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "Mary Smith"))
+    assert policy_case is not None and policy_case.assigned_agent_id is not None
+    owner = db.get(User, policy_case.assigned_agent_id)
+    message = db.scalar(select(CarrierMessage).where(CarrierMessage.case_id == policy_case.id))
+    assert owner is not None and message is not None
+    connection = add_connection(db, owner, "review-lifecycle@gmail.test")
+    message.gmail_connection_id = connection.id
+    message.processing_status = ProcessingStatus.NEEDS_REVIEW
+    review = ReviewItem(
+        agency_id=policy_case.agency_id,
+        case_id=policy_case.id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=owner.id,
+        status=ReviewStatus.OPEN,
+        reason_code="LIFECYCLE_TEST",
+        reason="Synthetic lifecycle review",
+    )
+    db.add(review)
+    db.commit()
+
+    auth = login(client, owner.email)
+    headers = {"X-CSRF-Token": auth["csrf_token"]}
+    active = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()["items"][0]
+    assert active["review_action_state"] == "ACTIONABLE"
+    assert active["can_open_review"] is True
+    assert review.id in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
+
+    assert (
+        client.post(f"/api/v1/cases/{policy_case.id}/dismiss", headers=headers).status_code == 200
+    )
+    dismissed = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()["items"][0]
+    assert dismissed["review_action_state"] == "CASE_DISMISSED"
+    assert dismissed["can_open_review"] is False
+    assert dismissed["processing_status"] == "IGNORED"
+    assert review.id not in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
+
+    assert (
+        client.post(f"/api/v1/cases/{policy_case.id}/restore", headers=headers).status_code == 200
+    )
+    restored = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()["items"][0]
+    assert restored["review_action_state"] == "ACTIONABLE"
+    assert restored["can_open_review"] is True
+    assert restored["processing_status"] == "NEEDS_REVIEW"
+    assert review.id in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
 
 
 def test_disconnect_removes_local_credentials_even_when_revocation_is_best_effort(

@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, joinedload
 
@@ -29,10 +29,11 @@ from app.models.enums import (
     ProcessingStatus,
     ReviewStatus,
     TaskStatus,
+    UserRole,
 )
 from app.models.gmail_labels import GmailManagedLabel, GmailThreadLabelSync
-from app.models.operations import CarrierMessage, ReviewItem, Task
-from app.models.organization import GmailConnection, GmailOAuthCredential
+from app.models.operations import CarrierMessage, PolicyCase, ReviewItem, Task
+from app.models.organization import GmailConnection, GmailOAuthCredential, User
 from app.services.audit import record_audit_event
 
 MailboxFactory = Callable[[GmailOAuthCredential], tuple[GmailMailbox, bool]]
@@ -273,19 +274,39 @@ def desired_labels_for_thread(
     if not messages:
         return set()
     message_ids = [message.id for message in messages]
+    active_agent_for_review = exists(
+        select(User.id).where(
+            User.id == ReviewItem.assigned_reviewer_id,
+            User.role == UserRole.AGENT,
+            User.is_active.is_(True),
+            User.removed_at.is_(None),
+        )
+    )
     active_review = db.scalar(
         select(ReviewItem.id)
+        .join(PolicyCase, ReviewItem.case_id == PolicyCase.id, isouter=True)
         .where(
             ReviewItem.carrier_message_id.in_(message_ids),
             ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+            or_(
+                and_(ReviewItem.case_id.is_(None), active_agent_for_review),
+                and_(
+                    ReviewItem.case_id.is_not(None),
+                    PolicyCase.dismissed_at.is_(None),
+                    PolicyCase.completed_at.is_(None),
+                ),
+            ),
         )
         .limit(1)
     )
     active_source_task = db.scalar(
         select(Task.id)
+        .join(PolicyCase, Task.case_id == PolicyCase.id)
         .where(
             Task.source_carrier_message_id.in_(message_ids),
             Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
+            PolicyCase.dismissed_at.is_(None),
+            PolicyCase.completed_at.is_(None),
         )
         .limit(1)
     )

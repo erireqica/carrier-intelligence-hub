@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, and_, exists, func, or_, select
 from sqlalchemy import case as sql_case
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -40,6 +40,7 @@ from app.models.enums import (
     CaseAssignmentSource,
     PolicyStatus,
     Priority,
+    ProcessingStatus,
     ReviewStatus,
     TaskStatus,
     UserRole,
@@ -256,6 +257,19 @@ def set_case_dismissed(
         return get_case_detail(db, current, case.id)
     case.dismissed_at = utc_now() if dismissed else None
     case.dismissed_by_user_id = current.user.id if dismissed else None
+    active_review_messages = db.scalars(
+        select(CarrierMessage)
+        .join(ReviewItem, ReviewItem.carrier_message_id == CarrierMessage.id)
+        .where(
+            ReviewItem.case_id == case.id,
+            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+        )
+    ).all()
+    for message in active_review_messages:
+        if dismissed and message.processing_status is ProcessingStatus.NEEDS_REVIEW:
+            message.processing_status = ProcessingStatus.IGNORED
+        elif not dismissed and message.processing_status is ProcessingStatus.IGNORED:
+            message.processing_status = ProcessingStatus.NEEDS_REVIEW
     record_audit_event(
         db,
         agency_id=case.agency_id,
@@ -267,6 +281,7 @@ def set_case_dismissed(
             f"{'manager' if current.user.role is UserRole.MANAGER else 'assigned agent'}"
         ),
     )
+    enqueue_for_case(db, agency_id=case.agency_id, case_id=case.id)
     db.commit()
     db.expire_all()
     return get_case_detail(db, current, case.id)
@@ -714,28 +729,30 @@ def list_reviews(
     review_view: str,
 ) -> ReviewListResponse:
     query = scoped_reviews_query(current)
+    assigned_to_active_agent = exists(
+        select(User.id).where(
+            User.id == ReviewItem.assigned_reviewer_id,
+            User.role == UserRole.AGENT,
+            User.is_active.is_(True),
+            User.removed_at.is_(None),
+        )
+    )
+    actionable_lifecycle = or_(
+        and_(ReviewItem.case_id.is_(None), assigned_to_active_agent),
+        and_(
+            ReviewItem.case_id.is_not(None),
+            PolicyCase.dismissed_at.is_(None),
+            PolicyCase.completed_at.is_(None),
+        ),
+    )
     if review_status:
         query = query.where(ReviewItem.status == review_status)
         if review_status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW}:
-            query = query.where(
-                or_(
-                    ReviewItem.case_id.is_(None),
-                    and_(
-                        PolicyCase.dismissed_at.is_(None),
-                        PolicyCase.completed_at.is_(None),
-                    ),
-                )
-            )
+            query = query.where(actionable_lifecycle)
     elif review_view == "ACTIONABLE":
         query = query.where(
             ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
-            or_(
-                ReviewItem.case_id.is_(None),
-                and_(
-                    PolicyCase.dismissed_at.is_(None),
-                    PolicyCase.completed_at.is_(None),
-                ),
-            ),
+            actionable_lifecycle,
         )
     elif review_view == "RESOLVED":
         query = query.where(ReviewItem.status == ReviewStatus.RESOLVED)

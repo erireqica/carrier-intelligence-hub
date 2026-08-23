@@ -346,6 +346,9 @@ class GmailMessageListItem(BaseModel):
     can_open_case: bool
     review_id: int | None
     can_open_review: bool
+    review_action_state: Literal[
+        "ACTIONABLE", "CASE_DISMISSED", "CASE_COMPLETED", "UNAVAILABLE", "NONE"
+    ]
     last_processing_error_code: str | None
     processing_failure_reason: str | None
     processing_retry_state: str | None

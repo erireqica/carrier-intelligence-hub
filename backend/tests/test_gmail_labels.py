@@ -473,6 +473,52 @@ def test_thread_label_rules_are_derived_from_aggregate_database_truth(
     )
 
 
+def test_dismissed_case_work_does_not_drive_workflow_labels_until_restored(
+    seeded_db: Session,
+) -> None:
+    connection = create_connection(seeded_db, address="dismissed-case-labels@gmail.test")
+    message = create_message(seeded_db, connection, thread_id="thread-dismissed-case")
+    task = create_case_and_task(seeded_db, message)
+    policy_case = seeded_db.get(PolicyCase, task.case_id)
+    assert policy_case is not None
+    message.processing_status = ProcessingStatus.NEEDS_REVIEW
+    review = ReviewItem(
+        agency_id=message.agency_id,
+        case_id=policy_case.id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=connection.user_id,
+        status=ReviewStatus.OPEN,
+        reason_code="DISMISSED_CASE_TEST",
+        reason="Synthetic dismissed Case review",
+    )
+    seeded_db.add(review)
+    seeded_db.commit()
+
+    assert GmailLabelKey.NEEDS_REVIEW in desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=connection.id,
+        gmail_thread_id=message.gmail_thread_id,
+    )
+    policy_case.dismissed_at = utc_now()
+    seeded_db.commit()
+    dismissed = desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=connection.id,
+        gmail_thread_id=message.gmail_thread_id,
+    )
+    assert GmailLabelKey.NEEDS_REVIEW not in dismissed
+    assert GmailLabelKey.ACTION_REQUIRED not in dismissed
+    assert GmailLabelKey.NO_FURTHER_ACTION_NEEDED in dismissed
+
+    policy_case.dismissed_at = None
+    seeded_db.commit()
+    assert GmailLabelKey.NEEDS_REVIEW in desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=connection.id,
+        gmail_thread_id=message.gmail_thread_id,
+    )
+
+
 @pytest.mark.parametrize(
     "processing_status",
     [ProcessingStatus.RECEIVED, ProcessingStatus.PROCESSING, ProcessingStatus.FAILED],
@@ -584,6 +630,13 @@ def test_case_lifecycle_and_manual_tasks_do_not_invent_thread_work(
             status=TaskStatus.OPEN,
         )
     )
+    seeded_db.commit()
+    assert GmailLabelKey.NO_FURTHER_ACTION_NEEDED in desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=connection.id,
+        gmail_thread_id="thread-case-lifecycle",
+    )
+    case.completed_at = None
     seeded_db.commit()
     assert GmailLabelKey.ACTION_REQUIRED in desired_labels_for_thread(
         seeded_db,

@@ -389,6 +389,8 @@ export type GmailMessage = {
   can_open_case: boolean
   review_id: number | null
   can_open_review: boolean
+  review_action_state:
+    'ACTIONABLE' | 'CASE_DISMISSED' | 'CASE_COMPLETED' | 'UNAVAILABLE' | 'NONE'
   last_processing_error_code: string | null
   processing_failure_reason: string | null
   processing_retry_state:

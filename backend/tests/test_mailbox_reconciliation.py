@@ -35,6 +35,7 @@ from app.models.organization import GmailConnection, User
 from app.services.mailbox_reconciliation import (
     reconcile_duplicate_gmail_connections,
     reconcile_legacy_duplicate_fanout,
+    reconcile_review_consistency,
 )
 
 
@@ -266,8 +267,7 @@ def test_legacy_reconnect_duplicates_collapse_to_one_logical_mailbox(
         )
         == 1
     )
-    db.refresh(duplicate_review)
-    assert duplicate_review.carrier_message_id == good.id
+    assert db.get(ReviewItem, duplicate_review.id) is None
     assert (
         db.scalar(
             select(func.count())
@@ -503,3 +503,98 @@ def test_database_rejects_two_active_reviews_for_one_message(seeded_db: Session)
             ]
         )
         db.flush()
+
+
+def test_review_consistency_cleanup_preserves_human_history_and_repairs_owner(
+    seeded_db: Session,
+) -> None:
+    db = seeded_db
+    owner = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    carrier = db.scalar(select(Carrier).where(Carrier.name == "Americo"))
+    assert owner is not None and carrier is not None
+    connection = GmailConnection(
+        agency_id=owner.agency_id,
+        user_id=owner.id,
+        gmail_address="review-consistency@gmail.test",
+        status=GmailConnectionStatus.CONNECTED,
+    )
+    db.add(connection)
+    db.flush()
+    message = CarrierMessage(
+        agency_id=owner.agency_id,
+        carrier_id=carrier.id,
+        gmail_connection_id=connection.id,
+        gmail_message_id="review-consistency-message",
+        sender="notices@americo.test",
+        subject="Review consistency",
+        received_at=utc_now(),
+        processing_status=ProcessingStatus.NEEDS_REVIEW,
+        raw_content="Synthetic content.",
+        cleaned_content="Synthetic content.",
+    )
+    distinct_message = CarrierMessage(
+        agency_id=owner.agency_id,
+        carrier_id=carrier.id,
+        gmail_connection_id=connection.id,
+        gmail_message_id="review-consistency-distinct-reply",
+        gmail_thread_id="review-consistency-thread",
+        sender="notices@americo.test",
+        subject="Review consistency",
+        received_at=utc_now(),
+        processing_status=ProcessingStatus.NEEDS_REVIEW,
+        raw_content="Distinct synthetic reply.",
+        cleaned_content="Distinct synthetic reply.",
+    )
+    message.gmail_thread_id = distinct_message.gmail_thread_id
+    db.add_all([message, distinct_message])
+    db.flush()
+    active = ReviewItem(
+        agency_id=owner.agency_id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=None,
+        status=ReviewStatus.OPEN,
+        reason_code="CURRENT",
+        reason="Current actionable review",
+    )
+    redundant = ReviewItem(
+        agency_id=owner.agency_id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=owner.id,
+        status=ReviewStatus.DISMISSED,
+        reason_code="CURRENT",
+        reason="Synthetic fan-out",
+        resolution_notes="Dismissed during exact Gmail message duplicate reconciliation.",
+        resolved_at=utc_now(),
+    )
+    historical = ReviewItem(
+        agency_id=owner.agency_id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=owner.id,
+        status=ReviewStatus.RESOLVED,
+        reason_code="PRIOR_CYCLE",
+        reason="Prior human-reviewed cycle",
+        resolution_notes="Agent confirmed the prior interpretation.",
+        resolved_at=utc_now(),
+    )
+    distinct_review = ReviewItem(
+        agency_id=owner.agency_id,
+        carrier_message_id=distinct_message.id,
+        assigned_reviewer_id=owner.id,
+        status=ReviewStatus.OPEN,
+        reason_code="DISTINCT_REPLY",
+        reason="Distinct reply needs its own review",
+    )
+    db.add_all([active, redundant, historical, distinct_review])
+    db.commit()
+
+    result = reconcile_review_consistency(db)
+    db.flush()
+
+    assert result.redundant_reviews_removed == 1
+    assert result.active_reviews_reassigned == 1
+    assert db.get(ReviewItem, redundant.id) is None
+    assert db.get(ReviewItem, historical.id) is not None
+    assert db.get(ReviewItem, distinct_review.id) is not None
+    assert distinct_review.carrier_message_id != active.carrier_message_id
+    db.refresh(active)
+    assert active.assigned_reviewer_id == owner.id

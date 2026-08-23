@@ -1171,8 +1171,10 @@ def test_case_linked_active_review_uses_case_owner_not_stale_reviewer(
     assert resolved_response.status_code == 200
     seeded_db.refresh(existing)
     seeded_db.refresh(review)
+    seeded_db.refresh(message)
     assert existing.assigned_agent_id == case_owner.id
     assert review.status is ReviewStatus.RESOLVED
+    assert message.processing_status is ProcessingStatus.PROCESSED
 
     manager_auth = login(client, "manager@demo.local")
     manager_headers = {"X-CSRF-Token": manager_auth["csrf_token"]}
@@ -1252,6 +1254,10 @@ def test_unlinked_active_review_uses_assigned_reviewer_without_widening_message_
         headers=assigned_headers,
     )
     assert dismissed.status_code == 200
+    seeded_db.refresh(message)
+    seeded_db.refresh(review)
+    assert message.processing_status is ProcessingStatus.IGNORED
+    assert review.status is ReviewStatus.DISMISSED
 
 
 @pytest.mark.parametrize("confidence, expected_status", [(0.95, "RESOLVED"), (0.4, "RESOLVED")])

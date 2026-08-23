@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.time import utc_now
@@ -17,6 +17,7 @@ from app.models.enums import (
     ProcessingStatus,
     ReviewStatus,
     TaskStatus,
+    UserRole,
 )
 from app.models.gmail_labels import GmailManagedLabel, GmailThreadLabelSync
 from app.models.operations import (
@@ -27,7 +28,7 @@ from app.models.operations import (
     ReviewItem,
     Task,
 )
-from app.models.organization import GmailConnection, GmailOAuthState
+from app.models.organization import GmailConnection, GmailOAuthState, User
 from app.services.audit import record_audit_event
 
 
@@ -53,6 +54,13 @@ class LegacyFanoutReconciliationResult:
     dismissed_tasks_removed: int = 0
     duplicate_ingestion_events_preserved: int = 0
     cases_affected: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReviewConsistencyReconciliationResult:
+    redundant_reviews_removed: int = 0
+    active_reviews_reassigned: int = 0
+    message_statuses_repaired: int = 0
 
 
 _MESSAGE_STATUS_RANK = {
@@ -254,11 +262,7 @@ def _merge_duplicate_message(
         review.carrier_message_id = canonical.id
         if review.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW}:
             if active_review_retained:
-                review.status = ReviewStatus.DISMISSED
-                review.resolution_notes = (
-                    "Dismissed during exact Gmail message duplicate reconciliation."
-                )
-                review.resolved_at = utc_now()
+                db.delete(review)
             else:
                 active_review_retained = True
 
@@ -437,6 +441,9 @@ def reconcile_duplicate_gmail_connections(db: Session) -> MailboxReconciliationR
         former_owner_ids = sorted(
             {item.user_id for item in group if item.user_id != canonical.user_id}
         )
+        group_cases_reassigned = 0
+        group_tasks_reassigned = 0
+        group_reviews_reassigned = 0
         (
             group_messages_removed,
             group_tasks_reconciled,
@@ -444,6 +451,27 @@ def reconcile_duplicate_gmail_connections(db: Session) -> MailboxReconciliationR
             group_attachments_removed,
             group_evidence_removed,
         ) = _merge_message_groups(db, group, canonical.id)
+        active_case_less_reviews = db.scalars(
+            select(ReviewItem)
+            .join(CarrierMessage, CarrierMessage.id == ReviewItem.carrier_message_id)
+            .where(
+                CarrierMessage.gmail_connection_id == canonical.id,
+                ReviewItem.case_id.is_(None),
+                ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+            )
+        ).all()
+        canonical_owner = db.get(User, canonical.user_id)
+        if (
+            canonical_owner is not None
+            and canonical_owner.role is UserRole.AGENT
+            and canonical_owner.is_active
+            and canonical_owner.removed_at is None
+        ):
+            for review in active_case_less_reviews:
+                if review.assigned_reviewer_id != canonical_owner.id:
+                    review.assigned_reviewer_id = canonical_owner.id
+                    reviews_reassigned += 1
+                    group_reviews_reassigned += 1
         group_label_syncs_removed = _merge_label_state(db, group, canonical.id)
         messages_removed += group_messages_removed
         attachments_removed += group_attachments_removed
@@ -451,10 +479,6 @@ def reconcile_duplicate_gmail_connections(db: Session) -> MailboxReconciliationR
         duplicate_tasks_reconciled += group_tasks_reconciled
         duplicate_reviews_reconciled += group_reviews_reconciled
         label_syncs_removed += group_label_syncs_removed
-        group_cases_reassigned = 0
-        group_tasks_reassigned = 0
-        group_reviews_reassigned = 0
-
         db.execute(
             GmailOAuthState.__table__.update()
             .where(GmailOAuthState.reconnect_connection_id.in_([item.id for item in group]))
@@ -528,6 +552,125 @@ def reconcile_duplicate_gmail_connections(db: Session) -> MailboxReconciliationR
         active_reviews_reassigned=reviews_reassigned,
     )
     return totals
+
+
+def reconcile_review_consistency(db: Session) -> ReviewConsistencyReconciliationResult:
+    """Repair deterministic legacy Review fan-out without touching Gmail."""
+    reconciliation_note = "Dismissed during exact Gmail message duplicate reconciliation."
+    removed_ids_by_agency: dict[int, list[int]] = defaultdict(list)
+    candidates = db.scalars(
+        select(ReviewItem).where(
+            ReviewItem.status == ReviewStatus.DISMISSED,
+            ReviewItem.resolution_notes == reconciliation_note,
+        )
+    ).all()
+    for candidate in candidates:
+        canonical_exists = db.scalar(
+            select(ReviewItem.id)
+            .where(
+                ReviewItem.carrier_message_id == candidate.carrier_message_id,
+                ReviewItem.id != candidate.id,
+                or_(
+                    ReviewItem.resolution_notes.is_(None),
+                    ReviewItem.resolution_notes != reconciliation_note,
+                ),
+            )
+            .limit(1)
+        )
+        if canonical_exists is None:
+            continue
+        removed_ids_by_agency[candidate.agency_id].append(candidate.id)
+        db.delete(candidate)
+    db.flush()
+
+    reviews_reassigned = 0
+    statuses_repaired = 0
+    active_case_less = db.scalars(
+        select(ReviewItem)
+        .join(CarrierMessage, CarrierMessage.id == ReviewItem.carrier_message_id)
+        .where(
+            ReviewItem.case_id.is_(None),
+            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+        )
+    ).all()
+    for review in active_case_less:
+        message = db.get(CarrierMessage, review.carrier_message_id)
+        connection = (
+            db.get(GmailConnection, message.gmail_connection_id)
+            if message is not None and message.gmail_connection_id is not None
+            else None
+        )
+        owner = db.get(User, connection.user_id) if connection is not None else None
+        if (
+            owner is not None
+            and owner.role is UserRole.AGENT
+            and owner.is_active
+            and owner.removed_at is None
+            and review.assigned_reviewer_id != owner.id
+        ):
+            review.assigned_reviewer_id = owner.id
+            reviews_reassigned += 1
+        if message is not None and message.processing_status is not ProcessingStatus.NEEDS_REVIEW:
+            message.processing_status = ProcessingStatus.NEEDS_REVIEW
+            message.processing_started_at = None
+            message.processing_next_retry_at = None
+            statuses_repaired += 1
+
+    needs_review_messages = db.scalars(
+        select(CarrierMessage).where(
+            CarrierMessage.processing_status == ProcessingStatus.NEEDS_REVIEW
+        )
+    ).all()
+    for message in needs_review_messages:
+        active_review = db.scalar(
+            select(ReviewItem.id)
+            .where(
+                ReviewItem.carrier_message_id == message.id,
+                ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
+            )
+            .limit(1)
+        )
+        if active_review is not None:
+            continue
+        latest_review = db.scalar(
+            select(ReviewItem)
+            .where(ReviewItem.carrier_message_id == message.id)
+            .order_by(ReviewItem.created_at.desc(), ReviewItem.id.desc())
+            .limit(1)
+        )
+        if latest_review is not None and latest_review.status is ReviewStatus.DISMISSED:
+            message.processing_status = ProcessingStatus.IGNORED
+        elif (
+            latest_review is not None
+            and latest_review.status is ReviewStatus.RESOLVED
+            and message.analysis is not None
+            and message.analysis.final_result_json is not None
+        ):
+            message.processing_status = ProcessingStatus.PROCESSED
+        else:
+            message.processing_status = ProcessingStatus.FAILED
+            message.last_processing_error_code = "MISSING_ACTIVE_REVIEW"
+        message.processing_started_at = None
+        message.processing_next_retry_at = None
+        statuses_repaired += 1
+
+    for agency_id, removed_ids in removed_ids_by_agency.items():
+        record_audit_event(
+            db,
+            agency_id=agency_id,
+            event_type="REVIEW_HISTORY_RECONCILED",
+            description="Redundant Gmail fan-out Review rows were removed safely",
+            metadata={
+                "redundant_review_ids": sorted(removed_ids),
+                "redundant_reviews_removed": len(removed_ids),
+            },
+        )
+    db.flush()
+    return ReviewConsistencyReconciliationResult(
+        redundant_reviews_removed=sum(len(ids) for ids in removed_ids_by_agency.values()),
+        active_reviews_reassigned=reviews_reassigned,
+        message_statuses_repaired=statuses_repaired,
+    )
 
 
 def reconcile_legacy_duplicate_fanout(db: Session) -> LegacyFanoutReconciliationResult:

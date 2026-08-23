@@ -513,6 +513,21 @@ def recent_messages(
             can_open_case=message.case_id in accessible_case_ids,
             review_id=review_id,
             can_open_review=review_id in accessible_review_ids,
+            review_action_state=(
+                "CASE_DISMISSED"
+                if review_id is not None
+                and message.case_id in cases_by_id
+                and cases_by_id[message.case_id].dismissed_at is not None
+                else "CASE_COMPLETED"
+                if review_id is not None
+                and message.case_id in cases_by_id
+                and cases_by_id[message.case_id].completed_at is not None
+                else "ACTIONABLE"
+                if review_id is not None and review_id in accessible_review_ids
+                else "UNAVAILABLE"
+                if review_id is not None
+                else "NONE"
+            ),
             last_processing_error_code=message.last_processing_error_code,
             processing_failure_reason=safe_processing_failure_reason(
                 message.last_processing_error_code

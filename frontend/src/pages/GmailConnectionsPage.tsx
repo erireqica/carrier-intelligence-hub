@@ -187,7 +187,17 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
                 <td className="px-3 py-3" data-label="Action">
                   {isRetrying ? (
                     <span className="text-slate-500">Analyzing…</span>
-                  ) : message.review_id && message.can_open_review ? (
+                  ) : message.review_action_state === 'CASE_DISMISSED' ? (
+                    <span className="font-medium text-slate-600">
+                      Case dismissed
+                    </span>
+                  ) : message.review_action_state === 'CASE_COMPLETED' ? (
+                    <span className="font-medium text-slate-600">
+                      Case completed
+                    </span>
+                  ) : message.review_action_state === 'ACTIONABLE' &&
+                    message.review_id &&
+                    message.can_open_review ? (
                     <Link
                       className="font-semibold text-blue-700"
                       to={`/reviews/${message.review_id}`}
@@ -236,7 +246,7 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
                       </Button>
                     </details>
                   ) : message.processing_status === 'NEEDS_REVIEW' ? (
-                    <span className="text-slate-500">Review required</span>
+                    <span className="text-slate-500">Review unavailable</span>
                   ) : (
                     <span className="text-slate-500">Processing…</span>
                   )}
