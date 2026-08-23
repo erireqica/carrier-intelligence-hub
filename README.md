@@ -1,108 +1,506 @@
-# Carrier Intelligence Hub
+<div align="center">
 
-Carrier Intelligence Hub is an authenticated internal operations application for insurance agencies. It automatically turns approved carrier communications into durable policy cases, assigned work, review items, verified evidence, audit history, and Gmail workflow labels. PDF extraction and structured OpenAI analysis remain behind deterministic validation and human review; bounded retries and independent workers make the full path recoverable.
+# 📨 Carrier Intelligence Hub
 
-## Stack
+### AI-powered carrier email operations for insurance agencies
 
-- React, TypeScript, Vite, React Router, TanStack Query, and Tailwind CSS
-- FastAPI, Pydantic, SQLAlchemy 2, Alembic, and psycopg 3
+**Turn carrier emails and PDF attachments into structured policy cases, actionable tasks, safe human reviews, and synchronized Gmail workflow labels.**
+
+<br />
+
+![React](https://img.shields.io/badge/React-19-20232A?logo=react&logoColor=61DAFB)
+![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6?logo=typescript&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-Python-009688?logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
+![OpenAI](https://img.shields.io/badge/OpenAI-Structured%20AI-111111?logo=openai&logoColor=white)
+![Gmail](https://img.shields.io/badge/Gmail-OAuth%202.0-EA4335?logo=gmail&logoColor=white)
+
+</div>
+
+---
+
+## ✨ What is Carrier Intelligence Hub?
+
+Insurance agents receive a constant stream of carrier emails: policy approvals, underwriting requirements, lapse warnings, commission updates, supporting PDFs, deadlines, premium changes, and other policy activity.
+
+**Carrier Intelligence Hub turns those communications into operational work automatically.**
+
+Instead of manually reading every message, copying policy details, creating follow-up notes, and tracking deadlines, the platform:
+
+- connects to multiple Agent Gmail inboxes through **Google OAuth 2.0**
+- accepts mail only from configured **carrier addresses and domains**
+- extracts content from **email bodies and text-based PDF attachments**
+- uses an LLM to classify and structure the communication
+- validates AI output before it can affect operational data
+- creates or updates **Cases**
+- generates **Tasks** when actual work is required
+- routes genuinely ambiguous situations to **Human Review**
+- synchronizes workflow state back to Gmail with managed labels
+- gives Managers an agency-wide operational view
+
+> **The AI proposes. The backend validates. Humans decide only when necessary.**
+
+---
+
+## 🚀 From inbox to action
+
+```mermaid
+flowchart LR
+    A[📨 Carrier Email] --> B{✅ Approved Sender?}
+    B -- No --> X[Ignored]
+    B -- Yes --> C[📄 Parse Email + PDF]
+    C --> D[🤖 Structured AI Analysis]
+    D --> E{🛡️ Deterministic Validation}
+    E -- Safe --> F[📁 Create / Update Case]
+    E -- Human judgment needed --> G[👤 Review]
+    G --> F
+    F --> H[✅ Generate Tasks if needed]
+    H --> I[🏷️ Sync Gmail Labels]
+    F --> I
+```
+
+### Example
+
+In this representative synthetic example, a carrier sends:
+
+> **Policy Issued — Mary Smith**<br />
+> Policy `ATN-554433221` was approved and issued.<br />
+> Effective date: `09/01/2026`<br />
+> Monthly premium: `$145.00`<br />
+> Policy packet mailed to the client.
+
+Carrier Intelligence Hub can turn that into:
+
+**Case**
+- Mary Smith
+- Aetna
+- ATN-554433221
+- Policy Issued
+- Premium: $145.00
+
+**Tasks**
+- Notify the client that the policy was approved and mailed
+- Verify the first premium draft on 09/01/2026
+
+**Gmail**
+- `AI: Policy Issued`
+- `AI: Action Required`
+
+---
+
+# 🧠 AI that is useful — without blindly trusting AI
+
+The model does **semantic interpretation**, but it does not control the database.
+
+The processing layer uses:
+
+- strict structured output
+- grounded evidence
+- deterministic field validation
+- case-identity checks
+- action-item validation
+- source conflict detection
+- idempotent materialization
+- bounded retry handling
+
+The model has **no tools**, no database access, and cannot choose the authoritative carrier.
+
+### Automatic vs Review vs Task
+
+| Outcome | When it happens | Example |
+|---|---|---|
+| ✅ **Automatic** | The communication is clear and safely grounded | A policy is issued with matching client, policy, premium, and date |
+| 👤 **Review** | A human can resolve a conflict using evidence already inside Carrier Hub | Email says **Emily Robertson**, attached official PDF says **Emily Robinson** |
+| 📌 **Task** | The answer requires real-world follow-up | One communication contains unresolved premium figures that must be verified with the carrier |
+
+This keeps **Review exceptional**, rather than using it as a generic fallback whenever the model is uncertain.
+
+---
+
+# 📁 Cases are the operational record
+
+A **Case** represents the policy communication and its structured history.
+
+A Case can exist even when there are **zero Tasks**.
+
+For example, a carrier may send a Commission Update that contains useful policy information but explicitly says:
+
+> No action is required.
+
+Carrier Intelligence Hub still preserves that communication as a Case. The Agent can review it, add a manual Task if needed, or mark the Case complete.
+
+### Case lifecycle
+
+**Active → Completed**
+
+Cases may also be **Dismissed** and restored later.
+
+A Case can contain:
+
+- structured policy information
+- AI summary and classification
+- premium and status
+- communication history
+- extracted email content
+- PDF evidence
+- system-generated Tasks
+- manually created Tasks
+- audit activity
+- Review history
+
+---
+
+# ✅ Task management
+
+Tasks are generated only when the communication contains or implies real operational work.
+
+Examples:
+
+- obtain a signed HIPAA authorization
+- clarify prescription history
+- submit underwriting documents before a deadline
+- contact a client about an NSF payment
+- update banking information before a lapse date
+- notify a client that a policy was issued
+- verify the first premium draft
+
+Task states support:
+
+**Open · In Progress · Completed · Dismissed**
+
+Deadlines are preserved where the source provides them, including relative deadlines such as business-day requirements.
+
+---
+
+# 👤 Human Review
+
+Review exists for situations where automation should **not guess**.
+
+A reviewer sees:
+
+- the detected issue
+- competing grounded values
+- source labels
+- source excerpts
+- AI analysis
+- editable final fields
+- action items
+- attachments and communication context
+
+### Example: email vs PDF conflict
+
+| Source | Client Name |
+|---|---|
+| 📨 Email body | Emily **Robertson** |
+| 📄 Policy confirmation PDF | Emily **Robinson** |
+
+All other policy information matches.
+
+Instead of silently picking one value, the system creates a Review. The Agent chooses the correct value and applies it through the same safe materialization path used by automatic processing.
+
+---
+
+# 🏷️ Gmail workflow synchronization
+
+Carrier Intelligence Hub projects operational state back to Gmail using managed labels.
+
+### Workflow labels
+
+- `AI: Processing`
+- `AI: Needs Review`
+- `AI: Action Required`
+- `AI: No Further Action Needed`
+- `AI: Failed`
+
+### Classification labels
+
+- `AI: Policy Issued`
+- `AI: Pending Requirements`
+- `AI: Lapse Notice`
+- `AI: Commission Update`
+
+Only Carrier Intelligence Hub's own managed labels are modified. Existing user labels and Gmail system state are left alone.
+
+---
+
+# 👥 Agent and Manager roles
+
+### 🧑‍💼 Agent
+
+Agents handle day-to-day operational work:
+
+- connect and manage their Gmail inbox
+- work assigned Cases
+- update Task statuses
+- create manual Tasks
+- resolve Reviews
+- correct Case information
+- complete or dismiss Cases
+- view their operational activity
+
+### 📊 Manager
+
+Managers supervise the agency:
+
+- view agency-wide Cases and workload
+- monitor Gmail connection health
+- inspect analytics and activity
+- manage carrier configuration
+- assign and reassign Cases
+- review audit history
+
+Task updates, Review decisions, Case corrections, and Case completion remain with the assigned Agent. Managers retain agency-wide visibility, Case reassignment, and Case dismissal/restoration controls.
+
+---
+
+# 🛡️ Reliability and safety
+
+The project is designed around the idea that email processing should be **recoverable and idempotent**.
+
+### Key safeguards
+
+- stable Gmail mailbox identity
+- durable observed-message ledger
+- duplicate-message prevention using stable logical-mailbox identity plus immutable Gmail message IDs
+- encrypted OAuth tokens at rest
+- sender whitelist before body processing
+- external calls outside long-running database transactions
+- reusable saved AI analysis after materialization failure
+- idempotent Task generation
+- one Review lifecycle per source message
+- stale-processing recovery
+- Gmail label outbox/reconciliation
+- server-side RBAC
+- CSRF protection
+- HttpOnly application sessions
+- Argon2id password hashing
+
+A valid AI analysis can be saved before materialization, allowing a later retry to reuse the existing result instead of unnecessarily calling the model again.
+
+---
+
+# 🏗️ Architecture
+
+```mermaid
+flowchart TB
+    UI[⚛️ React + TypeScript UI]
+    API[⚡ FastAPI API]
+    DB[(🐘 PostgreSQL)]
+    GMAIL[📨 Gmail API]
+    WORKER[⚙️ Processing Workers]
+    PDF[📄 PyMuPDF]
+    AI[🤖 OpenAI Structured Output]
+
+    UI <-->|JSON API| API
+    API <--> DB
+
+    GMAIL --> WORKER
+    WORKER --> PDF
+    WORKER --> AI
+    WORKER <--> DB
+    WORKER --> GMAIL
+```
+
+The browser application and background processing pipeline remain separate so Gmail or AI processing failures do not take down the web application.
+
+---
+
+# 🧰 Tech stack
+
+### Frontend
+
+- **React 19**
+- **TypeScript**
+- **Vite**
+- **React Router**
+- **TanStack Query**
+- **Tailwind CSS**
+- **Recharts**
+- **Vitest + Testing Library**
+
+### Backend
+
+- **Python 3.14**
+- **FastAPI**
+- **Pydantic**
+- **SQLAlchemy 2**
+- **Alembic**
+- **psycopg**
+- **PyMuPDF**
+- **OpenAI Responses API**
+
+### Infrastructure & integrations
+
+- **PostgreSQL 17**
+- **Gmail API**
+- **Google OAuth 2.0**
+- background Python workers
+- encrypted OAuth credential storage
+
+---
+
+# 🖥️ Product areas
+
+The application includes:
+
+| Area | Purpose |
+|---|---|
+| 🏠 **Dashboard** | Current workload, priorities, Reviews, and operational overview |
+| 📁 **Cases** | Active, Completed, and Dismissed policy cases |
+| ✅ **Tasks** | Agent work queue with status, priority, and due dates |
+| 👤 **Reviews** | Human decisions for grounded ambiguities |
+| 📨 **Gmail Connections** | Mailbox authorization, sync state, and recent carrier communications |
+| 📊 **Analytics** | Manager-level operational visibility |
+| 👥 **Agents** | Agency workforce and assignment visibility |
+| ⚙️ **Carrier Configuration** | Approved carrier domains and sender addresses |
+| 🧾 **Activity / Audit** | Durable operational history |
+
+---
+
+# 🎬 Representative demo scenarios
+
+The synthetic demo dataset exercises both the assignment requirements and representative operational edge cases. It contains no real customer data.
+
+### Policy Issued
+A carrier confirms a policy has been approved and mailed.
+
+**Result:** Case + post-issue follow-up Tasks.
+
+### Pending Requirements
+Underwriting requests multiple documents with a submission deadline.
+
+**Result:** Case + separate grounded Tasks + due date.
+
+### Lapse Notice
+A premium payment is returned NSF and the policy enters its grace period.
+
+**Result:** Urgent Case + client-contact/remediation Tasks.
+
+### Commission Update
+The carrier reports a successful commission posting and states that no action is required.
+
+**Result:** Case with **0 Tasks**, preserving the communication without inventing work.
+
+### Source conflict requiring Review
+Email and attached PDF disagree on the client's surname while all policy identity fields match.
+
+**Result:** Human Review instead of an unsafe automatic guess.
+
+---
+
+# 🔐 Gmail and AI privacy boundaries
+
+Carrier Intelligence Hub never asks for or stores a Gmail password.
+
+Google OAuth credentials are encrypted before persistence.
+
+For approved carrier communications, the AI receives only the source material necessary for analysis, such as:
+
+- authoritative carrier name
+- subject
+- received timestamp
+- cleaned email text
+- extracted PDF text
+
+It does **not** receive:
+
+- Gmail passwords
+- OAuth secrets
+- application passwords
+- browser session tokens
+- encryption keys
+- unrelated mailbox content
+- raw PDF bytes
+
+OpenAI calls use structured output with `tools=[]` and `store=False`.
+
+---
+
+# ⚙️ Local development
+
+## Prerequisites
+
+- Python 3.14+
+- Node.js
 - PostgreSQL 17
-- Argon2id password hashing and database-backed browser sessions
-- Google OAuth 2.0, encrypted Gmail tokens, and separate polling/processing/label workers
-- PyMuPDF extraction and OpenAI Responses API Structured Outputs
-- Vitest/Testing Library, pytest, ESLint/Prettier, and Ruff
+- Google OAuth credentials only when testing live Gmail
+- OpenAI API key only when testing live AI processing
 
-## Local setup
-
-PostgreSQL 17 should be running on port `5433`. The setup script securely prompts for the PostgreSQL administrator password and a demo-login password. It creates only the dedicated `carrier_hub_app` role and the `carrier_intelligence_hub` and `carrier_intelligence_hub_test` databases, then writes an ignored `backend/.env`.
+## 1. Database + backend
 
 ```powershell
 cd backend
+
 pwsh -ExecutionPolicy Bypass -File .\scripts\setup_postgres.ps1
+
 python -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+
 & .\.venv\Scripts\python.exe -m alembic upgrade head
 & .\.venv\Scripts\python.exe -m app.db.seed
+```
+
+The setup script securely prompts for PostgreSQL administrator and synthetic demo-login passwords. It creates the dedicated local application role plus development and test databases, then writes the ignored `backend/.env`. The seed command is explicit and idempotent; it creates synthetic local Agent/Manager accounts but no Gmail connection or OAuth credential.
+
+## 2. Frontend
+
+```powershell
 cd ..\frontend
 npm install
+```
+
+## 3. Start the application
+
+```powershell
 cd ..
 pwsh -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
-The seed command is explicit, development-only, and idempotent. It requires `DEMO_SEED_PASSWORD` in `backend/.env`, never prints that password, and creates these synthetic accounts:
+Then open:
 
-- `manager@demo.local` — Manager
-- `agent.one@demo.local` — Agent
-- `agent.two@demo.local` — Agent
+**Frontend:** `http://localhost:5173`<br />
+**API:** `http://localhost:8000`<br />
+**OpenAPI:** `http://localhost:8000/docs`
 
-All three use the locally supplied demo password. No Gmail connection or OAuth credential is seeded.
+---
 
-The launcher starts FastAPI, the combined automatic Gmail pipeline, and Vite together. Press Ctrl+C in that terminal to stop all three. Logs are written under the ignored `.runtime` directory. Individual process commands remain available below for focused debugging.
+# 🔑 Gmail development configuration
 
-Open `http://localhost:5173`. The API is at `http://localhost:8000`, with OpenAPI documentation at `http://localhost:8000/docs`.
+For live Gmail testing, enable the Gmail API, configure a Google OAuth **Web application** client, and add the intended account as a test user while the consent screen remains in testing mode. Carrier Hub requests `gmail.modify` so it can read approved messages and maintain its own workflow labels; it does not send, draft, delete, trash, archive, or change read state.
 
-## Gmail development setup
-
-This project uses a Google OAuth app in development/testing mode. In Google Cloud, enable the Gmail API, configure the Google Auth Platform as **External** with testing status, add the intended Google account as a test user, and create an OAuth 2.0 **Web application** client. Register this exact redirect URI:
+Register this OAuth callback in Google Cloud:
 
 ```text
 http://localhost:8000/api/v1/gmail/oauth/callback
 ```
 
-Add these values only to the ignored `backend/.env`; never commit them:
+Example environment configuration:
 
 ```dotenv
 GOOGLE_OAUTH_CLIENT_ID=
 GOOGLE_OAUTH_CLIENT_SECRET=
 GOOGLE_TOKEN_ENCRYPTION_KEY=
 GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/api/v1/gmail/oauth/callback
+
 GMAIL_POLL_INTERVAL_SECONDS=60
 GMAIL_INITIAL_LOOKBACK_DAYS=7
+
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5.6-terra
+
 AI_AUTO_APPLY_CONFIDENCE_THRESHOLD=0.80
 MESSAGE_PROCESS_MAX_AUTO_ATTEMPTS=3
-MESSAGE_PROCESS_RETRY_BASE_SECONDS=30
-MESSAGE_PROCESS_RETRY_MAX_SECONDS=600
-MESSAGE_PROCESS_STALE_AFTER_SECONDS=600
-GMAIL_LABEL_MAX_ATTEMPTS=4
-GMAIL_LABEL_RETRY_BASE_SECONDS=30
-GMAIL_LABEL_RETRY_MAX_SECONDS=600
-GMAIL_LABEL_STALE_AFTER_SECONDS=300
 ```
 
-`GOOGLE_TOKEN_ENCRYPTION_KEY` must be a dedicated Fernet key. Start the API and frontend as above, sign in to Carrier Hub, open **Gmail Connections**, and choose **Connect Gmail** or **Upgrade permissions**. Select the Google account manually and approve `gmail.modify`. This scope is broader than label-only access, but Carrier Hub's adapter exposes only message/attachment reads plus managed-label list, creation, thread inspection, and thread-label modification. It does not expose send, draft, delete, trash, archive, or read-state operations. The application never receives or stores the Gmail password.
+Secrets belong only in the ignored `backend/.env`.
 
-## Advanced manual development workflow
+`GOOGLE_TOKEN_ENCRYPTION_KEY` must be a dedicated Fernet key. The complete configuration surface, including database URLs, worker cadence, bounded retries, PDF limits, and frontend origin, is documented with safe placeholders in `backend/.env.example`. The application can start without Gmail or OpenAI credentials; those integrations report safe unconfigured states until enabled.
 
-Terminal 1 — FastAPI:
+---
 
-```powershell
-cd backend
-& .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
-```
+# 🧪 Verification
 
-Terminal 2 — frontend:
-
-```powershell
-cd frontend
-npm run dev
-```
-
-Terminal 3 — combined automated pipeline:
-
-```powershell
-cd backend
-& .\.venv\Scripts\python.exe -m app.workers.pipeline
-```
-
-Use `python -m app.workers.pipeline --once` for one complete poll → process → label pass. For focused debugging, the reusable components remain available as `app.workers.gmail_poll`, `app.workers.message_process`, and `app.workers.gmail_labels`; each supports `--once` and its documented ID filters. Do not run duplicate pollers or pipelines against the same development mailbox unknowingly.
-
-The API starts normally without `OPENAI_API_KEY`; manual analysis returns a safe unconfigured response and the processor exits clearly. To exercise the real provider without database writes, configure the key only in ignored `backend/.env`, then run `python scripts/evaluate_stage4_samples.py`.
-
-Google testing-mode refresh-token policies may require reconnection. The application reports that condition as `NEEDS_REAUTH`; it does not bypass Google's policies. This stage is development-tested and must not be described as Google production verification, a security assessment, HIPAA compliance, SOC 2 compliance, or production authorization approval. Production deployment requires review of Google's applicable OAuth verification, user-data, and security requirements. See [Gmail integration](docs/gmail-integration.md).
-
-## Verification
+### Backend
 
 ```powershell
 cd backend
@@ -110,7 +508,13 @@ cd backend
 & .\.venv\Scripts\python.exe -m ruff format --check .
 & .\.venv\Scripts\python.exe -m pytest
 & .\.venv\Scripts\python.exe -m alembic current
+```
 
+Backend integration tests refuse to run unless `TEST_DATABASE_URL` names the dedicated `carrier_intelligence_hub_test` PostgreSQL database. Test data is transaction-isolated.
+
+### Frontend
+
+```powershell
 cd ..\frontend
 npm run lint
 npm run format:check
@@ -118,16 +522,66 @@ npm run test -- --run
 npm run build
 ```
 
-Backend integration tests refuse to run unless `TEST_DATABASE_URL` points to the PostgreSQL database named exactly `carrier_intelligence_hub_test`. Test records are isolated with transactions.
+---
 
-## Application behavior
+# 📌 Current scope
 
-Agents work their assigned cases, update their own task statuses, complete review decisions, correct current case information, and manage their Gmail connections. Managers have agency-wide read visibility, analytics and activity views, carrier configuration, task reassignment, Gmail health monitoring, and structured audit logs; they cannot make agents' task, review, or case-correction decisions. The backend enforces every ownership and role boundary; frontend controls are only a user-experience layer.
+### ✅ Implemented
 
-Authentication uses an HttpOnly cookie containing an opaque random session token. PostgreSQL stores only its SHA-256 lookup hash, session state, and a CSRF-token hash. Passwords are stored only as Argon2id hashes. See [authentication](docs/authentication.md), [data model](docs/data-model.md), and [architecture](docs/architecture.md).
+- Gmail OAuth 2.0
+- multiple Agent inboxes
+- carrier sender/domain whitelist
+- unread-message polling
+- MIME email parsing
+- text-based PDF extraction
+- structured LLM classification and extraction
+- grounded action-item generation
+- deterministic validation
+- Cases
+- Tasks
+- Human Review
+- Agent / Manager RBAC
+- Case completion and dismissal
+- manual Tasks
+- durable audit history
+- processing retries
+- stale-work recovery
+- deduplication
+- managed Gmail workflow labels
+- responsive operations UI
 
-## Current boundary
+### 🔭 Future improvements
 
-Implemented now: login/logout, Agent/Manager authorization, database-backed sessions, CSRF defense, cases/tasks/reviews/evidence/audits, carrier configuration, Google OAuth, encrypted Gmail credentials, whitelist-first polling, MIME parsing, in-memory Gmail PDF download, PyMuPDF extraction, strict structured AI proposals, deterministic validation, automatic case/task materialization, human correction or dismissal, bounded message retries, stale-work recovery, and an outbox-based Gmail thread-label projection.
+- OCR for image-only/scanned PDFs
+- Gmail push notifications
+- optional CRM delivery
+- email-based Agent invitations
+- production OAuth verification
+- production deployment/infrastructure hardening
 
-Not implemented yet: OCR, Gmail push notifications, CRM delivery, invitations, or production deployment. Gmail uses polling. Confidence is a review signal, not a calibrated probability. The sender whitelist is not cryptographic SPF/DKIM/DMARC proof, and this development stage makes no production-compliance claim. See [AI processing](docs/ai-processing.md) and [pipeline reliability](docs/pipeline-reliability.md).
+### ⚠️ Development boundaries
+
+Gmail discovery currently uses polling rather than push notifications. Text-based PDFs are supported; scanned/image-only documents require future OCR. The sender whitelist is an operational filter, not cryptographic SPF/DKIM/DMARC proof. Confidence is a routing signal rather than a calibrated probability. This prototype is not production-deployed, Google production-verified, HIPAA-compliant, or SOC 2 certified.
+
+---
+
+# 📚 Additional documentation
+
+Detailed technical notes live in:
+
+- `docs/architecture.md`
+- `docs/ai-processing.md`
+- `docs/gmail-integration.md`
+- `docs/pipeline-reliability.md`
+- `docs/authentication.md`
+- `docs/data-model.md`
+
+---
+
+<div align="center">
+
+## Built as a production-minded insurance operations prototype
+
+**Carrier Intelligence Hub combines AI interpretation with deterministic software controls so routine carrier communication becomes structured work — while ambiguous decisions stay with the human Agent.**
+
+</div>
