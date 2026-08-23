@@ -259,6 +259,7 @@ def claim_message(
         description="Carrier message processing started",
         metadata={"attempt": message.processing_attempt_count},
     )
+    enqueue_for_message(db, message)
     db.commit()
     return message.id
 
@@ -2132,6 +2133,7 @@ def reconcile_stored_discrepancy_tasks(db: Session, message_id: int) -> int:
             "tasks_dismissed": dismissed,
         },
     )
+    enqueue_for_message(db, message)
     db.commit()
     return dismissed
 

@@ -40,8 +40,12 @@ from app.models.gmail_labels import GmailManagedLabel, GmailThreadLabelSync
 from app.models.operations import CarrierMessage, PolicyCase, ReviewItem, Task
 from app.models.organization import GmailConnection, GmailOAuthCredential, User
 from app.services.auth import AuthContext, create_session
+from app.services.gmail_label_migration import migrate_managed_gmail_labels
 from app.services.gmail_labels import (
+    CLASSIFICATION_LABEL_KEYS,
+    LEGACY_MANAGED_LABEL_NAMES,
     MANAGED_LABEL_NAMES,
+    WORKFLOW_LABEL_KEYS,
     backfill_thread_label_syncs,
     claim_label_sync,
     desired_labels_for_thread,
@@ -51,7 +55,8 @@ from app.services.gmail_labels import (
     recover_stale_label_syncs,
     reset_connection_label_syncs,
 )
-from app.services.operations import update_task
+from app.services.message_processing import claim_message
+from app.services.operations import set_case_completed, update_task
 
 
 class FakeLabelMailbox:
@@ -65,6 +70,7 @@ class FakeLabelMailbox:
         self.label_types: dict[str, str] = {"Family": "user", "INBOX": "system"}
         self.thread_labels: set[str] = {"user-family"}
         self.created: list[str] = []
+        self.deleted: list[str] = []
         self.modifications: list[tuple[str, list[str], list[str]]] = []
         self.fail_modify = fail_modify
         self.modify_error = modify_error
@@ -85,6 +91,15 @@ class FakeLabelMailbox:
         self.label_types[name] = "user"
         self.created.append(name)
         return {"id": label_id, "name": name, "type": "user"}
+
+    def delete_label(self, label_id: str) -> None:
+        name = next(name for name, current_id in self.labels.items() if current_id == label_id)
+        self.deleted.append(name)
+        self.labels.pop(name)
+        self.label_types.pop(name)
+        self.thread_labels.discard(label_id)
+        for labels in self.thread_message_labels or []:
+            labels.discard(label_id)
 
     def get_thread_label_state(self, thread_id: str) -> GmailThreadLabelState:
         assert thread_id
@@ -189,7 +204,11 @@ def create_message(
         sender="approved@example.test",
         subject="Synthetic workflow message",
         received_at=received_at or datetime(2026, 8, 20, 12, tzinfo=UTC),
-        classification=(classification if status is ProcessingStatus.PROCESSED else None),
+        classification=(
+            classification
+            if status in {ProcessingStatus.PROCESSED, ProcessingStatus.NEEDS_REVIEW}
+            else None
+        ),
         summary=("Synthetic summary" if status is ProcessingStatus.PROCESSED else None),
         priority=(Priority.HIGH if status is ProcessingStatus.PROCESSED else None),
         processing_status=status,
@@ -249,19 +268,17 @@ def test_managed_labels_are_created_once_and_unrelated_labels_are_untouched(
     first = ensure_managed_labels(seeded_db, connection, mailbox)
     second = ensure_managed_labels(seeded_db, connection, mailbox)
 
-    assert set(first) == set(GmailLabelKey)
+    assert set(first) == set(MANAGED_LABEL_NAMES)
     assert first == second
     assert mailbox.created == list(MANAGED_LABEL_NAMES.values())
+    assert "Processed" not in mailbox.created
     assert mailbox.labels["Family"] == "user-family"
     assert mailbox.labels["INBOX"] == "INBOX"
-    assert (
-        seeded_db.scalar(
-            select(func.count())
-            .select_from(GmailManagedLabel)
-            .where(GmailManagedLabel.gmail_connection_id == connection.id)
-        )
-        == 8
-    )
+    assert seeded_db.scalar(
+        select(func.count())
+        .select_from(GmailManagedLabel)
+        .where(GmailManagedLabel.gmail_connection_id == connection.id)
+    ) == len(MANAGED_LABEL_NAMES)
     deleted_name = MANAGED_LABEL_NAMES[GmailLabelKey.FAILED]
     old_id = mailbox.labels.pop(deleted_name)
     mailbox.label_types.pop(deleted_name)
@@ -291,8 +308,10 @@ def test_concurrent_managed_label_creation_reuses_the_exact_provider_label(
 
     first_key = next(iter(MANAGED_LABEL_NAMES))
     assert bindings[first_key] == "managed-created-by-peer"
-    assert set(bindings) == set(GmailLabelKey)
-    assert len({mailbox.labels[name] for name in MANAGED_LABEL_NAMES.values()}) == 8
+    assert set(bindings) == set(MANAGED_LABEL_NAMES)
+    assert len({mailbox.labels[name] for name in MANAGED_LABEL_NAMES.values()}) == len(
+        MANAGED_LABEL_NAMES
+    )
 
 
 @pytest.mark.parametrize(
@@ -326,7 +345,7 @@ def test_each_final_classification_maps_to_at_most_one_workflow_label(
         gmail_thread_id=f"thread-{classification.value.lower()}",
     )
 
-    expected = {GmailLabelKey.PROCESSED}
+    expected = {GmailLabelKey.NO_FURTHER_ACTION_NEEDED}
     if classification_label is not None:
         expected.add(classification_label)
     assert desired == expected
@@ -350,14 +369,11 @@ def test_new_unfinished_message_removes_stale_thread_terminal_labels(
         received_at=datetime(2026, 8, 20, 11, tzinfo=UTC),
     )
 
-    assert (
-        desired_labels_for_thread(
-            seeded_db,
-            gmail_connection_id=connection.id,
-            gmail_thread_id="thread-state",
-        )
-        == set()
-    )
+    assert desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=connection.id,
+        gmail_thread_id="thread-state",
+    ) == {GmailLabelKey.PROCESSING, GmailLabelKey.PENDING_REQUIREMENTS}
 
 
 def test_existing_gmail_thread_backfill_is_idempotent(seeded_db: Session) -> None:
@@ -388,36 +404,58 @@ def test_thread_label_rules_are_derived_from_aggregate_database_truth(
     assert desired_labels_for_thread(
         seeded_db, gmail_connection_id=connection.id, gmail_thread_id="thread-rules"
     ) == {
-        GmailLabelKey.PROCESSED,
         GmailLabelKey.PENDING_REQUIREMENTS,
         GmailLabelKey.ACTION_REQUIRED,
     }
 
-    task.status = TaskStatus.COMPLETED
-    seeded_db.commit()
-    assert GmailLabelKey.ACTION_REQUIRED not in desired_labels_for_thread(
-        seeded_db, gmail_connection_id=connection.id, gmail_thread_id="thread-rules"
-    )
-
     message.processing_status = ProcessingStatus.NEEDS_REVIEW
-    message.classification = None
-    message.summary = None
-    message.priority = None
-    seeded_db.add(
-        ReviewItem(
-            agency_id=message.agency_id,
-            carrier_message_id=message.id,
-            assigned_reviewer_id=connection.user_id,
-            status=ReviewStatus.OPEN,
-            reason_code="LOW_CONFIDENCE",
-            reason="Synthetic review",
-        )
+    review = ReviewItem(
+        agency_id=message.agency_id,
+        case_id=message.case_id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=connection.user_id,
+        status=ReviewStatus.OPEN,
+        reason_code="LOW_CONFIDENCE",
+        reason="Synthetic review",
     )
+    seeded_db.add(review)
     seeded_db.commit()
     desired = desired_labels_for_thread(
         seeded_db, gmail_connection_id=connection.id, gmail_thread_id="thread-rules"
     )
-    assert desired == {GmailLabelKey.NEEDS_REVIEW, GmailLabelKey.ACTION_REQUIRED}
+    assert desired == {
+        GmailLabelKey.NEEDS_REVIEW,
+        GmailLabelKey.PENDING_REQUIREMENTS,
+    }
+
+    review.status = ReviewStatus.RESOLVED
+    seeded_db.commit()
+    assert desired_labels_for_thread(
+        seeded_db, gmail_connection_id=connection.id, gmail_thread_id="thread-rules"
+    ) == {
+        GmailLabelKey.ACTION_REQUIRED,
+        GmailLabelKey.PENDING_REQUIREMENTS,
+    }
+
+    task.status = TaskStatus.COMPLETED
+    seeded_db.commit()
+    assert desired_labels_for_thread(
+        seeded_db, gmail_connection_id=connection.id, gmail_thread_id="thread-rules"
+    ) == {
+        GmailLabelKey.NO_FURTHER_ACTION_NEEDED,
+        GmailLabelKey.PENDING_REQUIREMENTS,
+    }
+
+    task.status = TaskStatus.OPEN
+    seeded_db.commit()
+    assert GmailLabelKey.ACTION_REQUIRED in desired_labels_for_thread(
+        seeded_db, gmail_connection_id=connection.id, gmail_thread_id="thread-rules"
+    )
+    task.status = TaskStatus.DISMISSED
+    seeded_db.commit()
+    assert GmailLabelKey.NO_FURTHER_ACTION_NEEDED in desired_labels_for_thread(
+        seeded_db, gmail_connection_id=connection.id, gmail_thread_id="thread-rules"
+    )
 
     message.processing_status = ProcessingStatus.FAILED
     message.processing_next_retry_at = utc_now() + timedelta(minutes=1)
@@ -425,14 +463,198 @@ def test_thread_label_rules_are_derived_from_aggregate_database_truth(
     assert review is not None
     review.status = ReviewStatus.DISMISSED
     seeded_db.commit()
-    assert GmailLabelKey.FAILED not in desired_labels_for_thread(
+    assert desired_labels_for_thread(
         seeded_db, gmail_connection_id=connection.id, gmail_thread_id="thread-rules"
-    )
+    ) == {GmailLabelKey.PROCESSING}
     message.processing_next_retry_at = None
     seeded_db.commit()
     assert GmailLabelKey.FAILED in desired_labels_for_thread(
         seeded_db, gmail_connection_id=connection.id, gmail_thread_id="thread-rules"
     )
+
+
+@pytest.mark.parametrize(
+    "processing_status",
+    [ProcessingStatus.RECEIVED, ProcessingStatus.PROCESSING, ProcessingStatus.FAILED],
+)
+def test_queued_active_and_retry_wait_processing_states_use_processing_label(
+    seeded_db: Session, processing_status: ProcessingStatus
+) -> None:
+    connection = create_connection(
+        seeded_db, address=f"processing-{processing_status.value.lower()}@gmail.test"
+    )
+    message = create_message(
+        seeded_db,
+        connection,
+        thread_id=f"processing-{processing_status.value.lower()}",
+        status=processing_status,
+    )
+    if processing_status is ProcessingStatus.FAILED:
+        message.processing_next_retry_at = utc_now() + timedelta(minutes=1)
+        seeded_db.commit()
+
+    desired = desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=connection.id,
+        gmail_thread_id=message.gmail_thread_id or "",
+    )
+
+    assert desired == {GmailLabelKey.PROCESSING}
+
+
+def test_case_lifecycle_and_manual_tasks_do_not_invent_thread_work(
+    seeded_db: Session,
+) -> None:
+    connection = create_connection(seeded_db, address="case-lifecycle@gmail.test")
+    message = create_message(seeded_db, connection, thread_id="thread-case-lifecycle")
+    source_task = create_case_and_task(seeded_db, message)
+    source_task.status = TaskStatus.COMPLETED
+    case = seeded_db.get(PolicyCase, source_task.case_id)
+    assert case is not None
+    seeded_db.commit()
+    context = auth_context(seeded_db, connection.user_id)
+    set_case_completed(seeded_db, context, case.id, completed=True)
+    sync = seeded_db.scalar(
+        select(GmailThreadLabelSync).where(
+            GmailThreadLabelSync.gmail_connection_id == connection.id,
+            GmailThreadLabelSync.gmail_thread_id == "thread-case-lifecycle",
+        )
+    )
+    assert sync is not None
+    assert sync.status is GmailLabelSyncStatus.PENDING
+    completed_generation = sync.generation
+
+    seeded_db.add(
+        Task(
+            agency_id=message.agency_id,
+            case_id=case.id,
+            source_carrier_message_id=None,
+            assigned_agent_id=connection.user_id,
+            title="Manual Case follow-up",
+            priority=Priority.NORMAL,
+            status=TaskStatus.OPEN,
+        )
+    )
+    seeded_db.commit()
+
+    expected = {
+        GmailLabelKey.NO_FURTHER_ACTION_NEEDED,
+        GmailLabelKey.PENDING_REQUIREMENTS,
+    }
+    assert (
+        desired_labels_for_thread(
+            seeded_db,
+            gmail_connection_id=connection.id,
+            gmail_thread_id="thread-case-lifecycle",
+        )
+        == expected
+    )
+
+    set_case_completed(seeded_db, context, case.id, completed=False)
+    seeded_db.refresh(sync)
+    assert sync.generation == completed_generation + 1
+    assert (
+        desired_labels_for_thread(
+            seeded_db,
+            gmail_connection_id=connection.id,
+            gmail_thread_id="thread-case-lifecycle",
+        )
+        == expected
+    )
+
+    case = seeded_db.get(PolicyCase, case.id)
+    assert case is not None
+    case.completed_at = utc_now()
+    new_message = create_message(
+        seeded_db,
+        connection,
+        thread_id="thread-case-lifecycle",
+        received_at=datetime(2026, 8, 21, 12, tzinfo=UTC),
+    )
+    new_message.case_id = case.id
+    seeded_db.add(
+        Task(
+            agency_id=new_message.agency_id,
+            case_id=case.id,
+            source_carrier_message_id=new_message.id,
+            source_action_index=0,
+            assigned_agent_id=connection.user_id,
+            title="New carrier action",
+            priority=Priority.HIGH,
+            status=TaskStatus.OPEN,
+        )
+    )
+    seeded_db.commit()
+    assert GmailLabelKey.ACTION_REQUIRED in desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=connection.id,
+        gmail_thread_id="thread-case-lifecycle",
+    )
+
+
+def test_latest_successful_thread_classification_replaces_history_and_stays_bounded(
+    seeded_db: Session,
+) -> None:
+    connection = create_connection(seeded_db, address="classification-live@gmail.test")
+    create_message(
+        seeded_db,
+        connection,
+        thread_id="thread-classification-live",
+        classification=MessageClassification.POLICY_ISSUED,
+        received_at=datetime(2026, 8, 20, 10, tzinfo=UTC),
+    )
+    latest = create_message(
+        seeded_db,
+        connection,
+        thread_id="thread-classification-live",
+        classification=MessageClassification.LAPSE_NOTICE,
+        received_at=datetime(2026, 8, 20, 11, tzinfo=UTC),
+    )
+    task = create_case_and_task(seeded_db, latest)
+
+    desired = desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=connection.id,
+        gmail_thread_id="thread-classification-live",
+    )
+
+    assert desired == {GmailLabelKey.ACTION_REQUIRED, GmailLabelKey.LAPSE_NOTICE}
+    assert GmailLabelKey.POLICY_ISSUED not in desired
+    assert len(desired & WORKFLOW_LABEL_KEYS) == 1
+    assert len(desired & CLASSIFICATION_LABEL_KEYS) == 1
+    assert len(desired) == 2
+    task.status = TaskStatus.COMPLETED
+    seeded_db.commit()
+    assert desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=connection.id,
+        gmail_thread_id="thread-classification-live",
+    ) == {GmailLabelKey.NO_FURTHER_ACTION_NEEDED, GmailLabelKey.LAPSE_NOTICE}
+
+
+def test_processing_claim_enqueues_live_thread_reconciliation(seeded_db: Session) -> None:
+    connection = create_connection(seeded_db, address="processing-trigger@gmail.test")
+    message = create_message(
+        seeded_db,
+        connection,
+        thread_id="thread-processing-trigger",
+        status=ProcessingStatus.RECEIVED,
+    )
+
+    assert claim_message(seeded_db, message_id=message.id) == message.id
+    sync = seeded_db.scalar(
+        select(GmailThreadLabelSync).where(
+            GmailThreadLabelSync.gmail_connection_id == connection.id,
+            GmailThreadLabelSync.gmail_thread_id == "thread-processing-trigger",
+        )
+    )
+    assert sync is not None
+    assert sync.status is GmailLabelSyncStatus.PENDING
+    assert desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=connection.id,
+        gmail_thread_id="thread-processing-trigger",
+    ) == {GmailLabelKey.PROCESSING}
 
 
 def test_label_reconciliation_is_idempotent_and_only_mutates_managed_labels(
@@ -447,10 +669,18 @@ def test_label_reconciliation_is_idempotent_and_only_mutates_managed_labels(
     mailbox = FakeLabelMailbox()
     mailbox.labels["AI: Policy Issued"] = "managed-stale-policy"
     mailbox.label_types["AI: Policy Issued"] = "user"
-    mailbox.thread_labels.update({"managed-stale-policy", "INBOX"})
+    legacy_name = LEGACY_MANAGED_LABEL_NAMES[GmailLabelKey.PROCESSED]
+    mailbox.labels[legacy_name] = "managed-legacy-processed"
+    mailbox.label_types[legacy_name] = "user"
+    mailbox.thread_labels.update({"managed-stale-policy", "managed-legacy-processed", "INBOX"})
     mailbox.thread_message_labels = [
-        {"user-family", "INBOX"},
-        {"user-family", "INBOX", "managed-stale-policy"},
+        {"user-family", "INBOX", "managed-legacy-processed"},
+        {
+            "user-family",
+            "INBOX",
+            "managed-stale-policy",
+            "managed-legacy-processed",
+        },
     ]
 
     def factory(credential):
@@ -462,7 +692,10 @@ def test_label_reconciliation_is_idempotent_and_only_mutates_managed_labels(
 
     assert first.status is GmailLabelSyncStatus.APPLIED
     assert len(mailbox.modifications) == 1
-    assert mailbox.modifications[0][2] == ["managed-stale-policy"]
+    assert mailbox.modifications[0][2] == [
+        "managed-legacy-processed",
+        "managed-stale-policy",
+    ]
     assert "user-family" in mailbox.thread_labels
     assert "INBOX" in mailbox.thread_labels
     assert all({"user-family", "INBOX"} <= labels for labels in mailbox.thread_message_labels)
@@ -474,7 +707,6 @@ def test_label_reconciliation_is_idempotent_and_only_mutates_managed_labels(
             )
         )
         for key in {
-            GmailLabelKey.PROCESSED,
             GmailLabelKey.PENDING_REQUIREMENTS,
             GmailLabelKey.ACTION_REQUIRED,
         }
@@ -507,7 +739,148 @@ def test_label_reconciliation_is_idempotent_and_only_mutates_managed_labels(
     )
     assert third.status is GmailLabelSyncStatus.APPLIED
     assert mailbox.modifications[-1][2] == [action_required_id]
+    no_further_action_id = seeded_db.scalar(
+        select(GmailManagedLabel.gmail_label_id).where(
+            GmailManagedLabel.gmail_connection_id == connection.id,
+            GmailManagedLabel.label_key == GmailLabelKey.NO_FURTHER_ACTION_NEEDED,
+        )
+    )
+    assert mailbox.modifications[-1][1] == [no_further_action_id]
     assert expected_ids - {action_required_id} <= mailbox.thread_labels
+
+
+def test_one_time_label_migration_dry_run_apply_and_second_run_are_safe(
+    seeded_db: Session,
+) -> None:
+    connection = create_connection(seeded_db, address="migration@gmail.test")
+    message = create_message(seeded_db, connection, thread_id="thread-migration")
+    task = create_case_and_task(seeded_db, message)
+    task.status = TaskStatus.COMPLETED
+    seeded_db.commit()
+    mailbox = FakeLabelMailbox()
+    old_labels = {
+        "AI: Action Required": "old-action",
+        "AI: Pending Requirements": "old-pending",
+        "Processed": "old-processed",
+    }
+    mailbox.labels.update(old_labels)
+    mailbox.label_types.update(dict.fromkeys(old_labels, "user"))
+    mailbox.thread_message_labels = [
+        {"user-family", "old-action", "old-processed"},
+        {"user-family", "old-pending", "old-processed"},
+    ]
+
+    dry_run = migrate_managed_gmail_labels(
+        seeded_db,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+
+    assert dry_run.dry_run is True
+    assert dry_run.threads_inspected == dry_run.threads_changed == 1
+    assert dry_run.labels_added == 2
+    assert dry_run.labels_removed == 2
+    assert dry_run.obsolete_processed_assignments_removed == 1
+    assert dry_run.obsolete_definitions_to_delete == 1
+    assert dry_run.label_definitions_to_create > 0
+    assert mailbox.created == mailbox.deleted == mailbox.modifications == []
+    assert mailbox.labels["AI: Pending Requirements"] == "old-pending"
+
+    applied = migrate_managed_gmail_labels(
+        seeded_db,
+        dry_run=False,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+
+    assert applied.failures == 0
+    assert applied.threads_inspected == applied.threads_changed == 1
+    assert applied.labels_added == 2
+    assert applied.labels_removed == 2
+    assert applied.obsolete_processed_assignments_removed == 1
+    assert applied.obsolete_definitions_deleted == 1
+    assert mailbox.deleted == ["Processed"]
+    assert "Processed" not in mailbox.labels
+    assert mailbox.labels["AI: Pending Requirements"] == "old-pending"
+    managed_assigned = {
+        name
+        for name, label_id in mailbox.labels.items()
+        if name in MANAGED_LABEL_NAMES.values()
+        and all(label_id in labels for labels in mailbox.thread_message_labels)
+    }
+    assert managed_assigned == {
+        "AI: Pending Requirements",
+        "AI: No Further Action Needed",
+    }
+    assert all("user-family" in labels for labels in mailbox.thread_message_labels)
+    assert (
+        seeded_db.scalar(
+            select(GmailManagedLabel.id).where(
+                GmailManagedLabel.gmail_connection_id == connection.id,
+                GmailManagedLabel.label_key == GmailLabelKey.PROCESSED,
+            )
+        )
+        is None
+    )
+
+    second = migrate_managed_gmail_labels(
+        seeded_db,
+        dry_run=False,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+    assert second.failures == 0
+    assert second.threads_inspected == 1
+    assert second.threads_changed == 0
+    assert second.labels_added == second.labels_removed == 0
+    assert second.label_definitions_created == 0
+    assert second.obsolete_definitions_deleted == 0
+
+
+def test_label_migration_continues_after_one_thread_failure(seeded_db: Session) -> None:
+    connection = create_connection(seeded_db, address="migration-failure@gmail.test")
+    create_message(seeded_db, connection, thread_id="thread-fail")
+    create_message(seeded_db, connection, thread_id="thread-good")
+
+    class PerThreadMailbox(FakeLabelMailbox):
+        def __init__(self) -> None:
+            super().__init__()
+            self.labels["AI: Action Required"] = "old-action"
+            self.label_types["AI: Action Required"] = "user"
+            self.states = {
+                "thread-fail": {"user-family", "old-action"},
+                "thread-good": {"user-family", "old-action"},
+            }
+
+        def get_thread_label_state(self, thread_id: str) -> GmailThreadLabelState:
+            labels = self.states[thread_id]
+            return GmailThreadLabelState(frozenset(labels), frozenset(labels))
+
+        def modify_thread_labels(
+            self,
+            thread_id: str,
+            *,
+            add_label_ids: list[str],
+            remove_label_ids: list[str],
+        ) -> None:
+            if thread_id == "thread-fail":
+                raise GmailTransientError("synthetic transient")
+            self.modifications.append((thread_id, add_label_ids, remove_label_ids))
+            self.states[thread_id].update(add_label_ids)
+            self.states[thread_id].difference_update(remove_label_ids)
+
+    mailbox = PerThreadMailbox()
+    result = migrate_managed_gmail_labels(
+        seeded_db,
+        dry_run=False,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+
+    assert result.threads_inspected == 2
+    assert result.threads_changed == 1
+    assert result.failures == 1
+    assert result.failure_codes == {"GMAIL_LABEL_SYNC_RETRY_WAIT": 1}
+    assert mailbox.modifications[0][0] == "thread-good"
+    assert "old-action" in mailbox.states["thread-fail"]
+    assert "old-action" not in mailbox.states["thread-good"]
+    assert "user-family" in mailbox.states["thread-good"]
 
 
 def test_reconciliation_adds_desired_labels_missing_from_a_new_thread_message(
@@ -1085,6 +1458,10 @@ def test_google_mailbox_exposes_only_expected_label_and_thread_operations() -> N
             calls.append(("labels.create", kwargs))
             return Request({"id": "managed-1"})
 
+        def delete(self, **kwargs):
+            calls.append(("labels.delete", kwargs))
+            return Request({})
+
     class Threads:
         def get(self, **kwargs):
             calls.append(("threads.get", kwargs))
@@ -1108,16 +1485,17 @@ def test_google_mailbox_exposes_only_expected_label_and_thread_operations() -> N
     )
 
     assert mailbox.list_labels() == {"labels": []}
-    assert mailbox.create_label("Processed")["id"] == "managed-1"
+    assert mailbox.create_label("AI: Processing")["id"] == "managed-1"
     thread_state = mailbox.get_thread_label_state("thread-1")
     assert thread_state.any_label_ids == {"managed-1", "INBOX"}
     assert thread_state.all_label_ids == {"INBOX"}
     assert thread_state.labelable_message_count == 2
     mailbox.modify_thread_labels("thread-1", add_label_ids=["managed-1"], remove_label_ids=[])
+    mailbox.delete_label("managed-1")
 
     assert calls[0] == ("labels.list", {"userId": "me"})
     assert calls[1][0] == "labels.create"
-    assert calls[1][1]["body"]["name"] == "Processed"
+    assert calls[1][1]["body"]["name"] == "AI: Processing"
     assert calls[2] == (
         "threads.get",
         {"userId": "me", "id": "thread-1", "format": "minimal"},
@@ -1130,6 +1508,7 @@ def test_google_mailbox_exposes_only_expected_label_and_thread_operations() -> N
             "body": {"addLabelIds": ["managed-1"], "removeLabelIds": []},
         },
     )
+    assert calls[4] == ("labels.delete", {"userId": "me", "id": "managed-1"})
 
 
 def test_google_mailbox_excludes_drafts_from_thread_label_completeness() -> None:

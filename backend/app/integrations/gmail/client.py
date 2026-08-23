@@ -51,6 +51,8 @@ class GmailMailbox(Protocol):
 
     def create_label(self, name: str) -> Mapping[str, Any]: ...
 
+    def delete_label(self, label_id: str) -> None: ...
+
     def get_thread_label_state(self, thread_id: str) -> GmailThreadLabelState: ...
 
     def modify_thread_labels(
@@ -197,6 +199,13 @@ class GoogleGmailMailbox:
                     "messageListVisibility": "show",
                 },
             )
+        )
+
+    def delete_label(self, label_id: str) -> None:
+        self._require_modify()
+        self._execute_label(
+            self._service.users().labels().delete(userId="me", id=label_id),
+            missing_kind="label",
         )
 
     def get_thread_label_state(self, thread_id: str) -> GmailThreadLabelState:

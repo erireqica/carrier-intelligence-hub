@@ -57,7 +57,7 @@ from app.processing.ambiguities import verify_interpretation_ambiguities
 from app.processing.source import build_source_bundle
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
-from app.services.gmail_labels import enqueue_for_message
+from app.services.gmail_labels import enqueue_for_case, enqueue_for_message
 
 
 def page_info(page: int, page_size: int, total: int) -> PageInfo:
@@ -346,6 +346,7 @@ def set_case_completed(
         event_type=event_type,
         description=description,
     )
+    enqueue_for_case(db, agency_id=case.agency_id, case_id=case.id)
     db.commit()
     db.expire_all()
     return get_case_detail(db, current, case.id)
@@ -1048,6 +1049,7 @@ def update_review(
         event_type="CASE_REVIEWED",
         description=f"Review item moved to {item.status.value.replace('_', ' ').title()}",
     )
+    enqueue_for_message(db, item.carrier_message)
     db.commit()
     return get_review_item(db, current, review_id)
 

@@ -29,6 +29,7 @@ from app.models.operations import CarrierMessage, CaseEvidence, PolicyCase, Revi
 from app.models.organization import GmailConnection, GmailOAuthCredential, User
 from app.services.auth import AuthContext, create_session
 from app.services.gmail_labels import (
+    LEGACY_MANAGED_LABEL_NAMES,
     MANAGED_LABEL_NAMES,
     claim_label_sync,
     process_claimed_label_sync,
@@ -329,9 +330,9 @@ def test_offline_pipeline_is_automatic_idempotent_and_whitelist_first(
     assert {
         MANAGED_LABEL_NAMES[GmailLabelKey.ACTION_REQUIRED],
         MANAGED_LABEL_NAMES[GmailLabelKey.PENDING_REQUIREMENTS],
-        MANAGED_LABEL_NAMES[GmailLabelKey.PROCESSED],
         "Personal",
     } <= applied_names
+    assert LEGACY_MANAGED_LABEL_NAMES[GmailLabelKey.PROCESSED] not in applied_names
 
     session, _, csrf = create_session(seeded_db, owner)
     seeded_db.commit()
@@ -356,9 +357,10 @@ def test_offline_pipeline_is_automatic_idempotent_and_whitelist_first(
     assert MANAGED_LABEL_NAMES[GmailLabelKey.ACTION_REQUIRED] not in final_names
     assert {
         MANAGED_LABEL_NAMES[GmailLabelKey.PENDING_REQUIREMENTS],
-        MANAGED_LABEL_NAMES[GmailLabelKey.PROCESSED],
+        MANAGED_LABEL_NAMES[GmailLabelKey.NO_FURTHER_ACTION_NEEDED],
         "Personal",
     } <= final_names
+    assert LEGACY_MANAGED_LABEL_NAMES[GmailLabelKey.PROCESSED] not in final_names
     assert first_counts[CarrierMessage] == initial_counts[CarrierMessage] + 1
     assert first_counts[PolicyCase] == initial_counts[PolicyCase] + 1
     assert first_counts[Task] == initial_counts[Task] + 1
