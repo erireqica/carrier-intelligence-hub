@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { UserPlus, UsersRound } from 'lucide-react'
+import { UserPlus, UsersRound, X } from 'lucide-react'
 
 import { useCurrentUser } from '../../app/auth'
 import { Avatar } from '../../components/Avatar'
@@ -19,6 +19,7 @@ import {
   removeAgent,
   setAgentEnabled,
 } from '../../lib/api'
+import { apiBaseUrl } from '../../lib/api-url'
 import { formatDateTime } from '../../lib/format'
 
 const emptyAgent = {
@@ -28,6 +29,81 @@ const emptyAgent = {
   confirm_initial_password: '',
 }
 
+type PhotoPreview = {
+  fullName: string
+  avatarUrl: string
+}
+
+function AgentPhotoPreview({
+  preview,
+  onClose,
+  returnFocusRef,
+}: {
+  preview: PhotoPreview
+  onClose: () => void
+  returnFocusRef: React.RefObject<HTMLButtonElement | null>
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const returnFocusTo = returnFocusRef.current
+    const previousOverflow = document.body.style.overflow
+    if (typeof dialog.showModal === 'function') dialog.showModal()
+    else dialog.setAttribute('open', '')
+    document.body.style.overflow = 'hidden'
+    closeButtonRef.current?.focus()
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+      }
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape)
+      document.body.style.overflow = previousOverflow
+      if (dialog.open && typeof dialog.close === 'function') dialog.close()
+      returnFocusTo?.focus()
+    }
+  }, [onClose, returnFocusRef])
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="m-auto max-h-none max-w-none overflow-visible bg-transparent p-0 backdrop:bg-slate-950/65 backdrop:backdrop-blur-[1px]"
+      aria-label={`${preview.fullName} profile photo preview`}
+      onCancel={(event) => {
+        event.preventDefault()
+        onClose()
+      }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <div className="relative rounded-xl border border-white/20 bg-white p-2 shadow-2xl">
+        <img
+          className="max-h-[calc(100vh-3rem)] max-w-[calc(100vw-3rem)] rounded-lg object-contain sm:max-h-[80vh] sm:max-w-[80vw]"
+          src={`${apiBaseUrl}${preview.avatarUrl}`}
+          alt={`${preview.fullName} profile`}
+        />
+        <button
+          ref={closeButtonRef}
+          type="button"
+          className="absolute -top-3 -right-3 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-600 bg-slate-900 text-white shadow-md transition hover:bg-slate-800 focus:outline-none focus-visible:ring-3 focus-visible:ring-blue-300"
+          aria-label="Close profile photo preview"
+          onClick={onClose}
+        >
+          <X className="h-4 w-4" aria-hidden />
+        </button>
+      </div>
+    </dialog>
+  )
+}
+
 export function AgentsPage() {
   const auth = useCurrentUser()
   const queryClient = useQueryClient()
@@ -35,6 +111,8 @@ export function AgentsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [form, setForm] = useState(emptyAgent)
+  const [photoPreview, setPhotoPreview] = useState<PhotoPreview | null>(null)
+  const photoTriggerRef = useRef<HTMLButtonElement | null>(null)
   const agents = useQuery({
     queryKey: ['manager', 'agents', page],
     queryFn: () => getAgentsPage(page),
@@ -190,7 +268,24 @@ export function AgentsPage() {
               <tr key={agent.id}>
                 <td className="px-4 py-4 font-medium" data-label="User">
                   <div className="flex items-center gap-3">
-                    <Avatar user={agent} />
+                    {agent.avatar_url ? (
+                      <button
+                        type="button"
+                        className="inline-flex h-9 w-9 shrink-0 cursor-zoom-in items-center justify-center overflow-hidden rounded-lg border-0 bg-transparent p-0 align-middle leading-none appearance-none hover:ring-2 hover:ring-blue-200 focus:outline-none focus-visible:ring-3 focus-visible:ring-blue-300"
+                        aria-label={`View larger profile photo for ${agent.full_name}`}
+                        onClick={(event) => {
+                          photoTriggerRef.current = event.currentTarget
+                          setPhotoPreview({
+                            fullName: agent.full_name,
+                            avatarUrl: agent.avatar_url!,
+                          })
+                        }}
+                      >
+                        <Avatar user={agent} />
+                      </button>
+                    ) : (
+                      <Avatar user={agent} />
+                    )}
                     <div>
                       <p className="font-semibold text-slate-900">
                         {agent.full_name}
@@ -269,6 +364,13 @@ export function AgentsPage() {
         onPageChange={setPage}
         label="Agents pagination"
       />
+      {photoPreview && (
+        <AgentPhotoPreview
+          preview={photoPreview}
+          onClose={() => setPhotoPreview(null)}
+          returnFocusRef={photoTriggerRef}
+        />
+      )}
     </div>
   )
 }

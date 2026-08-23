@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { useCurrentUser } from '../../app/auth'
@@ -106,5 +106,83 @@ describe('AgentsPage', () => {
     expect(confirm).toHaveBeenCalled()
     await vi.waitFor(() => expect(removeAgent).toHaveBeenCalled())
     expect(vi.mocked(removeAgent).mock.calls[0][0]).toBe(10)
+  })
+
+  it('opens uploaded profile photos in an accessible dismissible preview', async () => {
+    vi.mocked(useCurrentUser).mockReturnValue({
+      data: authFixture('MANAGER'),
+    } as ReturnType<typeof useCurrentUser>)
+    const photoAgent = {
+      ...authFixture('AGENT').user,
+      id: 20,
+      full_name: 'Photo Agent',
+      avatar_url: '/users/20/avatar',
+      open_tasks: 0,
+      urgent_cases: 0,
+      gmail_connections: 0,
+    }
+    const initialsAgent = {
+      ...photoAgent,
+      id: 21,
+      full_name: 'Initials Agent',
+      email: 'initials@example.test',
+      avatar_url: null,
+    }
+    vi.mocked(getAgentsPage).mockResolvedValue({
+      items: [photoAgent, initialsAgent],
+      page: { page: 1, page_size: 10, total: 2, pages: 1 },
+    })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <AgentsPage />
+      </QueryClientProvider>,
+    )
+
+    const trigger = await screen.findByRole('button', {
+      name: 'View larger profile photo for Photo Agent',
+    })
+    expect(trigger).toHaveClass(
+      'h-9',
+      'w-9',
+      'shrink-0',
+      'overflow-hidden',
+      'p-0',
+    )
+    expect(
+      within(trigger).getByRole('img', { name: 'Photo Agent profile' }),
+    ).toHaveClass('h-9', 'w-9', 'object-cover')
+    expect(
+      screen.queryByRole('button', {
+        name: 'View larger profile photo for Initials Agent',
+      }),
+    ).not.toBeInTheDocument()
+
+    trigger.focus()
+    fireEvent.click(trigger)
+    let dialog = screen.getByRole('dialog', {
+      name: 'Photo Agent profile photo preview',
+    })
+    expect(
+      within(dialog).getByRole('img', { name: 'Photo Agent profile' }),
+    ).toHaveAttribute('src', 'http://localhost:8000/api/v1/users/20/avatar')
+    expect(
+      within(dialog).getByRole('button', {
+        name: 'Close profile photo preview',
+      }),
+    ).toHaveFocus()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await vi.waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(trigger).toHaveFocus()
+
+    fireEvent.click(trigger)
+    dialog = screen.getByRole('dialog', {
+      name: 'Photo Agent profile photo preview',
+    })
+    fireEvent.click(dialog)
+    await vi.waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 })
