@@ -12,6 +12,8 @@ from app.models.carriers import Carrier, CarrierDomain, CarrierSender
 from app.models.enums import (
     CaseAssignmentSource,
     GmailConnectionStatus,
+    PolicyStatus,
+    Priority,
     ProcessingStatus,
     ReviewStatus,
     TaskStatus,
@@ -558,7 +560,6 @@ def test_case_completion_lifecycle_enforces_work_authorization_and_history(
         ).status_code
         == 409
     )
-
     manager = login(client, "manager@demo.local")
     manager_headers = {"X-CSRF-Token": manager["csrf_token"]}
     other_agent = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
@@ -632,6 +633,45 @@ def test_case_completion_lifecycle_enforces_work_authorization_and_history(
     ).all()
     assert [event.event_type for event in events] == ["CASE_COMPLETED", "CASE_REOPENED"]
     assert all(event.actor_user_id == assignee.id for event in events)
+
+
+def test_zero_task_case_without_active_review_can_be_completed(
+    client: TestClient, db: Session, login
+) -> None:
+    assignee = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    carrier = db.scalar(select(Carrier).where(Carrier.name == "Americo"))
+    assert assignee is not None and carrier is not None
+    policy_case = PolicyCase(
+        agency_id=assignee.agency_id,
+        carrier_id=carrier.id,
+        assigned_agent_id=assignee.id,
+        assignment_source=CaseAssignmentSource.GMAIL,
+        client_name="Zero Task Client",
+        policy_number="ZERO-TASK-COMPLETE-1",
+        current_policy_status=PolicyStatus.ACTIVE,
+        priority=Priority.LOW,
+        summary="This valid informational Case requires no operational Tasks.",
+    )
+    db.add(policy_case)
+    db.commit()
+
+    auth = login(client, assignee.email)
+    headers = {"X-CSRF-Token": auth["csrf_token"]}
+    detail = client.get(f"/api/v1/cases/{policy_case.id}")
+    assert detail.status_code == 200
+    assert detail.json()["tasks"] == []
+    assert detail.json()["completion_blockers"] == []
+    assert detail.json()["can_complete"] is True
+
+    completed = client.post(f"/api/v1/cases/{policy_case.id}/complete", headers=headers)
+    assert completed.status_code == 200
+    assert completed.json()["completed_at"] is not None
+    assert completed.json()["can_reopen"] is True
+    assert db.scalar(select(func.count(Task.id)).where(Task.case_id == policy_case.id)) == 0
+    assert (
+        db.scalar(select(func.count(ReviewItem.id)).where(ReviewItem.case_id == policy_case.id))
+        == 0
+    )
 
 
 def test_business_deadlines_serialize_as_agency_local_dates(

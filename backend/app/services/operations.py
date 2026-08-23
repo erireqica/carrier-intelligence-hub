@@ -55,6 +55,10 @@ from app.models.operations import (
 )
 from app.models.organization import User
 from app.processing.ambiguities import verify_interpretation_ambiguities
+from app.processing.conflicts import (
+    detect_source_conflicts,
+    is_human_resolvable_source_conflict,
+)
 from app.processing.source import build_source_bundle
 from app.services.audit import record_audit_event
 from app.services.auth import AuthContext
@@ -985,6 +989,32 @@ def get_review_detail(db: Session, current: AuthContext, review_id: int) -> Revi
         )
         for index, ambiguity in enumerate(ambiguities, start=1)
     ]
+    if proposed is not None:
+        conflicts = [
+            conflict
+            for conflict in detect_source_conflicts(bundle, proposed.source_facts)
+            if is_human_resolvable_source_conflict(conflict)
+        ]
+        issues.extend(
+            ReviewIssue(
+                code=conflict.code,
+                category="SOURCE_CONFLICT",
+                title=conflict.title,
+                message=f"{conflict.message} Choose the value supported by the source evidence.",
+                field_name=conflict.field_name,
+                human_resolvable=True,
+                values=[
+                    ReviewIssueValue(
+                        source_id=value.source_id,
+                        source_label=value.source_label,
+                        value=value.value,
+                        excerpt=value.excerpt,
+                    )
+                    for value in conflict.values
+                ],
+            )
+            for conflict in conflicts
+        )
     if not issues and item.reason_code == "CASE_MATCH_CONFLICT":
         from app.services.message_processing import _case_candidates
 

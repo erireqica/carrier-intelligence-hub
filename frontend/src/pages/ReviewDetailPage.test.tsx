@@ -6,7 +6,7 @@ import {
   waitFor,
   within,
 } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -241,6 +241,11 @@ describe('ReviewDetailPage', () => {
         'The deadline applies to every outstanding requirement.',
       ),
     ).toBeInTheDocument()
+    expect(screen.getByLabelText('Title').closest('div')).toHaveClass(
+      'rounded-lg',
+      'border-slate-200',
+      'bg-slate-100/80',
+    )
     expect(screen.queryByText('“Policy REVIEW-100”')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('Technical details'))
     expect(
@@ -270,18 +275,19 @@ describe('ReviewDetailPage', () => {
   it('keeps source context visible and dismisses a review without a proposal', async () => {
     vi.mocked(getReviewAnalysis).mockResolvedValue(noProposalReview)
     vi.mocked(dismissReviewAnalysis).mockResolvedValue({
-      message_id: 13,
-      processing_status: 'IGNORED',
-      case_id: null,
-      review_id: null,
-      tasks_created: 0,
-      attachments_extracted: 0,
-      analysis_confidence: null,
-      validation_flags: [],
+      ...noProposalReview,
+      status: 'DISMISSED',
+      resolution_notes: 'Not an actionable carrier notice.',
+      resolved_at: '2026-08-20T13:00:00Z',
+      can_return_to_review: true,
+      analysis: {
+        ...noProposalReview.analysis,
+        processing_status: 'IGNORED',
+      },
     })
     const queryClient = new QueryClient({
       defaultOptions: {
-        queries: { retry: false },
+        queries: { retry: false, staleTime: 30_000 },
         mutations: { retry: false },
       },
     })
@@ -291,7 +297,15 @@ describe('ReviewDetailPage', () => {
         <MemoryRouter initialEntries={['/reviews/8']}>
           <Routes>
             <Route path="/reviews/:reviewId" element={<ReviewDetailPage />} />
-            <Route path="/reviews" element={<p>Review queue opened</p>} />
+            <Route
+              path="/reviews"
+              element={
+                <>
+                  <p>Review queue opened</p>
+                  <Link to="/reviews/8">Reopen dismissed review</Link>
+                </>
+              }
+            />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -323,6 +337,14 @@ describe('ReviewDetailPage', () => {
       ),
     )
     expect(await screen.findByText('Review queue opened')).toBeInTheDocument()
+    fireEvent.click(
+      screen.getByRole('link', { name: 'Reopen dismissed review' }),
+    )
+    expect(await screen.findByText('Finalized review')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Dismiss review' }),
+    ).not.toBeInTheDocument()
+    expect(getReviewAnalysis).toHaveBeenCalledTimes(1)
     expect(applyReviewAnalysis).not.toHaveBeenCalled()
   })
 
@@ -358,17 +380,20 @@ describe('ReviewDetailPage', () => {
     ).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Dismissal notes')).not.toBeInTheDocument()
     vi.mocked(returnCaseToReview).mockResolvedValue({
-      message_id: 13,
-      processing_status: 'NEEDS_REVIEW',
-      case_id: null,
-      review_id: 8,
-      tasks_created: 0,
-      attachments_extracted: 0,
-      analysis_confidence: null,
-      validation_flags: [],
+      ...noProposalReview,
+      status: 'OPEN',
+      can_return_to_review: false,
+      analysis: {
+        ...noProposalReview.analysis,
+        processing_status: 'NEEDS_REVIEW',
+      },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send back to review' }))
     await waitFor(() => expect(returnCaseToReview).toHaveBeenCalledWith(8))
+    expect(await screen.findByLabelText('Dismissal notes')).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Dismiss review' }),
+    ).toBeInTheDocument()
   })
 
   it('returns a dismissed Case to its existing Review from the bottom action', async () => {
@@ -383,14 +408,16 @@ describe('ReviewDetailPage', () => {
       },
     })
     vi.mocked(returnCaseToReview).mockResolvedValue({
-      message_id: 13,
-      processing_status: 'NEEDS_REVIEW',
+      ...noProposalReview,
       case_id: 44,
-      review_id: 8,
-      tasks_created: 0,
-      attachments_extracted: 0,
-      analysis_confidence: null,
-      validation_flags: [],
+      case_is_dismissed: false,
+      status: 'OPEN',
+      can_return_to_review: false,
+      analysis: {
+        ...noProposalReview.analysis,
+        processing_status: 'NEEDS_REVIEW',
+        case_id: 44,
+      },
     })
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

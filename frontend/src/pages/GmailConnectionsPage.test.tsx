@@ -19,6 +19,7 @@ import {
   startGmailOAuth,
   syncGmailConnection,
 } from '../lib/api'
+import { shouldPollRecentMessages } from '../lib/gmail'
 import type { GmailConnection, GmailMessage } from '../lib/types'
 import { authFixture } from '../test/fixtures'
 import { GmailConnectionsPage } from './GmailConnectionsPage'
@@ -111,6 +112,76 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('GmailConnectionsPage', () => {
+  it('polls only while recent message processing can still change in the background', () => {
+    expect(shouldPollRecentMessages([baseMessage])).toBe(true)
+    expect(
+      shouldPollRecentMessages([
+        { ...baseMessage, processing_status: 'PROCESSING' },
+      ]),
+    ).toBe(true)
+    expect(
+      shouldPollRecentMessages([
+        {
+          ...baseMessage,
+          processing_status: 'PROCESSED',
+          processing_next_retry_at: null,
+        },
+      ]),
+    ).toBe(false)
+  })
+
+  it('updates a mounted zero-action Commission Update from processing to final state', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      vi.mocked(getGmailConnections).mockResolvedValue({
+        configured: true,
+        connections: [baseConnection],
+      })
+      vi.mocked(getGmailMessages)
+        .mockResolvedValueOnce([
+          {
+            ...baseMessage,
+            id: 122,
+            subject:
+              'Commission Posting Update - Daniel Reed - Policy # AMR-33012944',
+            processing_status: 'PROCESSING',
+            attachment_count: 0,
+          },
+        ])
+        .mockResolvedValue([
+          {
+            ...baseMessage,
+            id: 122,
+            subject:
+              'Commission Posting Update - Daniel Reed - Policy # AMR-33012944',
+            processing_status: 'PROCESSED',
+            attachment_count: 0,
+            case_id: null,
+            review_id: null,
+            label_sync_status: 'APPLIED',
+          },
+        ])
+      renderPage()
+
+      fireEvent.click(await screen.findByText('Ingested carrier messages'))
+      expect(await screen.findByText('PROCESSING')).toBeInTheDocument()
+      expect(screen.getByText('Analyzing…')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(3000)
+
+      expect(await screen.findByText('PROCESSED')).toBeInTheDocument()
+      expect(screen.getByText('No further action')).toBeInTheDocument()
+      expect(screen.getByText('Labels synced')).toBeInTheDocument()
+      expect(screen.queryByText('Processing…')).not.toBeInTheDocument()
+      expect(getGmailMessages).toHaveBeenCalledTimes(2)
+
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(getGmailMessages).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('honestly explains the unconfigured OAuth state', async () => {
     vi.mocked(getGmailConnections).mockResolvedValue({
       configured: false,

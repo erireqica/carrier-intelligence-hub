@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -5,7 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.core.config import Settings
-from app.evaluation import EVALUATION_SAMPLES, evaluate_result
+from app.evaluation import EVALUATION_SAMPLES, EvaluationSample, evaluate_result
 from app.integrations.ai.analyzer import OpenAIAnalyzer
 from app.integrations.ai.errors import AnalysisProviderError
 from app.integrations.ai.prompt import ANALYSIS_INSTRUCTIONS
@@ -560,6 +561,15 @@ def test_openai_analyzer_uses_responses_structured_output_without_storage_or_too
     assert "competing current facts" in " ".join(ANALYSIS_INSTRUCTIONS.split()).lower()
     assert "interpretation_ambiguity" in ANALYSIS_INSTRUCTIONS
     assert "clarification is required" in " ".join(ANALYSIS_INSTRUCTIONS.split()).lower()
+    assert "operational next step" in ANALYSIS_INSTRUCTIONS
+    assert "do not collapse" in ANALYSIS_INSTRUCTIONS
+    assert "PENDING_REQUIREMENTS" in ANALYSIS_INSTRUCTIONS
+    assert "POLICY_ISSUED" in ANALYSIS_INSTRUCTIONS
+    assert "LAPSE_NOTICE" in ANALYSIS_INSTRUCTIONS
+    assert "explicit_due_date to exactly the normalized effective_date" in ANALYSIS_INSTRUCTIONS
+    assert "John Doe" not in ANALYSIS_INSTRUCTIONS
+    assert "Mary Smith" not in ANALYSIS_INSTRUCTIONS
+    assert "Robert Johnson" not in ANALYSIS_INSTRUCTIONS
 
 
 def test_openai_analyzer_routes_refusal_and_invalid_response_without_raw_detail() -> None:
@@ -584,10 +594,285 @@ def test_openai_analyzer_routes_refusal_and_invalid_response_without_raw_detail(
     assert "synthetic raw" not in str(malformed.value)
 
 
-def test_sample_evaluation_comparison_is_database_free_and_checks_critical_fields() -> None:
+def _evaluation_result(sample: EvaluationSample, actions: list[ActionItem]) -> AnalysisResult:
+    deadline = Deadline(
+        raw_text=(
+            "within 10 business days"
+            if sample.deadline_relative_count is not None
+            else "September 15, 2026"
+            if sample.deadline_date is not None
+            else None
+        ),
+        explicit_date=sample.deadline_date,
+        relative_count=sample.deadline_relative_count,
+        relative_unit=sample.deadline_relative_unit,
+    )
+    return AnalysisResult(
+        classification=sample.classification,
+        summary="Grounded carrier communication requiring operational follow-up.",
+        priority=sample.allowed_priorities[0],
+        client_name=sample.client_name,
+        policy_number=sample.policy_number,
+        policy_status=sample.policy_status,
+        premium_amount=(str(sample.premium_amount) if sample.premium_amount is not None else None),
+        currency=sample.currency,
+        effective_date=sample.effective_date,
+        deadline=deadline,
+        requirements=[],
+        action_items=actions,
+        evidence=[],
+        overall_confidence=0.95,
+        uncertainties=[],
+    )
+
+
+ASSIGNMENT_ACTIONS = (
+    [
+        ActionItem(
+            title="Obtain signed HIPAA authorization form",
+            description=None,
+            priority=Priority.HIGH,
+            explicit_due_date=None,
+            due_text=None,
+        ),
+        ActionItem(
+            title="Clarify medical history for 04/12/2026 prescription",
+            description=None,
+            priority=Priority.HIGH,
+            explicit_due_date=None,
+            due_text=None,
+        ),
+        ActionItem(
+            title="Submit completed requirement documents",
+            description=None,
+            priority=Priority.HIGH,
+            explicit_due_date=None,
+            due_text="within 10 business days",
+        ),
+    ],
+    [
+        ActionItem(
+            title="Notify client that the issued policy packet was mailed",
+            description=None,
+            priority=Priority.NORMAL,
+            explicit_due_date=None,
+            due_text=None,
+        ),
+        ActionItem(
+            title="Verify first premium draft",
+            description=None,
+            priority=Priority.NORMAL,
+            explicit_due_date="2026-09-01",
+            due_text="on the effective date",
+        ),
+    ],
+    [
+        ActionItem(
+            title="Call client about returned NSF payment of $89.50",
+            description=None,
+            priority=Priority.URGENT,
+            explicit_due_date=None,
+            due_text="ASAP",
+        ),
+        ActionItem(
+            title="Update banking information in portal to prevent lapse",
+            description=None,
+            priority=Priority.URGENT,
+            explicit_due_date="2026-09-15",
+            due_text="before the lapse deadline",
+        ),
+    ],
+)
+
+
+def test_assignment_evaluation_inputs_are_verbatim_and_do_not_supply_aetna_actions() -> None:
+    assert (
+        EVALUATION_SAMPLES[0].bundle.documents[0].content
+        == """Dear Agent,
+We are currently reviewing the Final Expense application for your client, John Doe.
+Policy # AMR-98765432 is currently in PENDING status.
+To proceed with underwriting, we require a completed HIPAA authorization form
+and a clarification on the medical history questionnaire regarding a prescription
+filled on 04/12/2026. Please have the client sign the attached addendum and return
+it within 10 business days to avoid application closure.
+Thank you,
+Americo Underwriting Team"""
+    )
+    aetna_body = EVALUATION_SAMPLES[1].bundle.documents[0].content
+    assert (
+        aetna_body
+        == """Good morning,
+This email is to confirm that the Medicare Supplement policy for Mary Smith has
+been APPROVED and ISSUED.
+Policy Number: ATN-554433221
+Effective Date: 09/01/2026
+Monthly Premium: $145.00
+The physical policy packet has been mailed directly to the client's address on file.
+Your commission will be reflected on your next weekly statement.
+Regards,
+Aetna Senior Supplemental Insurance"""
+    )
+    assert "Notify the client" not in aetna_body
+    assert "verify the first premium" not in aetna_body
+    assert (
+        EVALUATION_SAMPLES[2].bundle.documents[0].content
+        == """Agent Notification:
+Please be advised that the premium payment for Policy # AA-1122334 (Insured:
+Robert Johnson) was returned due to insufficient funds (NSF).
+The policy is currently in its 31-day grace period. If the past-due amount of $89.50
+is not received by September 15, 2026, the policy will lapse. We have sent a
+notification letter to the insured. Please reach out to your client to update their
+banking information on the agent portal.
+American Amicable Life Insurance Company of Texas"""
+    )
+
+
+@pytest.mark.parametrize(
+    ("sample", "actions"), tuple(zip(EVALUATION_SAMPLES, ASSIGNMENT_ACTIONS, strict=True))
+)
+def test_assignment_evaluation_requires_exact_distinct_action_semantics_and_dates(
+    sample: EvaluationSample, actions: list[ActionItem]
+) -> None:
+    assert evaluate_result(sample, _evaluation_result(sample, actions)) == []
+
+
+def test_assignment_evaluation_rejects_collapsed_missing_and_extra_actions() -> None:
     americo = EVALUATION_SAMPLES[0]
-    assert evaluate_result(americo, strong_result(client_name="John Doe")) == [
-        "policy_number",
-        "action_items",
-        "deadline",
-    ]
+    collapsed = ActionItem(
+        title=("Obtain HIPAA authorization, clarify 04/12/2026 prescription, and submit documents"),
+        description=None,
+        priority=Priority.HIGH,
+        explicit_due_date=None,
+        due_text="within 10 business days",
+    )
+    failures = evaluate_result(americo, _evaluation_result(americo, [collapsed]))
+    assert "action_items.count" in failures
+    assert len([failure for failure in failures if failure.startswith("action_items.")]) >= 3
+
+    aetna = EVALUATION_SAMPLES[1]
+    wrong_date = ASSIGNMENT_ACTIONS[1][1].model_copy(update={"explicit_due_date": "2026-09-02"})
+    failures = evaluate_result(
+        aetna,
+        _evaluation_result(aetna, [ASSIGNMENT_ACTIONS[1][0], wrong_date]),
+    )
+    assert "action_items.verify_first_premium" in failures
+
+
+@pytest.mark.parametrize(
+    ("sample_index", "carrier", "identity", "policy", "body", "actions"),
+    [
+        (
+            0,
+            "Northstar Life",
+            "Alex Rivera",
+            "NEW-100",
+            (
+                "Alex Rivera's policy NEW-100 is pending. Obtain HIPAA consent and explain the "
+                "questionnaire medication dated 04/12/2026. Return the requirement package "
+                "within 10 business days."
+            ),
+            [
+                ActionItem(
+                    title="Collect HIPAA consent",
+                    description=None,
+                    priority=Priority.HIGH,
+                    explicit_due_date=None,
+                    due_text=None,
+                ),
+                ActionItem(
+                    title="Explain questionnaire medication dated 04/12/2026",
+                    description=None,
+                    priority=Priority.HIGH,
+                    explicit_due_date=None,
+                    due_text=None,
+                ),
+                ActionItem(
+                    title="Return requirement package",
+                    description=None,
+                    priority=Priority.HIGH,
+                    explicit_due_date=None,
+                    due_text="within 10 business days",
+                ),
+            ],
+        ),
+        (
+            1,
+            "Harbor Mutual",
+            "Taylor Brooks",
+            "NEW-200",
+            (
+                "Harbor Mutual approved and issued policy NEW-200 for Taylor Brooks. The packet "
+                "was electronically delivered. The $145.00 first premium and effective date are "
+                "09/01/2026."
+            ),
+            [
+                ActionItem(
+                    title="Inform insured the approved packet was delivered",
+                    description=None,
+                    priority=Priority.NORMAL,
+                    explicit_due_date=None,
+                    due_text=None,
+                ),
+                ActionItem(
+                    title="Confirm initial premium payment",
+                    description=None,
+                    priority=Priority.NORMAL,
+                    explicit_due_date="2026-09-01",
+                    due_text=None,
+                ),
+            ],
+        ),
+        (
+            2,
+            "Summit Assurance",
+            "Jordan Chen",
+            "NEW-300",
+            (
+                "Policy NEW-300 for Jordan Chen is in its grace period after an $89.50 payment "
+                "was returned for insufficient funds. Update bank details in the portal before "
+                "09/15/2026 to avoid lapse."
+            ),
+            [
+                ActionItem(
+                    title="Reach out to insured about insufficient funds of $89.50",
+                    description=None,
+                    priority=Priority.HIGH,
+                    explicit_due_date=None,
+                    due_text=None,
+                ),
+                ActionItem(
+                    title="Correct bank details in portal to avoid lapse",
+                    description=None,
+                    priority=Priority.HIGH,
+                    explicit_due_date="2026-09-15",
+                    due_text=None,
+                ),
+            ],
+        ),
+    ],
+)
+def test_action_semantics_generalize_to_new_identities_and_equivalent_wording(
+    sample_index: int,
+    carrier: str,
+    identity: str,
+    policy: str,
+    body: str,
+    actions: list[ActionItem],
+) -> None:
+    bundle = SourceBundle(
+        carrier_name=carrier,
+        subject="Synthetic operational communication",
+        received_at=datetime(2026, 8, 20, 12, tzinfo=UTC),
+        documents=(SourceDocument("email", "EMAIL", body),),
+        rendered=body,
+        truncated=False,
+    )
+    sample = replace(
+        EVALUATION_SAMPLES[sample_index],
+        name=f"Generalized {sample_index}",
+        bundle=bundle,
+        client_name=identity,
+        policy_number=policy,
+    )
+
+    assert evaluate_result(sample, _evaluation_result(sample, actions)) == []

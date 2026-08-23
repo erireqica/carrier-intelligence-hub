@@ -351,6 +351,17 @@ def detect_source_conflicts(
     return tuple(sorted(conflicts, key=lambda item: item.code))
 
 
+def is_human_resolvable_source_conflict(conflict: SourceConflict) -> bool:
+    """Return whether grounded, independent sources present competing values."""
+    source_ids = {value.source_id for value in conflict.values}
+    candidate_values = {value.value.strip().casefold() for value in conflict.values}
+    return (
+        len(source_ids) > 1
+        and len(candidate_values) > 1
+        and all(value.excerpt and value.excerpt.strip() for value in conflict.values)
+    )
+
+
 def unique_source_values(
     bundle: SourceBundle, source_facts: tuple[SourceFact, ...] | list[SourceFact] = ()
 ) -> dict[str, str]:

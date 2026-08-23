@@ -266,17 +266,20 @@ export function ReviewDetailPage() {
   })
   const dismiss = useMutation({
     mutationFn: () => dismissReviewAnalysis(id, notes),
-    onSuccess: () => refreshAfterDecision(null),
+    onSuccess: async (updatedReview) => {
+      queryClient.setQueryData(['review', id, 'analysis'], updatedReview)
+      await queryClient.invalidateQueries({ queryKey: ['gmail-connections'] })
+      await refreshAfterDecision(null)
+    },
   })
   const returnToReview = useMutation({
     mutationFn: () => returnCaseToReview(id),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ['review', id, 'analysis'],
-      })
+    onSuccess: async (updatedReview) => {
+      queryClient.setQueryData(['review', id, 'analysis'], updatedReview)
       await queryClient.invalidateQueries({ queryKey: ['reviews'] })
       await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       await queryClient.invalidateQueries({ queryKey: ['cases'] })
+      await queryClient.invalidateQueries({ queryKey: ['gmail-connections'] })
     },
   })
 
@@ -690,7 +693,7 @@ export function ReviewDetailPage() {
                   {form.action_items.map((action, index) => (
                     <div
                       key={index}
-                      className="grid gap-3 border border-slate-200 p-3 sm:grid-cols-2"
+                      className="grid gap-3 rounded-lg border border-slate-200 bg-slate-100/80 p-3 sm:grid-cols-2"
                     >
                       <label className="text-sm font-medium sm:col-span-2">
                         Title

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+import app.services.message_processing as message_processing_service
 from app.core.config import Settings
 from app.integrations.ai.errors import AnalysisProviderError
 from app.integrations.ai.schemas import (
@@ -28,6 +29,7 @@ from app.models.enums import (
     AttachmentStatus,
     CaseAssignmentSource,
     GmailConnectionStatus,
+    GmailLabelKey,
     GmailLabelSyncStatus,
     MessageClassification,
     PolicyStatus,
@@ -49,6 +51,7 @@ from app.models.operations import (
 )
 from app.models.organization import GmailConnection, GmailOAuthCredential, User
 from app.services.auth import AuthContext, create_session
+from app.services.gmail_labels import desired_labels_for_thread
 from app.services.message_processing import (
     ProcessingResult,
     apply_review,
@@ -60,7 +63,7 @@ from app.services.message_processing import (
     recover_stale_processing,
     reevaluate_stored_review,
 )
-from app.services.operations import get_case_detail
+from app.services.operations import get_case_detail, get_review_detail
 from app.workers.message_process import (
     _configure_shutdown_signals,
     process_once,
@@ -369,6 +372,86 @@ def test_strong_analysis_creates_case_tasks_evidence_and_is_idempotent(
     )
     assert analysis is not None
     assert analysis.model_result_json == analysis.final_result_json
+
+
+def test_each_accepted_action_materializes_once_and_retry_is_idempotent(
+    seeded_db: Session,
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Materialization Client",
+        policy="MATERIALIZE-3",
+        subject_suffix="three-distinct-actions",
+    )
+    message.raw_content = message.cleaned_content = (
+        "Client: Materialization Client\n"
+        "Policy: MATERIALIZE-3\n"
+        "Status: PENDING\n"
+        "Please return the signed authorization within 10 business days.\n"
+        "Clarify the medical history for the 04/12/2026 prescription.\n"
+        "Submit all requirement documents within 10 business days."
+    )
+    base = analysis_result(client="Materialization Client", policy="MATERIALIZE-3")
+    actions = [
+        base.action_items[0],
+        ActionItem(
+            title="Clarify medical history for 04/12/2026 prescription",
+            description="Resolve the prescription questionnaire detail.",
+            priority=Priority.HIGH,
+            explicit_due_date=None,
+            due_text=None,
+        ),
+        ActionItem(
+            title="Submit all requirement documents",
+            description="Return the completed requirements to underwriting.",
+            priority=Priority.HIGH,
+            explicit_due_date=None,
+            due_text="within 10 business days",
+        ),
+    ]
+    proposed = base.model_copy(
+        update={
+            "action_items": actions,
+            "evidence": [
+                *base.evidence,
+                Evidence(
+                    field_name="action_item:1",
+                    source_id="email",
+                    excerpt="Clarify the medical history for the 04/12/2026 prescription.",
+                ),
+                Evidence(
+                    field_name="action_item:2",
+                    source_id="email",
+                    excerpt="Submit all requirement documents within 10 business days.",
+                ),
+            ],
+        }
+    )
+    seeded_db.commit()
+
+    first = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+    message.processing_status = ProcessingStatus.FAILED
+    message.last_processing_error_code = "SYNTHETIC_RETRY"
+    seeded_db.commit()
+    retried = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+
+    tasks = seeded_db.scalars(
+        select(Task)
+        .where(Task.source_carrier_message_id == message.id)
+        .order_by(Task.source_action_index)
+    ).all()
+    analysis = seeded_db.scalar(
+        select(MessageAnalysis).where(MessageAnalysis.carrier_message_id == message.id)
+    )
+    assert first.tasks_created == 3
+    assert retried.tasks_created == 0
+    assert [(task.source_action_index, task.title) for task in tasks] == [
+        (index, action.title) for index, action in enumerate(actions)
+    ]
+    assert all(task.due_at is not None for task in tasks)
+    assert analysis is not None
+    assert len(analysis.model_result_json["action_items"]) == 3
+    assert len(analysis.final_result_json["action_items"]) == 3
 
 
 def test_new_actionable_message_reopens_completed_case_without_duplicate_case(
@@ -1309,7 +1392,8 @@ def test_unlinked_active_review_uses_assigned_reviewer_without_widening_message_
         headers=assigned_headers,
     )
     assert returned.status_code == 200
-    assert returned.json()["review_id"] == review.id
+    assert returned.json()["id"] == review.id
+    assert returned.json()["status"] == "OPEN"
     seeded_db.refresh(message)
     seeded_db.refresh(review)
     assert message.processing_status is ProcessingStatus.NEEDS_REVIEW
@@ -1848,6 +1932,180 @@ def test_nonretryable_failure_and_stale_processing_recovery(seeded_db: Session) 
     assert stale.processing_status is ProcessingStatus.FAILED
     assert stale.last_processing_error_code == "STALE_PROCESSING_RECOVERED"
     assert stale.processing_next_retry_at is not None
+
+
+def test_materialization_retry_reuses_durable_analysis_without_provider_call(
+    seeded_db: Session, monkeypatch
+) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Durable Analysis Client",
+        policy="DURABLE-100",
+        subject_suffix="durable-materialization-retry",
+    )
+    first_analyzer = FakeAnalyzer(
+        analysis_result(client="Durable Analysis Client", policy="DURABLE-100")
+    )
+    original_finalize = message_processing_service._finalize
+    finalize_calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal finalize_calls
+        finalize_calls += 1
+        if finalize_calls == 1:
+            raise RuntimeError("synthetic materialization failure")
+        return original_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(message_processing_service, "_finalize", fail_once)
+    first = process_message(seeded_db, message.id, analyzer=first_analyzer)
+
+    seeded_db.refresh(message)
+    assert first.processing_status is ProcessingStatus.FAILED
+    assert message.last_processing_error_code == "MATERIALIZATION_FAILED"
+    assert message.analysis is not None
+    assert AnalysisResult.model_validate(message.analysis.model_result_json).policy_number == (
+        "DURABLE-100"
+    )
+    assert first_analyzer.calls == 1
+
+    second_analyzer = FakeAnalyzer(error="AI_TIMEOUT")
+    connection = seeded_db.get(GmailConnection, message.gmail_connection_id)
+    assert connection is not None
+    current = auth_context(seeded_db, connection.user_id)
+    retried = manual_process(seeded_db, current, message.id, analyzer=second_analyzer)
+
+    seeded_db.refresh(message)
+    assert retried.processing_status is ProcessingStatus.PROCESSED
+    assert second_analyzer.calls == 0
+    assert finalize_calls == 2
+    assert message.case_id is not None
+    assert (
+        seeded_db.scalar(
+            select(func.count(PolicyCase.id)).where(PolicyCase.policy_number == "DURABLE-100")
+        )
+        == 1
+    )
+    assert (
+        seeded_db.scalar(
+            select(func.count(Task.id)).where(Task.source_carrier_message_id == message.id)
+        )
+        == 1
+    )
+    assert (
+        seeded_db.scalar(
+            select(func.count(MessageAnalysis.id)).where(
+                MessageAnalysis.carrier_message_id == message.id
+            )
+        )
+        == 1
+    )
+    assert (
+        seeded_db.scalar(
+            select(func.count(AuditEvent.id)).where(
+                AuditEvent.carrier_message_id == message.id,
+                AuditEvent.event_type == "AI_ANALYSIS_REUSED",
+            )
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "classification",
+    [MessageClassification.COMMISSION_UPDATE, MessageClassification.OTHER],
+)
+def test_valid_informational_zero_action_message_finishes_processed(
+    seeded_db: Session, classification: MessageClassification
+) -> None:
+    policy = f"INFO-{classification.value}"
+    message = create_received_message(
+        seeded_db,
+        client="Informational Client",
+        policy=policy,
+        subject_suffix=f"zero-actions-{classification.value.lower()}",
+    )
+    message.cleaned_content = (
+        "This is an informational carrier update. No action is required.\n"
+        "Client: Informational Client\n"
+        f"Policy: {policy}\n"
+        "Status: ACTIVE"
+    )
+    message.raw_content = message.cleaned_content
+    seeded_db.commit()
+    result = AnalysisResult(
+        classification=classification,
+        summary="The carrier provided an informational update requiring no action.",
+        priority=Priority.LOW,
+        client_name="Informational Client",
+        policy_number=policy,
+        policy_status=PolicyStatus.ACTIVE,
+        premium_amount=None,
+        currency=None,
+        effective_date=None,
+        deadline=Deadline(
+            raw_text=None,
+            explicit_date=None,
+            relative_count=None,
+            relative_unit=None,
+        ),
+        requirements=[],
+        action_items=[],
+        evidence=[
+            Evidence(
+                field_name="client_name",
+                source_id="email",
+                excerpt="Client: Informational Client",
+            ),
+            Evidence(
+                field_name="policy_number",
+                source_id="email",
+                excerpt=f"Policy: {policy}",
+            ),
+            Evidence(
+                field_name="policy_status",
+                source_id="email",
+                excerpt="Status: ACTIVE",
+            ),
+        ],
+        overall_confidence=0.99,
+        uncertainties=[],
+    )
+
+    processed = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(result))
+
+    seeded_db.refresh(message)
+    assert processed.processing_status is ProcessingStatus.PROCESSED
+    assert processed.case_id is not None
+    assert processed.review_id is None
+    assert message.processing_status is ProcessingStatus.PROCESSED
+    assert message.processing_started_at is None
+    assert message.processing_next_retry_at is None
+    assert message.processed_at is not None
+    assert message.case_id == processed.case_id
+    policy_case = seeded_db.get(PolicyCase, processed.case_id)
+    assert policy_case is not None
+    assert policy_case.client_name == "Informational Client"
+    assert policy_case.policy_number == policy
+    assert (
+        seeded_db.scalar(
+            select(func.count(Task.id)).where(Task.source_carrier_message_id == message.id)
+        )
+        == 0
+    )
+    assert (
+        seeded_db.scalar(
+            select(func.count(ReviewItem.id)).where(ReviewItem.carrier_message_id == message.id)
+        )
+        == 0
+    )
+    desired_labels = desired_labels_for_thread(
+        seeded_db,
+        gmail_connection_id=message.gmail_connection_id,
+        gmail_thread_id=message.gmail_thread_id,
+    )
+    assert GmailLabelKey.NO_FURTHER_ACTION_NEEDED in desired_labels
+    if classification is MessageClassification.COMMISSION_UPDATE:
+        assert GmailLabelKey.COMMISSION_UPDATE in desired_labels
 
 
 def test_worker_isolates_one_unexpected_message_failure(test_engine, monkeypatch) -> None:
@@ -2625,7 +2883,7 @@ def test_missing_policy_number_creates_one_provisional_case_when_unambiguous(
     )
 
 
-def test_body_pdf_policy_conflict_creates_external_verification_task(
+def test_body_pdf_policy_conflict_routes_to_human_review(
     seeded_db: Session,
 ) -> None:
     message = create_received_message(
@@ -2654,17 +2912,15 @@ def test_body_pdf_policy_conflict_creates_external_verification_task(
         analyzer=FakeAnalyzer(analysis_result(client="Conflict Client", policy="CONFLICT-100")),
     )
 
-    case = seeded_db.get(PolicyCase, result.case_id)
     tasks = seeded_db.scalars(
         select(Task).where(Task.source_carrier_message_id == message.id)
     ).all()
-    assert result.processing_status is ProcessingStatus.PROCESSED
-    assert result.review_id is None
-    assert case is not None and case.policy_number is None
-    assert [task.title for task in tasks].count("Verify policy number with carrier") == 1
-    verification = next(task for task in tasks if task.title == "Verify policy number with carrier")
-    assert "Email body" in (verification.description or "")
-    assert f"PDF attachment {attachment.id}" in (verification.description or "")
+    assert result.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert result.review_id is not None
+    assert result.case_id is None
+    assert tasks == []
+    review = seeded_db.get(ReviewItem, result.review_id)
+    assert review is not None and review.reason_code == "POLICY_NUMBER_CONFLICT"
 
 
 def test_natural_prose_premium_conflict_creates_one_external_task(
@@ -2881,7 +3137,7 @@ def test_stored_discrepancy_reconciliation_dismisses_redundant_missing_task(
     ]
 
 
-def test_client_spelling_dispute_uses_safe_case_and_external_task(
+def test_client_spelling_dispute_routes_to_review_with_both_grounded_sources(
     seeded_db: Session,
 ) -> None:
     owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
@@ -2949,11 +3205,21 @@ def test_client_spelling_dispute_uses_safe_case_and_external_task(
     tasks = seeded_db.scalars(
         select(Task).where(Task.source_carrier_message_id == message.id)
     ).all()
-    assert result.processing_status is ProcessingStatus.PROCESSED
-    assert result.review_id is None
+    assert result.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert result.review_id is not None
     assert result.case_id == case.id
     assert case.client_name == "Sophie Bennett"
-    assert [task.title for task in tasks].count("Verify client identity with carrier") == 1
+    assert tasks == []
+    detail = get_review_detail(seeded_db, auth_context(seeded_db, owner.id), result.review_id)
+    conflict = next(issue for issue in detail.issues if issue.code == "CLIENT_IDENTITY_CONFLICT")
+    assert conflict.category == "SOURCE_CONFLICT"
+    assert conflict.human_resolvable is True
+    assert {value.value for value in conflict.values} == {"Sophie Bennett", "Sophie Bennet"}
+    assert {value.source_label for value in conflict.values} == {
+        "Email body",
+        f"PDF attachment {attachment.id}",
+    }
+    assert all(value.excerpt for value in conflict.values)
 
 
 def test_missing_policy_with_two_exact_client_cases_routes_to_case_match_review(
@@ -3081,7 +3347,8 @@ def test_review_without_structured_proposal_can_be_dismissed(
         headers={"X-CSRF-Token": auth["csrf_token"]},
     )
     assert dismissed.status_code == 200
-    assert dismissed.json()["processing_status"] == "IGNORED"
+    assert dismissed.json()["status"] == "DISMISSED"
+    assert dismissed.json()["analysis"]["processing_status"] == "IGNORED"
     seeded_db.refresh(message)
     review = seeded_db.get(ReviewItem, result.review_id)
     assert message.processing_status is ProcessingStatus.IGNORED

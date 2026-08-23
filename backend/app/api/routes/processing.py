@@ -57,27 +57,25 @@ def apply_review_analysis(
     )
 
 
-@router.post("/reviews/{review_id}/dismiss-analysis", response_model=MessageProcessingResult)
+@router.post("/reviews/{review_id}/dismiss-analysis", response_model=ReviewDetailResponse)
 def dismiss_review_analysis(
     review_id: int,
     data: ReviewDismissRequest,
     current: CsrfUser,
     db: DbSession,
-) -> MessageProcessingResult:
-    return response_from_result(
-        message_processing.dismiss_review(db, current, review_id, data.resolution_notes)
-    )
+) -> ReviewDetailResponse:
+    message_processing.dismiss_review(db, current, review_id, data.resolution_notes)
+    return operations.get_review_detail(db, current, review_id)
 
 
-@router.post("/reviews/{review_id}/return-to-review", response_model=MessageProcessingResult)
+@router.post("/reviews/{review_id}/return-to-review", response_model=ReviewDetailResponse)
 def return_review_to_active_work(
     review_id: int,
     current: CsrfUser,
     db: DbSession,
-) -> MessageProcessingResult:
-    return response_from_result(
-        message_processing.return_review_to_active_work(db, current, review_id)
-    )
+) -> ReviewDetailResponse:
+    message_processing.return_review_to_active_work(db, current, review_id)
+    return operations.get_review_detail(db, current, review_id)
 
 
 @router.post(

@@ -31,6 +31,28 @@ def test_extracts_text_pdf_with_page_boundaries_and_order() -> None:
     assert "--- Page 2 ---" in result.text
 
 
+def test_extracts_grounded_identity_from_policy_confirmation_pdf() -> None:
+    result = extract_pdf(
+        pdf_bytes(
+            "Policy Issue Confirmation\n"
+            "Client Name: Emily Robinson\n"
+            "Policy Number: NBL-684201\n"
+            "Policy Status: ISSUED\n"
+            "Effective Date: September 1, 2026\n"
+            "Annual Premium: $1,248.00"
+        ),
+        mime_type="application/pdf",
+        max_bytes=1_000_000,
+        max_pages=10,
+    )
+
+    assert result.status is AttachmentStatus.EXTRACTED
+    assert result.page_count == 1
+    assert result.text is not None
+    assert "Emily Robinson" in result.text
+    assert "NBL-684201" in result.text
+
+
 def test_image_only_pdf_requires_ocr_without_calling_ocr() -> None:
     result = extract_pdf(
         pdf_bytes(""),

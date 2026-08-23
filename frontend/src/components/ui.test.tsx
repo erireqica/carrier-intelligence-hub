@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { Pagination, StatusBadge } from './ui'
+import { Pagination, PriorityBadge, StatusBadge } from './ui'
 
 function submit(input: HTMLElement) {
   fireEvent.submit(input.closest('form')!)
@@ -111,5 +111,30 @@ describe('StatusBadge', () => {
 
     rerender(<StatusBadge status="DISMISSED" />)
     expect(screen.getByText('DISMISSED')).toHaveClass('text-slate-700')
+  })
+})
+
+describe('PriorityBadge', () => {
+  it('uses stronger priority treatments without changing soft status tones', () => {
+    const { rerender } = render(<PriorityBadge priority="LOW" />)
+    expect(screen.getByText('LOW')).toHaveClass(
+      'bg-slate-200',
+      'text-slate-900',
+    )
+
+    rerender(<PriorityBadge priority="NORMAL" />)
+    expect(screen.getByText('NORMAL')).toHaveClass('bg-slate-700', 'text-white')
+
+    rerender(<PriorityBadge priority="HIGH" />)
+    expect(screen.getByText('HIGH')).toHaveClass('bg-amber-800', 'text-white')
+
+    rerender(<PriorityBadge priority="URGENT" />)
+    expect(screen.getByText('URGENT')).toHaveClass('bg-red-800', 'text-white')
+
+    rerender(<StatusBadge status="PENDING" />)
+    expect(screen.getByText('PENDING')).toHaveClass(
+      'bg-amber-50',
+      'text-amber-900',
+    )
   })
 })

@@ -24,6 +24,7 @@ import {
   startGmailOAuth,
   syncGmailConnection,
 } from '../lib/api'
+import { shouldPollRecentMessages } from '../lib/gmail'
 import type { GmailConnection, GmailSyncResult } from '../lib/types'
 
 const oauthMessages: Record<string, { tone: string; message: string }> = {
@@ -69,6 +70,8 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
   const messages = useQuery({
     queryKey: ['gmail-connections', connectionId, 'messages', page],
     queryFn: () => getGmailMessages(connectionId, page),
+    refetchInterval: (query) =>
+      shouldPollRecentMessages(query.state.data) ? 3000 : false,
   })
   const process = useMutation({
     mutationFn: (messageId: number) => processMessage(messageId),
@@ -222,6 +225,10 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
                         Case assigned to another agent
                       </p>
                     </div>
+                  ) : message.processing_status === 'PROCESSED' ? (
+                    <span className="font-medium text-slate-600">
+                      No further action
+                    </span>
                   ) : message.processing_status === 'RECEIVED' ? (
                     <span className="text-slate-500">Queued for analysis</span>
                   ) : message.processing_status === 'PROCESSING' ? (

@@ -707,9 +707,11 @@ describe('CaseDetailPage carrier messages', () => {
       </QueryClientProvider>,
     )
 
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Mark as complete' }),
-    )
+    expect(
+      await screen.findByText('No tasks are required for this case.'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add task' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Mark as complete' }))
     await waitFor(() => expect(completeCase).toHaveBeenCalledWith(5))
     expect(await screen.findByText('Case completed')).toBeInTheDocument()
     expect(screen.getByText(/Completed by Elena Torres/)).toBeInTheDocument()

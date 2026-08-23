@@ -793,20 +793,29 @@ export function CaseDetailPage() {
                 }}
               />
             )}
-            {activeTaskCount === 0 && visibleTasks.length === 0 && (
-              <div className="px-5 py-8 text-center">
-                <CheckCircle2
-                  className="mx-auto h-6 w-6 text-emerald-600"
-                  aria-hidden
-                />
-                <p className="mt-2 text-sm font-semibold text-slate-900">
-                  No active actions remaining
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  Historical actions remain available from the controls above.
+            {item.tasks.length === 0 && (
+              <div className="px-5 py-6 text-center">
+                <p className="text-sm font-medium text-slate-700">
+                  No tasks are required for this case.
                 </p>
               </div>
             )}
+            {item.tasks.length > 0 &&
+              activeTaskCount === 0 &&
+              visibleTasks.length === 0 && (
+                <div className="px-5 py-8 text-center">
+                  <CheckCircle2
+                    className="mx-auto h-6 w-6 text-emerald-600"
+                    aria-hidden
+                  />
+                  <p className="mt-2 text-sm font-semibold text-slate-900">
+                    No active actions remaining
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Historical actions remain available from the controls above.
+                  </p>
+                </div>
+              )}
             <div className="divide-y divide-slate-100">
               {visibleTasks.map((task) => (
                 <div

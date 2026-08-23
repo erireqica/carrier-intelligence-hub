@@ -114,6 +114,10 @@ export function Badge({
     green: 'border-emerald-200 bg-emerald-50 text-emerald-800',
     amber: 'border-amber-200 bg-amber-50 text-amber-900',
     red: 'border-red-200 bg-red-50 text-red-800',
+    priorityLow: 'border-slate-400 bg-slate-200 text-slate-900',
+    priorityNormal: 'border-slate-700 bg-slate-700 text-white',
+    priorityHigh: 'border-amber-800 bg-amber-800 text-white',
+    priorityUrgent: 'border-red-800 bg-red-800 text-white',
   }
   return (
     <span
@@ -126,9 +130,12 @@ export function Badge({
 }
 
 export function PriorityBadge({ priority }: { priority: Priority }) {
-  const tone = { LOW: 'neutral', NORMAL: 'blue', HIGH: 'amber', URGENT: 'red' }[
-    priority
-  ]
+  const tone = {
+    LOW: 'priorityLow',
+    NORMAL: 'priorityNormal',
+    HIGH: 'priorityHigh',
+    URGENT: 'priorityUrgent',
+  }[priority]
   return <Badge tone={tone}>{priority}</Badge>
 }
 

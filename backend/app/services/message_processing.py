@@ -48,7 +48,12 @@ from app.models.operations import (
 )
 from app.models.organization import Agency, GmailConnection, GmailOAuthCredential, User
 from app.processing.ambiguities import verify_interpretation_ambiguities
-from app.processing.conflicts import SourceConflict, detect_source_conflicts, unique_source_values
+from app.processing.conflicts import (
+    SourceConflict,
+    detect_source_conflicts,
+    is_human_resolvable_source_conflict,
+    unique_source_values,
+)
 from app.processing.source import SourceBundle, build_source_bundle
 from app.processing.validation import (
     POLICY_CLASSIFICATIONS,
@@ -250,7 +255,6 @@ def claim_message(
     message.processing_started_at = now
     message.processing_next_retry_at = None
     message.processed_at = None
-    message.last_processing_error_code = None
     record_audit_event(
         db,
         agency_id=message.agency_id,
@@ -549,6 +553,13 @@ def _case_for_result(
 ) -> PolicyCase | None:
     candidates = _case_candidates(db, message, result)
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _can_create_case_from_analysis(result: AnalysisResult) -> bool:
+    """Keep Case identity independent from whether operational Tasks were generated."""
+    return result.classification in POLICY_CLASSIFICATIONS or bool(
+        result.client_name and result.policy_number
+    )
 
 
 def _missing_information_actions(
@@ -1063,6 +1074,47 @@ def _upsert_analysis(
     return analysis
 
 
+def _persist_proposed_analysis(
+    db: Session,
+    message: CarrierMessage,
+    result: AnalysisResult,
+    model_name: str,
+) -> MessageAnalysis:
+    """Durably retain a valid provider result before deterministic materialization."""
+    analysis = message.analysis
+    if analysis is None:
+        analysis = MessageAnalysis()
+        message.analysis = analysis
+    analysis.model_name = model_name
+    analysis.schema_version = ANALYSIS_SCHEMA_VERSION
+    analysis.prompt_version = ANALYSIS_PROMPT_VERSION
+    analysis.overall_confidence = Decimal(str(result.overall_confidence))
+    analysis.model_result_json = result.model_dump(mode="json")
+    analysis.validation_flags = []
+    analysis.final_result_json = None
+    analysis.finalized_by_user_id = None
+    analysis.finalized_at = None
+    db.commit()
+    return analysis
+
+
+def _reusable_materialization_result(
+    message: CarrierMessage,
+) -> tuple[AnalysisResult, str] | None:
+    analysis = message.analysis
+    if (
+        message.last_processing_error_code != "MATERIALIZATION_FAILED"
+        or analysis is None
+        or analysis.final_result_json is not None
+    ):
+        return None
+    try:
+        result = AnalysisResult.model_validate(analysis.model_result_json)
+    except ValueError:
+        return None
+    return result, analysis.model_name
+
+
 def _review_for_flags(
     db: Session,
     message: CarrierMessage,
@@ -1182,7 +1234,7 @@ def _finalize(
         if case.completed_at is not None and result.action_items:
             completed_replay = not _reactivate_for_new_operational_work(db, case, message)
     created = False
-    if result.classification in POLICY_CLASSIFICATIONS:
+    if case is not None or _can_create_case_from_analysis(result):
         if case is None:
             if not result.client_name:
                 raise RuntimeError("Insufficient identity to create a policy case")
@@ -1612,7 +1664,13 @@ def _prepare_analysis_routing(
     normalized = normalize_analysis_result(result)
     grounded = _ground_result_from_consistent_sources(normalized, bundle)
     conflicts = detect_source_conflicts(bundle, grounded.source_facts)
-    grounded, disputed_fields = _apply_external_discrepancies(grounded, conflicts)
+    human_conflicts = tuple(
+        conflict for conflict in conflicts if is_human_resolvable_source_conflict(conflict)
+    )
+    external_conflicts = tuple(
+        conflict for conflict in conflicts if conflict not in human_conflicts
+    )
+    grounded, disputed_fields = _apply_external_discrepancies(grounded, external_conflicts)
     validated = validate_analysis(
         grounded,
         bundle,
@@ -1623,6 +1681,7 @@ def _prepare_analysis_routing(
     validated = _drop_incomplete_evidence_when_source_is_deterministic(validated, bundle)
     validated, _missing_flags = _missing_information_actions(validated, disputed_fields)
     flags = set(validated.flags)
+    flags.update(conflict.code for conflict in human_conflicts)
     if verify_interpretation_ambiguities(bundle, grounded.interpretation_ambiguities):
         flags.add("INTERPRETATION_AMBIGUITY")
     candidates = _case_candidates(db, message, validated.result)
@@ -1632,7 +1691,7 @@ def _prepare_analysis_routing(
     owner_conflict = _reconcile_case_owner(db, message, case)
     if owner_conflict:
         flags.add("CASE_OWNER_CONFLICT")
-    elif validated.result.classification in POLICY_CLASSIFICATIONS and (
+    elif _can_create_case_from_analysis(validated.result) and (
         (case is not None and not _case_has_operational_agent(db, case))
         or (case is None and _connection_agent_id(db, message) is None)
     ):
@@ -1645,7 +1704,7 @@ def _prepare_analysis_routing(
         validated = _apply_case_identity_discrepancy(validated)
     if (
         case is None
-        and validated.result.classification not in POLICY_CLASSIFICATIONS
+        and not _can_create_case_from_analysis(validated.result)
         and validated.result.action_items
     ):
         flags.add("ACTION_WITHOUT_CASE")
@@ -1668,7 +1727,7 @@ def process_claimed_message(
     db: Session,
     message_id: int,
     *,
-    analyzer: Analyzer,
+    analyzer: Analyzer | None = None,
     settings: Settings | None = None,
     mailbox_factory: MailboxFactory = mailbox_from_credential,
 ) -> ProcessingResult:
@@ -1698,8 +1757,17 @@ def process_claimed_message(
     ):
         source_flags.add("SOURCE_INCOMPLETE")
     db.commit()
+    reusable = _reusable_materialization_result(message)
+    selected = analyzer
+    if reusable is None and selected is None:
+        selected = OpenAIAnalyzer(active)
     try:
-        result = analyzer.analyze(bundle.rendered)
+        if reusable is not None:
+            result, model_name = reusable
+        else:
+            assert selected is not None
+            result = selected.analyze(bundle.rendered)
+            model_name = selected.model_name
     except AnalysisProviderError as error:
         if not error.reviewable:
             return mark_failed(db, message_id, error.code, settings=active)
@@ -1711,7 +1779,7 @@ def process_claimed_message(
                 message,
                 (error.code,),
                 existing_case=message.case,
-                model_name=analyzer.model_name,
+                model_name=selected.model_name if selected is not None else "unknown",
                 confidence=None,
             )
         except CompletedCaseReplayBlocked:
@@ -1732,6 +1800,10 @@ def process_claimed_message(
 
     message = _load_message(db, message_id)
     assert message is not None
+    if reusable is None:
+        _persist_proposed_analysis(db, message, result, model_name)
+        message = _load_message(db, message_id)
+        assert message is not None
     validated, case = _prepare_analysis_routing(
         db,
         message,
@@ -1740,19 +1812,29 @@ def process_claimed_message(
         confidence_threshold=active.ai_auto_apply_confidence_threshold,
         source_flags=source_flags,
     )
-    analysis = _upsert_analysis(db, message, result, validated, analyzer.model_name)
-    record_audit_event(
-        db,
-        agency_id=message.agency_id,
-        carrier_message_id=message.id,
-        event_type="AI_ANALYSIS_COMPLETED",
-        description="Structured carrier message analysis completed",
-        metadata={
-            "model_name": analyzer.model_name,
-            "confidence": result.overall_confidence,
-            "validation_flags": list(validated.flags),
-        },
-    )
+    analysis = _upsert_analysis(db, message, result, validated, model_name)
+    if reusable is None:
+        record_audit_event(
+            db,
+            agency_id=message.agency_id,
+            carrier_message_id=message.id,
+            event_type="AI_ANALYSIS_COMPLETED",
+            description="Structured carrier message analysis completed",
+            metadata={
+                "model_name": model_name,
+                "confidence": result.overall_confidence,
+                "validation_flags": list(validated.flags),
+            },
+        )
+    else:
+        record_audit_event(
+            db,
+            agency_id=message.agency_id,
+            carrier_message_id=message.id,
+            event_type="AI_ANALYSIS_REUSED",
+            description="Saved structured analysis reused for materialization retry",
+            metadata={"model_name": model_name},
+        )
     if not validated.safe_to_apply:
         try:
             review = _review_for_flags(
@@ -1760,7 +1842,7 @@ def process_claimed_message(
                 message,
                 validated.flags,
                 existing_case=case,
-                model_name=analyzer.model_name,
+                model_name=model_name,
                 confidence=result.overall_confidence,
             )
         except CompletedCaseReplayBlocked:
@@ -1807,7 +1889,6 @@ def process_message(
     mailbox_factory: MailboxFactory = mailbox_from_credential,
 ) -> ProcessingResult:
     active = settings or get_settings()
-    selected = analyzer or OpenAIAnalyzer(active)
     claimed = claim_message(db, message_id=message_id, allow_failed=True)
     if claimed is None:
         message = _load_message(db, message_id)
@@ -1826,7 +1907,7 @@ def process_message(
     return process_claimed_message(
         db,
         claimed,
-        analyzer=selected,
+        analyzer=analyzer,
         settings=active,
         mailbox_factory=mailbox_factory,
     )
@@ -1859,7 +1940,11 @@ def manual_process(
         raise HTTPException(status_code=409, detail="This message requires human review")
     if message.processing_status is ProcessingStatus.IGNORED:
         raise HTTPException(status_code=409, detail="This message was dismissed")
-    if analyzer is None and not get_settings().openai_configured:
+    if (
+        analyzer is None
+        and not get_settings().openai_configured
+        and _reusable_materialization_result(message) is None
+    ):
         raise HTTPException(status_code=503, detail="AI analysis is not configured")
     if message.processing_status is ProcessingStatus.FAILED:
         message.processing_next_retry_at = None
@@ -1986,7 +2071,7 @@ def _human_review_case(
             message.case_id = matched_case.id
         return matched_case, blockers
 
-    if result.classification in POLICY_CLASSIFICATIONS:
+    if _can_create_case_from_analysis(result):
         connection_agent_id = _connection_agent_id(db, message)
         if connection_agent_id is None:
             blockers.add("OPERATIONAL_OWNER_REQUIRED")

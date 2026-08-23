@@ -268,12 +268,12 @@ export const applyReviewAnalysis = (
     },
   )
 export const dismissReviewAnalysis = (id: number, resolutionNotes?: string) =>
-  apiRequest<MessageProcessingResult>(`/reviews/${id}/dismiss-analysis`, {
+  apiRequest<ReviewDetail>(`/reviews/${id}/dismiss-analysis`, {
     method: 'POST',
     body: JSON.stringify({ resolution_notes: resolutionNotes ?? null }),
   })
 export const returnCaseToReview = (id: number) =>
-  apiRequest<MessageProcessingResult>(`/reviews/${id}/return-to-review`, {
+  apiRequest<ReviewDetail>(`/reviews/${id}/return-to-review`, {
     method: 'POST',
   })
 export const getGmailConnections = (page = 1) =>
