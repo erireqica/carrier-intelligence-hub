@@ -272,12 +272,7 @@ class ReviewItem(TimestampMixin, Base):
         ),
         Index("ix_reviews_agency_status", "agency_id", "status"),
         Index("ix_reviews_reviewer_status", "assigned_reviewer_id", "status"),
-        Index(
-            "uq_reviews_active_message",
-            "carrier_message_id",
-            unique=True,
-            postgresql_where=text("status IN ('OPEN', 'IN_REVIEW')"),
-        ),
+        Index("uq_reviews_message", "carrier_message_id", unique=True),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

@@ -14,6 +14,7 @@ import {
   dismissReviewAnalysis,
   getMe,
   getReviewAnalysis,
+  returnCaseToReview,
 } from '../lib/api'
 import { authFixture } from '../test/fixtures'
 import { ReviewDetailPage } from './ReviewDetailPage'
@@ -23,6 +24,7 @@ vi.mock('../lib/api', () => ({
   dismissReviewAnalysis: vi.fn(),
   getMe: vi.fn(),
   getReviewAnalysis: vi.fn(),
+  returnCaseToReview: vi.fn(),
 }))
 
 const proposal = {
@@ -78,6 +80,8 @@ const noProposalReview = {
   created_at: '2026-08-20T12:00:00Z',
   resolved_at: null,
   analysis_confidence: null,
+  case_is_dismissed: false,
+  can_return_to_review: false,
   analysis: {
     message_id: 13,
     carrier_name: 'Americo',
@@ -130,6 +134,8 @@ describe('ReviewDetailPage', () => {
       created_at: '2026-08-20T12:00:00Z',
       resolved_at: null,
       analysis_confidence: 0.62,
+      case_is_dismissed: false,
+      can_return_to_review: false,
       issues: [
         {
           code: 'INTERPRETATION_AMBIGUITY_1',
@@ -326,6 +332,8 @@ describe('ReviewDetailPage', () => {
       status: 'DISMISSED',
       resolution_notes: 'Confirmed as non-operational.',
       resolved_at: '2026-08-20T13:00:00Z',
+      case_is_dismissed: false,
+      can_return_to_review: true,
     })
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -349,6 +357,60 @@ describe('ReviewDetailPage', () => {
       screen.queryByRole('button', { name: 'Dismiss review' }),
     ).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Dismissal notes')).not.toBeInTheDocument()
+    vi.mocked(returnCaseToReview).mockResolvedValue({
+      message_id: 13,
+      processing_status: 'NEEDS_REVIEW',
+      case_id: null,
+      review_id: 8,
+      tasks_created: 0,
+      attachments_extracted: 0,
+      analysis_confidence: null,
+      validation_flags: [],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send back to review' }))
+    await waitFor(() => expect(returnCaseToReview).toHaveBeenCalledWith(8))
+  })
+
+  it('returns a dismissed Case to its existing Review from the bottom action', async () => {
+    vi.mocked(getReviewAnalysis).mockResolvedValue({
+      ...noProposalReview,
+      case_id: 44,
+      case_is_dismissed: true,
+      can_return_to_review: true,
+      analysis: {
+        ...noProposalReview.analysis,
+        case_id: 44,
+      },
+    })
+    vi.mocked(returnCaseToReview).mockResolvedValue({
+      message_id: 13,
+      processing_status: 'NEEDS_REVIEW',
+      case_id: 44,
+      review_id: 8,
+      tasks_created: 0,
+      attachments_extracted: 0,
+      analysis_confidence: null,
+      validation_flags: [],
+    })
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/reviews/8']}>
+          <Routes>
+            <Route path="/reviews/:reviewId" element={<ReviewDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('Case dismissed')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Dismiss review' }),
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Send back to review' }))
+    await waitFor(() => expect(returnCaseToReview).toHaveBeenCalledWith(8))
   })
 
   it('keeps manager review detail explicitly read-only', async () => {

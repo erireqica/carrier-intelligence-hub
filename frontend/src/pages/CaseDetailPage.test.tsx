@@ -525,7 +525,7 @@ describe('CaseDetailPage carrier messages', () => {
     expect(screen.getByRole('button', { name: 'Dismiss case' })).toHaveClass(
       'bg-red-700',
     )
-    const back = screen.getByRole('link', { name: '← Back to cases' })
+    const back = screen.getByRole('link', { name: 'Back to cases' })
     const title = screen.getByRole('heading', { name: 'Managed Client' })
     expect(
       back.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING,

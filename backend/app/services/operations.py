@@ -796,7 +796,6 @@ def scoped_reviews_query(current: AuthContext) -> Select[tuple[ReviewItem]]:
                 ReviewItem.status.in_(active_statuses),
                 ReviewItem.case_id.is_not(None),
                 PolicyCase.assigned_agent_id == current.user.id,
-                PolicyCase.dismissed_at.is_(None),
                 PolicyCase.completed_at.is_(None),
             ),
             and_(
@@ -883,6 +882,19 @@ def review_item_response(item: ReviewItem) -> ReviewItemResponse:
         analysis_confidence=confidence,
         issue_title=issue_title,
         issue_summary=item.reason,
+    )
+
+
+def can_return_review_to_active_work(current: AuthContext, item: ReviewItem) -> bool:
+    if current.user.role is not UserRole.AGENT:
+        return False
+    if item.case is not None:
+        return bool(
+            item.case.assigned_agent_id == current.user.id
+            and (item.case.dismissed_at is not None or item.status is ReviewStatus.DISMISSED)
+        )
+    return bool(
+        item.status is ReviewStatus.DISMISSED and item.assigned_reviewer_id == current.user.id
     )
 
 
@@ -1031,6 +1043,8 @@ def get_review_detail(db: Session, current: AuthContext, review_id: int) -> Revi
         **base.model_dump(),
         analysis=_message_analysis_response(db, item.carrier_message),
         issues=issues,
+        case_is_dismissed=item.case is not None and item.case.dismissed_at is not None,
+        can_return_to_review=can_return_review_to_active_work(current, item),
     )
 
 

@@ -18,6 +18,7 @@ import { Link, useParams } from 'react-router-dom'
 
 import { useCurrentUser } from '../app/auth'
 import { Avatar } from '../components/Avatar'
+import { BackLink } from '../components/BackLink'
 import {
   Button,
   ErrorState,
@@ -494,9 +495,7 @@ export function CaseDetailPage() {
   )
   return (
     <div className="app-page space-y-6">
-      <Link className="text-sm font-semibold text-blue-700" to="/cases">
-        ← Back to cases
-      </Link>
+      <BackLink to="/cases" label="Back to cases" />
       <section className="case-identity overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-col gap-6 border-b border-slate-100 p-6 sm:p-7 lg:flex-row lg:items-end lg:justify-between">
           <div className="flex min-w-0 items-start gap-4">

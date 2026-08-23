@@ -69,6 +69,17 @@ def dismiss_review_analysis(
     )
 
 
+@router.post("/reviews/{review_id}/return-to-review", response_model=MessageProcessingResult)
+def return_review_to_active_work(
+    review_id: int,
+    current: CsrfUser,
+    db: DbSession,
+) -> MessageProcessingResult:
+    return response_from_result(
+        message_processing.return_review_to_active_work(db, current, review_id)
+    )
+
+
 @router.post(
     "/carrier-messages/{message_id}/reconcile-gmail-labels",
     response_model=MessageResponse,

@@ -247,6 +247,10 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
                     </details>
                   ) : message.processing_status === 'NEEDS_REVIEW' ? (
                     <span className="text-slate-500">Review unavailable</span>
+                  ) : message.processing_status === 'IGNORED' ? (
+                    <span className="font-medium text-slate-600">
+                      Dismissed
+                    </span>
                   ) : (
                     <span className="text-slate-500">Processing…</span>
                   )}

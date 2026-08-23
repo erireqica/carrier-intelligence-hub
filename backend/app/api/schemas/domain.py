@@ -282,6 +282,8 @@ class ReviewIssue(BaseModel):
 class ReviewDetailResponse(ReviewItemResponse):
     analysis: MessageAnalysisResponse
     issues: list[ReviewIssue] = Field(default_factory=list)
+    case_is_dismissed: bool
+    can_return_to_review: bool
 
 
 class ReviewListResponse(BaseModel):

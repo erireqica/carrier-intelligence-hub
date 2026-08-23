@@ -63,6 +63,12 @@ class ReviewConsistencyReconciliationResult:
     message_statuses_repaired: int = 0
 
 
+@dataclass(frozen=True)
+class SingleReviewReconciliationResult:
+    messages_reconciled: int = 0
+    redundant_reviews_removed: int = 0
+
+
 _MESSAGE_STATUS_RANK = {
     ProcessingStatus.PROCESSED: 5,
     ProcessingStatus.NEEDS_REVIEW: 4,
@@ -245,26 +251,39 @@ def _merge_duplicate_message(
             task.source_carrier_message_id = canonical.id
             existing_action_indexes.add(task.source_action_index)
 
-    active_review_retained = canonical.processing_status is ProcessingStatus.PROCESSED or bool(
-        db.scalar(
-            select(func.count())
-            .select_from(ReviewItem)
-            .where(
-                ReviewItem.carrier_message_id == canonical.id,
-                ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
-            )
-        )
+    canonical_review = db.scalar(
+        select(ReviewItem).where(ReviewItem.carrier_message_id == canonical.id)
     )
     duplicate_reviews = db.scalars(
         select(ReviewItem).where(ReviewItem.carrier_message_id == duplicate.id)
     ).all()
     for review in duplicate_reviews:
-        review.carrier_message_id = canonical.id
-        if review.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW}:
-            if active_review_retained:
+        if canonical_review is None:
+            if canonical.processing_status is ProcessingStatus.PROCESSED and review.status in {
+                ReviewStatus.OPEN,
+                ReviewStatus.IN_REVIEW,
+            }:
                 db.delete(review)
-            else:
-                active_review_retained = True
+                continue
+            review.carrier_message_id = canonical.id
+            canonical_review = review
+            continue
+        keep_duplicate = (
+            review.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW},
+            review.updated_at,
+            review.id,
+        ) > (
+            canonical_review.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW},
+            canonical_review.updated_at,
+            canonical_review.id,
+        )
+        if keep_duplicate:
+            db.delete(canonical_review)
+            db.flush()
+            review.carrier_message_id = canonical.id
+            canonical_review = review
+        else:
+            db.delete(review)
 
     attachment_map, redundant_attachments = _merge_duplicate_attachments(db, canonical, duplicate)
     canonical_evidence = db.scalars(
@@ -670,6 +689,66 @@ def reconcile_review_consistency(db: Session) -> ReviewConsistencyReconciliation
         redundant_reviews_removed=sum(len(ids) for ids in removed_ids_by_agency.values()),
         active_reviews_reassigned=reviews_reassigned,
         message_statuses_repaired=statuses_repaired,
+    )
+
+
+def reconcile_single_review_per_message(db: Session) -> SingleReviewReconciliationResult:
+    """Keep the latest operational Review state and audit removed historical rows."""
+    duplicate_message_ids = db.scalars(
+        select(ReviewItem.carrier_message_id)
+        .group_by(ReviewItem.carrier_message_id)
+        .having(func.count(ReviewItem.id) > 1)
+    ).all()
+    removed_by_agency: dict[int, list[dict[str, object]]] = defaultdict(list)
+    for message_id in duplicate_message_ids:
+        reviews = db.scalars(
+            select(ReviewItem)
+            .where(ReviewItem.carrier_message_id == message_id)
+            .order_by(ReviewItem.id)
+        ).all()
+        canonical = max(
+            reviews,
+            key=lambda item: (
+                item.status in {ReviewStatus.OPEN, ReviewStatus.IN_REVIEW},
+                item.updated_at,
+                item.id,
+            ),
+        )
+        removed = [item for item in reviews if item.id != canonical.id]
+        removed_by_agency[canonical.agency_id].append(
+            {
+                "carrier_message_id": message_id,
+                "canonical_review_id": canonical.id,
+                "removed_reviews": [
+                    {
+                        "id": item.id,
+                        "status": item.status.value,
+                        "reason_code": item.reason_code,
+                    }
+                    for item in removed
+                ],
+            }
+        )
+        for item in removed:
+            db.delete(item)
+    db.flush()
+
+    for agency_id, reconciled_messages in removed_by_agency.items():
+        record_audit_event(
+            db,
+            agency_id=agency_id,
+            event_type="REVIEW_SINGLETONS_RECONCILED",
+            description="Review history was consolidated to one row per Gmail message",
+            metadata={"messages": reconciled_messages},
+        )
+    db.flush()
+    return SingleReviewReconciliationResult(
+        messages_reconciled=sum(len(items) for items in removed_by_agency.values()),
+        redundant_reviews_removed=sum(
+            len(message["removed_reviews"])
+            for messages in removed_by_agency.values()
+            for message in messages
+        ),
     )
 
 

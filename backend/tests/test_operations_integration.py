@@ -211,11 +211,15 @@ def test_manager_analytics_uses_distinct_reviews_processing_times_and_pdf_status
         db.add(message)
         db.flush()
         messages.append(message)
-    for status in (ReviewStatus.RESOLVED, ReviewStatus.DISMISSED):
+    for message, status in zip(
+        messages[1:3],
+        (ReviewStatus.RESOLVED, ReviewStatus.DISMISSED),
+        strict=True,
+    ):
         db.add(
             ReviewItem(
                 agency_id=carrier.agency_id,
-                carrier_message_id=messages[1].id,
+                carrier_message_id=message.id,
                 status=status,
                 reason_code="TEST",
                 reason="Test review",
@@ -278,7 +282,7 @@ def test_manager_analytics_uses_distinct_reviews_processing_times_and_pdf_status
     data = response.json()
     assert data["carrier_messages"] == 4
     assert data["automation_rate"] == 50.0
-    assert data["review_rate"] == 33.3
+    assert data["review_rate"] == 66.7
     assert data["failure_rate"] == 33.3
     assert data["average_processing_seconds"] == 15.0
     assert data["pdf_extraction_success_rate"] == 50.0
@@ -1236,6 +1240,23 @@ def test_manager_assigns_case_and_active_work_to_an_active_agent(
         reason_code="ASSIGNMENT_TEST",
         reason="Synthetic active review",
     )
+    terminal_message = CarrierMessage(
+        agency_id=case.agency_id,
+        case_id=case.id,
+        carrier_id=case.carrier_id,
+        gmail_message_id="assignment-history-review-message",
+        sender="history@carrier.example",
+        subject="Historical reviewed communication",
+        received_at=utc_now(),
+        processing_status=ProcessingStatus.PROCESSED,
+        classification=message.classification,
+        summary="Historical reviewed communication",
+        priority=case.priority,
+        raw_content="Synthetic historical content",
+        cleaned_content="Synthetic historical content",
+    )
+    db.add(terminal_message)
+    db.flush()
     terminal_task = Task(
         agency_id=case.agency_id,
         case_id=case.id,
@@ -1248,7 +1269,7 @@ def test_manager_assigns_case_and_active_work_to_an_active_agent(
     terminal_review = ReviewItem(
         agency_id=case.agency_id,
         case_id=case.id,
-        carrier_message_id=message.id,
+        carrier_message_id=terminal_message.id,
         assigned_reviewer_id=original.id,
         status=ReviewStatus.RESOLVED,
         reason_code="HISTORICAL_TEST",

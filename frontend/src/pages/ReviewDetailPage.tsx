@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 
 import { useCurrentUser } from '../app/auth'
+import { BackLink } from '../components/BackLink'
 import {
   Button,
   ErrorState,
@@ -14,6 +15,7 @@ import {
   applyReviewAnalysis,
   dismissReviewAnalysis,
   getReviewAnalysis,
+  returnCaseToReview,
 } from '../lib/api'
 import type {
   ActionItem,
@@ -266,6 +268,17 @@ export function ReviewDetailPage() {
     mutationFn: () => dismissReviewAnalysis(id, notes),
     onSuccess: () => refreshAfterDecision(null),
   })
+  const returnToReview = useMutation({
+    mutationFn: () => returnCaseToReview(id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ['review', id, 'analysis'],
+      })
+      await queryClient.invalidateQueries({ queryKey: ['reviews'] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      await queryClient.invalidateQueries({ queryKey: ['cases'] })
+    },
+  })
 
   if (detail.isPending)
     return <LoadingState label="Loading analysis proposal…" />
@@ -281,6 +294,7 @@ export function ReviewDetailPage() {
   const analysis = review.analysis
   const form = editedForm ?? (proposal ? toHumanInput(proposal) : null)
   const isFinalized = ['RESOLVED', 'DISMISSED'].includes(review.status)
+  const isCaseDismissed = review.case_is_dismissed
   const isOwnershipBlocked =
     !isFinalized && review.reason_code === 'CASE_OWNER_CONFLICT'
   const isCaseMatch =
@@ -304,9 +318,7 @@ export function ReviewDetailPage() {
 
   return (
     <div className="app-page space-y-6">
-      <Link className="text-sm font-semibold text-blue-700" to="/reviews">
-        ← Back to review queue
-      </Link>
+      <BackLink to="/reviews" label="Back to review queue" />
       <section className="overflow-hidden rounded-2xl bg-[#12243c] text-white shadow-[0_18px_46px_rgb(15_23_42/14%)]">
         <div className="relative p-6 sm:p-8">
           <span className="absolute -top-20 -right-16 h-64 w-64 rounded-full border border-white/10" />
@@ -489,7 +501,7 @@ export function ReviewDetailPage() {
         {proposal && <ProposalSummary proposal={proposal} />}
 
         {proposal && form ? (
-          isManager || isFinalized || isOwnershipBlocked ? (
+          isManager || isFinalized || isCaseDismissed || isOwnershipBlocked ? (
             <ReadOnlyProposal
               proposal={proposal}
               status={review.status}
@@ -839,14 +851,18 @@ export function ReviewDetailPage() {
                 <dd className="mt-1">{review.reason}</dd>
               </div>
             </dl>
-            {isFinalized || isManager ? (
+            {isFinalized || isManager || isCaseDismissed ? (
               <div className="border-t border-slate-200 pt-5 text-sm text-slate-600">
-                <p className="font-semibold text-slate-900">Finalized review</p>
+                <p className="font-semibold text-slate-900">
+                  {isCaseDismissed ? 'Case dismissed' : 'Finalized review'}
+                </p>
                 <p className="mt-1">
-                  {isManager && !isFinalized
-                    ? 'Review decisions are completed by the assigned agent.'
-                    : (review.resolution_notes ??
-                      'This review is read-only because it has already been finalized.')}
+                  {isCaseDismissed
+                    ? 'Send this Case back to review before making a decision.'
+                    : isManager && !isFinalized
+                      ? 'Review decisions are completed by the assigned agent.'
+                      : (review.resolution_notes ??
+                        'This review is read-only because it has already been finalized.')}
                 </p>
               </div>
             ) : (
@@ -878,6 +894,35 @@ export function ReviewDetailPage() {
           </section>
         )}
       </section>
+      {(isCaseDismissed || review.status === 'DISMISSED') &&
+        review.can_return_to_review &&
+        !isManager && (
+          <section className="surface-panel flex flex-col gap-4 border-l-4 border-l-blue-600 p-5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <div className="flex-1">
+              <h2 className="font-semibold text-slate-950">
+                {isCaseDismissed
+                  ? 'Return this case to review'
+                  : 'Return this review to active work'}
+              </h2>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-600">
+                Reopen the existing Review and return this carrier message to
+                the active Review queue.
+              </p>
+            </div>
+            <Button
+              className="shrink-0"
+              disabled={returnToReview.isPending}
+              onClick={() => returnToReview.mutate()}
+            >
+              {returnToReview.isPending ? 'Sending…' : 'Send back to review'}
+            </Button>
+            {returnToReview.error && (
+              <p className="text-sm text-red-700 sm:basis-full" role="alert">
+                {returnToReview.error.message}
+              </p>
+            )}
+          </section>
+        )}
     </div>
   )
 }

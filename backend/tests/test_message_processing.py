@@ -839,6 +839,47 @@ def test_existing_case_client_mismatch_creates_external_verification_task(
     assert [task.title for task in tasks].count("Verify client identity with carrier") == 1
 
 
+def test_reprocessing_reopens_the_same_terminal_review_row(seeded_db: Session) -> None:
+    message = create_received_message(
+        seeded_db,
+        client="Review Singleton Client",
+        policy="REVIEW-SINGLETON-1",
+        subject_suffix="review-singleton",
+    )
+    proposed = with_interpretation_ambiguity(
+        analysis_result(
+            client="Review Singleton Client",
+            policy="REVIEW-SINGLETON-1",
+            confidence=0.4,
+        )
+    )
+    first = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+    review = seeded_db.get(ReviewItem, first.review_id)
+    assert review is not None
+    review.status = ReviewStatus.RESOLVED
+    review.resolved_at = datetime.now(UTC)
+    review.resolution_notes = "Synthetic prior decision"
+    message.processing_status = ProcessingStatus.FAILED
+    message.processing_next_retry_at = None
+    seeded_db.commit()
+
+    replay = process_message(seeded_db, message.id, analyzer=FakeAnalyzer(proposed))
+    seeded_db.refresh(review)
+
+    assert replay.review_id == review.id
+    assert review.status is ReviewStatus.OPEN
+    assert review.resolved_at is None
+    assert review.resolution_notes is None
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(ReviewItem)
+            .where(ReviewItem.carrier_message_id == message.id)
+        )
+        == 1
+    )
+
+
 def test_existing_case_is_reused_preserves_assignment_and_known_non_null_values(
     seeded_db: Session,
 ) -> None:
@@ -1258,6 +1299,119 @@ def test_unlinked_active_review_uses_assigned_reviewer_without_widening_message_
     seeded_db.refresh(review)
     assert message.processing_status is ProcessingStatus.IGNORED
     assert review.status is ReviewStatus.DISMISSED
+
+    detail = client.get(f"/api/v1/reviews/{review.id}/analysis")
+    assert detail.status_code == 200
+    assert detail.json()["case_is_dismissed"] is False
+    assert detail.json()["can_return_to_review"] is True
+    returned = client.post(
+        f"/api/v1/reviews/{review.id}/return-to-review",
+        headers=assigned_headers,
+    )
+    assert returned.status_code == 200
+    assert returned.json()["review_id"] == review.id
+    seeded_db.refresh(message)
+    seeded_db.refresh(review)
+    assert message.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert review.status is ReviewStatus.OPEN
+    assert review.resolution_notes is None
+    assert review.resolved_at is None
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(ReviewItem)
+            .where(ReviewItem.carrier_message_id == message.id)
+        )
+        == 1
+    )
+
+
+def test_current_case_owner_can_return_dismissed_case_review_to_active_work(
+    client: TestClient, seeded_db: Session, login
+) -> None:
+    agents = seeded_db.scalars(
+        select(User).where(User.role == UserRole.AGENT).order_by(User.id)
+    ).all()
+    policy_case = seeded_db.scalar(
+        select(PolicyCase).where(PolicyCase.policy_number == "AMR-98765432")
+    )
+    assert len(agents) == 2 and policy_case is not None
+    case_owner = seeded_db.get(User, policy_case.assigned_agent_id)
+    stale_reviewer = next(agent for agent in agents if agent.id != policy_case.assigned_agent_id)
+    assert case_owner is not None
+    message = create_received_message(
+        seeded_db,
+        client="John Doe",
+        policy="AMR-98765432",
+        subject_suffix="dismissed-case-review",
+        owner=case_owner,
+    )
+    result = process_message(
+        seeded_db,
+        message.id,
+        analyzer=FakeAnalyzer(analysis_result(client="John Doe", policy="AMR-98765432")),
+    )
+    assert result.case_id == policy_case.id and result.review_id is None
+    review = ReviewItem(
+        agency_id=policy_case.agency_id,
+        case_id=policy_case.id,
+        carrier_message_id=message.id,
+        assigned_reviewer_id=stale_reviewer.id,
+        status=ReviewStatus.OPEN,
+        reason_code="DISMISSED_CASE_REVIEW",
+        reason="Synthetic dismissed Case review",
+    )
+    seeded_db.add(review)
+    policy_case.dismissed_at = datetime.now(UTC)
+    policy_case.dismissed_by_user_id = case_owner.id
+    message.processing_status = ProcessingStatus.IGNORED
+    seeded_db.commit()
+
+    stale_auth = login(client, stale_reviewer.email)
+    assert client.get(f"/api/v1/reviews/{review.id}/analysis").status_code == 404
+    assert (
+        client.post(
+            f"/api/v1/reviews/{review.id}/return-to-review",
+            headers={"X-CSRF-Token": stale_auth["csrf_token"]},
+        ).status_code
+        == 404
+    )
+
+    owner_auth = login(client, case_owner.email)
+    detail = client.get(f"/api/v1/reviews/{review.id}/analysis")
+    assert detail.status_code == 200
+    assert detail.json()["case_is_dismissed"] is True
+    assert detail.json()["can_return_to_review"] is True
+    reopened = client.post(
+        f"/api/v1/reviews/{review.id}/return-to-review",
+        headers={"X-CSRF-Token": owner_auth["csrf_token"]},
+    )
+    assert reopened.status_code == 200
+    seeded_db.refresh(policy_case)
+    seeded_db.refresh(review)
+    seeded_db.refresh(message)
+    assert policy_case.dismissed_at is None
+    assert policy_case.dismissed_by_user_id is None
+    assert review.status is ReviewStatus.OPEN
+    assert review.assigned_reviewer_id == case_owner.id
+    assert message.processing_status is ProcessingStatus.NEEDS_REVIEW
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(ReviewItem)
+            .where(ReviewItem.carrier_message_id == message.id)
+        )
+        == 1
+    )
+    assert (
+        seeded_db.scalar(
+            select(AuditEvent.id).where(
+                AuditEvent.carrier_message_id == message.id,
+                AuditEvent.event_type == "AI_REVIEW_REOPENED",
+            )
+        )
+        is not None
+    )
 
 
 @pytest.mark.parametrize("confidence, expected_status", [(0.95, "RESOLVED"), (0.4, "RESOLVED")])

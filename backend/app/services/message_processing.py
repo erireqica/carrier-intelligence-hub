@@ -1084,10 +1084,7 @@ def _review_for_flags(
             raise CompletedCaseReplayBlocked
     primary = flags[0] if flags else "AI_INVALID_RESPONSE"
     review = db.scalar(
-        select(ReviewItem).where(
-            ReviewItem.carrier_message_id == message.id,
-            ReviewItem.status.in_([ReviewStatus.OPEN, ReviewStatus.IN_REVIEW]),
-        )
+        select(ReviewItem).where(ReviewItem.carrier_message_id == message.id).with_for_update()
     )
     connection = _connection(db, message)
     reviewer_id = (
@@ -1109,6 +1106,10 @@ def _review_for_flags(
         )
         db.add(review)
     else:
+        if review.status in {ReviewStatus.RESOLVED, ReviewStatus.DISMISSED}:
+            review.status = ReviewStatus.OPEN
+            review.resolution_notes = None
+            review.resolved_at = None
         review.case_id = existing_case.id if existing_case else None
         review.assigned_reviewer_id = reviewer_id
         review.reason_code = primary
@@ -2299,3 +2300,64 @@ def dismiss_review(
     )
     db.commit()
     return ProcessingResult(message.id, ProcessingStatus.IGNORED, case_id=message.case_id)
+
+
+def return_review_to_active_work(
+    db: Session, current: AuthContext, review_id: int
+) -> ProcessingResult:
+    """Return a dismissed Review or a Review on a dismissed Case to active work."""
+    from app.services.operations import can_return_review_to_active_work, get_review_item
+
+    if current.user.role is UserRole.MANAGER:
+        raise HTTPException(
+            status_code=403,
+            detail="Review decisions are completed by the assigned agent",
+        )
+    get_review_item(db, current, review_id)
+    review = db.get(ReviewItem, review_id)
+    assert review is not None
+    if review.status is not ReviewStatus.DISMISSED and (
+        review.case is None or review.case.dismissed_at is None
+    ):
+        raise HTTPException(status_code=409, detail="This Review is not dismissed")
+    if not can_return_review_to_active_work(current, review):
+        raise HTTPException(status_code=404, detail="Review item not found")
+    message = db.get(CarrierMessage, review.carrier_message_id)
+    assert message is not None
+    if review.case is not None and review.case.dismissed_at is not None:
+        review.case.dismissed_at = None
+        review.case.dismissed_by_user_id = None
+        record_audit_event(
+            db,
+            agency_id=message.agency_id,
+            actor_user_id=current.user.id,
+            case_id=review.case_id,
+            carrier_message_id=message.id,
+            event_type="CASE_RESTORED",
+            description="Case restored when its Review returned to active work",
+        )
+    review.status = ReviewStatus.OPEN
+    review.resolution_notes = None
+    review.resolved_at = None
+    review.assigned_reviewer_id = current.user.id
+    message.processing_status = ProcessingStatus.NEEDS_REVIEW
+    message.processing_started_at = None
+    message.processing_next_retry_at = None
+    message.last_processing_error_code = None
+    enqueue_for_message(db, message)
+    record_audit_event(
+        db,
+        agency_id=message.agency_id,
+        actor_user_id=current.user.id,
+        case_id=review.case_id,
+        carrier_message_id=message.id,
+        event_type="AI_REVIEW_REOPENED",
+        description="Dismissed Review returned to active work",
+    )
+    db.commit()
+    return ProcessingResult(
+        message.id,
+        ProcessingStatus.NEEDS_REVIEW,
+        case_id=message.case_id,
+        review_id=review.id,
+    )

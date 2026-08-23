@@ -36,6 +36,7 @@ from app.services.mailbox_reconciliation import (
     reconcile_duplicate_gmail_connections,
     reconcile_legacy_duplicate_fanout,
     reconcile_review_consistency,
+    reconcile_single_review_per_message,
 )
 
 
@@ -453,7 +454,7 @@ def test_followup_reconciliation_removes_only_unhistorical_legacy_fanout(
     assert db.get(Task, historical.id) is not None
 
 
-def test_database_rejects_two_active_reviews_for_one_message(seeded_db: Session) -> None:
+def test_database_rejects_any_two_reviews_for_one_message(seeded_db: Session) -> None:
     db = seeded_db
     owner = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
     carrier = db.scalar(select(Carrier).where(Carrier.name == "Americo"))
@@ -488,9 +489,10 @@ def test_database_rejects_two_active_reviews_for_one_message(seeded_db: Session)
                     agency_id=owner.agency_id,
                     carrier_message_id=message.id,
                     assigned_reviewer_id=owner.id,
-                    status=ReviewStatus.OPEN,
+                    status=ReviewStatus.RESOLVED,
                     reason_code="FIRST",
-                    reason="First active review.",
+                    reason="First resolved review.",
+                    resolved_at=utc_now(),
                 ),
                 ReviewItem(
                     agency_id=owner.agency_id,
@@ -512,6 +514,7 @@ def test_review_consistency_cleanup_preserves_human_history_and_repairs_owner(
     owner = db.scalar(select(User).where(User.email == "agent.one@demo.local"))
     carrier = db.scalar(select(Carrier).where(Carrier.name == "Americo"))
     assert owner is not None and carrier is not None
+    db.execute(text("DROP INDEX uq_reviews_message"))
     connection = GmailConnection(
         agency_id=owner.agency_id,
         user_id=owner.id,
@@ -587,13 +590,16 @@ def test_review_consistency_cleanup_preserves_human_history_and_repairs_owner(
     db.add_all([active, redundant, historical, distinct_review])
     db.commit()
 
-    result = reconcile_review_consistency(db)
+    consistency_result = reconcile_review_consistency(db)
+    singleton_result = reconcile_single_review_per_message(db)
     db.flush()
 
-    assert result.redundant_reviews_removed == 1
-    assert result.active_reviews_reassigned == 1
+    assert consistency_result.redundant_reviews_removed == 1
+    assert consistency_result.active_reviews_reassigned == 1
+    assert singleton_result.messages_reconciled == 1
+    assert singleton_result.redundant_reviews_removed == 1
     assert db.get(ReviewItem, redundant.id) is None
-    assert db.get(ReviewItem, historical.id) is not None
+    assert db.get(ReviewItem, historical.id) is None
     assert db.get(ReviewItem, distinct_review.id) is not None
     assert distinct_review.carrier_message_id != active.carrier_message_id
     db.refresh(active)

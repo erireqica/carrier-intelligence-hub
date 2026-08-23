@@ -270,7 +270,6 @@ def test_recent_message_review_metadata_tracks_case_dismiss_and_restore(
     assert restored["processing_status"] == "NEEDS_REVIEW"
     assert review.id in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
 
-
 def test_disconnect_removes_local_credentials_even_when_revocation_is_best_effort(
     client: TestClient,
     db: Session,

@@ -272,6 +272,10 @@ export const dismissReviewAnalysis = (id: number, resolutionNotes?: string) =>
     method: 'POST',
     body: JSON.stringify({ resolution_notes: resolutionNotes ?? null }),
   })
+export const returnCaseToReview = (id: number) =>
+  apiRequest<MessageProcessingResult>(`/reviews/${id}/return-to-review`, {
+    method: 'POST',
+  })
 export const getGmailConnections = (page = 1) =>
   apiRequest<GmailConnectionsResponse>(
     `/gmail-connections?page=${page}&page_size=5`,

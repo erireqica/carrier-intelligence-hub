@@ -306,6 +306,8 @@ export type ReviewIssue = {
 export type ReviewDetail = ReviewItem & {
   analysis: MessageAnalysis
   issues?: ReviewIssue[]
+  case_is_dismissed: boolean
+  can_return_to_review: boolean
 }
 
 export type MessageProcessingResult = {
