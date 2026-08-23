@@ -257,7 +257,7 @@ def test_recent_message_review_metadata_tracks_case_dismiss_and_restore(
     )
     dismissed = client.get(f"/api/v1/gmail-connections/{connection.id}/messages").json()["items"][0]
     assert dismissed["review_action_state"] == "CASE_DISMISSED"
-    assert dismissed["can_open_review"] is False
+    assert dismissed["can_open_review"] is True
     assert dismissed["processing_status"] == "IGNORED"
     assert review.id not in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
 
@@ -269,6 +269,7 @@ def test_recent_message_review_metadata_tracks_case_dismiss_and_restore(
     assert restored["can_open_review"] is True
     assert restored["processing_status"] == "NEEDS_REVIEW"
     assert review.id in {item["id"] for item in client.get("/api/v1/reviews").json()["items"]}
+
 
 def test_disconnect_removes_local_credentials_even_when_revocation_is_best_effort(
     client: TestClient,

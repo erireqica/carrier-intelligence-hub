@@ -16,6 +16,7 @@ from app.models.organization import (
     GmailConnection,
     GmailOAuthCredential,
     GmailOAuthState,
+    GmailObservedMessage,
     User,
 )
 
@@ -31,6 +32,7 @@ __all__ = [
     "CaseEvidence",
     "GmailConnection",
     "GmailManagedLabel",
+    "GmailObservedMessage",
     "GmailOAuthCredential",
     "GmailOAuthState",
     "GmailThreadLabelSync",

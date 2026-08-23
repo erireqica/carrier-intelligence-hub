@@ -25,13 +25,13 @@ from app.integrations.gmail.oauth import (
     GoogleOAuthClient,
     OAuthTokenSet,
 )
+from app.integrations.gmail.sync import sync_connection
 from app.models.carriers import Carrier
 from app.models.enums import (
     CaseAssignmentSource,
     GmailConnectionStatus,
     PolicyStatus,
     Priority,
-    ProcessingStatus,
     ReviewStatus,
     TaskStatus,
 )
@@ -40,6 +40,7 @@ from app.models.organization import (
     GmailConnection,
     GmailOAuthCredential,
     GmailOAuthState,
+    GmailObservedMessage,
     User,
 )
 
@@ -532,7 +533,7 @@ def test_reconnect_preserves_refresh_token_and_disconnected_mailbox_is_transferr
         agency_id=other_owner.agency_id,
         user_id=other_owner.id,
         gmail_address="owned@gmail.test",
-        status=GmailConnectionStatus.DISCONNECTED,
+        status=GmailConnectionStatus.CONNECTED,
     )
     db.add(historical_connection)
     db.flush()
@@ -549,6 +550,79 @@ def test_reconnect_preserves_refresh_token_and_disconnected_mailbox_is_transferr
     carrier = db.scalar(select(Carrier).where(Carrier.name == "Americo"))
     manager = db.scalar(select(User).where(User.email == "manager@demo.local"))
     assert historical_connection is not None and carrier is not None and manager is not None
+
+    def gmail_message(message_id: str, subject: str) -> dict:
+        return {
+            "id": message_id,
+            "threadId": f"thread-{message_id}",
+            "internalDate": "1787184000000",
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "From", "value": "Americo Alerts <alerts@americo.com>"},
+                    {"name": "Subject", "value": subject},
+                ],
+                "body": {"data": "U3ludGhldGljIGhhbmRvZmYgY29udGVudC4="},
+            },
+        }
+
+    class HandoffMailbox:
+        def __init__(self) -> None:
+            self.messages = {
+                "historical-owned-message": gmail_message(
+                    "historical-owned-message", "Historical mailbox message"
+                ),
+                "historical-resolved-message": gmail_message(
+                    "historical-resolved-message", "Historical resolved mailbox message"
+                ),
+            }
+
+        def list_messages(self, query: str, page_token: str | None = None) -> dict:
+            assert query.startswith("in:inbox is:unread newer_than:")
+            assert page_token is None
+            return {"messages": [{"id": message_id} for message_id in self.messages]}
+
+        def get_metadata(self, message_id: str) -> dict:
+            message = self.messages[message_id]
+            return {"id": message_id, "payload": {"headers": message["payload"]["headers"]}}
+
+        def get_full_message(self, message_id: str) -> dict:
+            return self.messages[message_id]
+
+    mailbox = HandoffMailbox()
+    imported = sync_connection(
+        db,
+        historical_connection.id,
+        mailbox_factory=lambda credential: (mailbox, False),
+    )
+    assert imported.ingested == 2
+    message = db.scalar(
+        select(CarrierMessage).where(
+            CarrierMessage.gmail_connection_id == historical_connection.id,
+            CarrierMessage.gmail_message_id == "historical-owned-message",
+        )
+    )
+    resolved_message = db.scalar(
+        select(CarrierMessage).where(
+            CarrierMessage.gmail_connection_id == historical_connection.id,
+            CarrierMessage.gmail_message_id == "historical-resolved-message",
+        )
+    )
+    observed_message = db.scalar(
+        select(GmailObservedMessage).where(
+            GmailObservedMessage.gmail_connection_id == historical_connection.id,
+            GmailObservedMessage.gmail_message_id == "historical-owned-message",
+        )
+    )
+    assert message is not None and resolved_message is not None and observed_message is not None
+    original_message_id = message.id
+    original_observed_identity = (
+        observed_message.id,
+        observed_message.gmail_connection_id,
+        observed_message.gmail_message_id,
+        observed_message.gmail_thread_id,
+        observed_message.first_seen_at,
+    )
     case = PolicyCase(
         agency_id=other_owner.agency_id,
         carrier_id=carrier.id,
@@ -560,20 +634,9 @@ def test_reconnect_preserves_refresh_token_and_disconnected_mailbox_is_transferr
         priority=Priority.NORMAL,
         summary="Synthetic handoff case.",
     )
-    message = CarrierMessage(
-        agency_id=other_owner.agency_id,
-        carrier_id=carrier.id,
-        gmail_connection_id=historical_connection.id,
-        gmail_message_id="historical-owned-message",
-        sender="alerts@americo.com",
-        subject="Historical mailbox message",
-        received_at=utc_now(),
-        processing_status=ProcessingStatus.RECEIVED,
-        raw_content="Historical synthetic content.",
-        cleaned_content="Historical synthetic content.",
-        case=case,
-    )
-    db.add_all([case, message])
+    message.case = case
+    resolved_message.case = case
+    db.add(case)
     db.flush()
     open_task = Task(
         agency_id=other_owner.agency_id,
@@ -606,13 +669,14 @@ def test_reconnect_preserves_refresh_token_and_disconnected_mailbox_is_transferr
     resolved_review = ReviewItem(
         agency_id=other_owner.agency_id,
         case_id=case.id,
-        carrier_message_id=message.id,
+        carrier_message_id=resolved_message.id,
         assigned_reviewer_id=manager.id,
         status=ReviewStatus.RESOLVED,
         reason_code="HANDOFF_HISTORY_TEST",
         reason="Synthetic historical review.",
         resolved_at=utc_now(),
     )
+    historical_connection.status = GmailConnectionStatus.DISCONNECTED
     db.add_all([open_task, completed_task, open_review, resolved_review])
     db.commit()
     fake.tokens = OAuthTokenSet(
@@ -648,8 +712,15 @@ def test_reconnect_preserves_refresh_token_and_disconnected_mailbox_is_transferr
         == "refresh"
     )
     recent = client.get(f"/api/v1/gmail-connections/{reused.id}/messages").json()
-    assert recent["page"]["total"] == 1
-    assert recent["items"][0]["subject"] == "Historical mailbox message"
+    assert recent["page"]["total"] == 2
+    assert {item["subject"] for item in recent["items"]} == {
+        "Historical mailbox message",
+        "Historical resolved mailbox message",
+    }
+    imported_item = next(
+        item for item in recent["items"] if item["subject"] == "Historical mailbox message"
+    )
+    assert imported_item["id"] == original_message_id
     assert (
         db.scalar(
             select(func.count())
@@ -657,6 +728,28 @@ def test_reconnect_preserves_refresh_token_and_disconnected_mailbox_is_transferr
             .where(CarrierMessage.gmail_message_id == "historical-owned-message")
         )
         == 1
+    )
+    retained_observed = db.scalar(
+        select(GmailObservedMessage).where(
+            GmailObservedMessage.gmail_connection_id == reused.id,
+            GmailObservedMessage.gmail_message_id == "historical-owned-message",
+        )
+    )
+    assert retained_observed is not None
+    assert (
+        retained_observed.id,
+        retained_observed.gmail_connection_id,
+        retained_observed.gmail_message_id,
+        retained_observed.gmail_thread_id,
+        retained_observed.first_seen_at,
+    ) == original_observed_identity
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(GmailObservedMessage)
+            .where(GmailObservedMessage.gmail_connection_id == reused.id)
+        )
+        == 2
     )
     db.refresh(case)
     db.refresh(open_task)
@@ -669,6 +762,9 @@ def test_reconnect_preserves_refresh_token_and_disconnected_mailbox_is_transferr
     assert open_review.assigned_reviewer_id == auth["user"]["id"]
     assert completed_task.assigned_agent_id == manager.id
     assert resolved_review.assigned_reviewer_id == manager.id
+
+    login(client, other_owner.email)
+    assert client.get(f"/api/v1/gmail-connections/{reused.id}/messages").status_code == 404
 
 
 def test_active_duplicate_oauth_returns_safe_dedicated_result(

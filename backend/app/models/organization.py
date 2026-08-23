@@ -108,6 +108,27 @@ class GmailConnection(TimestampMixin, Base):
     )
 
 
+class GmailObservedMessage(Base):
+    __tablename__ = "gmail_observed_messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "gmail_connection_id",
+            "gmail_message_id",
+            name="uq_gmail_observed_connection_message",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    gmail_connection_id: Mapped[int] = mapped_column(
+        ForeignKey("gmail_connections.id", ondelete="CASCADE"), nullable=False
+    )
+    gmail_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    gmail_thread_id: Mapped[str | None] = mapped_column(String(255))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    connection: Mapped[GmailConnection] = relationship()
+
+
 class GmailOAuthCredential(TimestampMixin, Base):
     __tablename__ = "gmail_oauth_credentials"
 

@@ -3,7 +3,8 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.time import utc_now
@@ -12,11 +13,21 @@ from app.integrations.gmail.errors import (
     GmailReauthorizationRequired,
     GmailTransientError,
 )
-from app.integrations.gmail.sync import SyncResult, sync_connection
+from app.integrations.gmail.sync import (
+    SyncResult,
+    backfill_observed_messages,
+    sync_connection,
+)
 from app.models.audit import AuditEvent
+from app.models.carriers import Carrier
 from app.models.enums import GmailConnectionStatus, ProcessingStatus
 from app.models.operations import Attachment, CarrierMessage
-from app.models.organization import GmailConnection, GmailOAuthCredential, User
+from app.models.organization import (
+    GmailConnection,
+    GmailOAuthCredential,
+    GmailObservedMessage,
+    User,
+)
 from app.workers.gmail_poll import _configure_shutdown_signals, poll_once
 
 
@@ -138,6 +149,14 @@ def test_approved_ingestion_is_received_idempotent_and_paginates(
     assert stored.classification is stored.summary is stored.priority is stored.case_id is None
     assert stored.sender == "alerts@americo.com"
     assert stored.gmail_thread_id == "thread-approved-1"
+    observed = seeded_db.scalar(
+        select(GmailObservedMessage).where(
+            GmailObservedMessage.gmail_connection_id == connection.id,
+            GmailObservedMessage.gmail_message_id == "approved-1",
+        )
+    )
+    assert observed is not None
+    assert observed.gmail_thread_id == "thread-approved-1"
     attachment = seeded_db.scalar(
         select(Attachment).where(Attachment.carrier_message_id == stored.id)
     )
@@ -161,6 +180,82 @@ def test_approved_ingestion_is_received_idempotent_and_paginates(
             )
         )
         == 1
+    )
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(GmailObservedMessage)
+            .where(
+                GmailObservedMessage.gmail_connection_id == connection.id,
+                GmailObservedMessage.gmail_message_id == "approved-1",
+            )
+        )
+        == 1
+    )
+
+
+def test_observed_message_is_not_replayed_after_operational_message_deletion(
+    seeded_db: Session,
+) -> None:
+    owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert owner is not None
+    connection = create_connection(seeded_db, owner, "replay-safe@gmail.test")
+    mailbox = FakeMailbox([gmail_message("old-x", "alerts@americo.com")])
+
+    def factory(credential):
+        return mailbox, False
+
+    first = sync_connection(seeded_db, connection.id, mailbox_factory=factory)
+    assert first.ingested == 1
+    stored = seeded_db.scalar(
+        select(CarrierMessage).where(
+            CarrierMessage.gmail_connection_id == connection.id,
+            CarrierMessage.gmail_message_id == "old-x",
+        )
+    )
+    assert stored is not None
+    seeded_db.execute(delete(AuditEvent).where(AuditEvent.carrier_message_id == stored.id))
+    seeded_db.execute(delete(CarrierMessage).where(CarrierMessage.id == stored.id))
+    seeded_db.commit()
+
+    assert seeded_db.get(CarrierMessage, stored.id) is None
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(GmailObservedMessage)
+            .where(
+                GmailObservedMessage.gmail_connection_id == connection.id,
+                GmailObservedMessage.gmail_message_id == "old-x",
+            )
+        )
+        == 1
+    )
+
+    replay = sync_connection(seeded_db, connection.id, mailbox_factory=factory)
+    assert replay.ingested == 0
+    assert replay.already_ingested == 1
+    assert (
+        seeded_db.scalar(
+            select(CarrierMessage.id).where(
+                CarrierMessage.gmail_connection_id == connection.id,
+                CarrierMessage.gmail_message_id == "old-x",
+            )
+        )
+        is None
+    )
+
+    mailbox.messages["new-y"] = gmail_message("new-y", "alerts@americo.com")
+    with_new_message = sync_connection(seeded_db, connection.id, mailbox_factory=factory)
+    assert with_new_message.ingested == 1
+    assert with_new_message.already_ingested == 1
+    assert (
+        seeded_db.scalar(
+            select(CarrierMessage.id).where(
+                CarrierMessage.gmail_connection_id == connection.id,
+                CarrierMessage.gmail_message_id == "new-y",
+            )
+        )
+        is not None
     )
 
 
@@ -196,6 +291,157 @@ def test_same_gmail_id_is_safe_across_connections(seeded_db: Session) -> None:
         )
         == 2
     )
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(GmailObservedMessage)
+            .where(GmailObservedMessage.gmail_message_id == "shared-id")
+        )
+        == 2
+    )
+
+
+def test_ledger_follows_logical_mailbox_across_reconnect_and_handoff(
+    seeded_db: Session,
+) -> None:
+    owners = seeded_db.scalars(select(User).where(User.role == "AGENT").order_by(User.id)).all()
+    assert len(owners) == 2
+    connection = create_connection(seeded_db, owners[0], "stable-mailbox@gmail.test")
+    mailbox = FakeMailbox([gmail_message("stable-x", "alerts@americo.com")])
+
+    def factory(credential):
+        return mailbox, False
+
+    assert sync_connection(seeded_db, connection.id, mailbox_factory=factory).ingested == 1
+
+    stored = seeded_db.scalar(
+        select(CarrierMessage).where(
+            CarrierMessage.gmail_connection_id == connection.id,
+            CarrierMessage.gmail_message_id == "stable-x",
+        )
+    )
+    assert stored is not None
+    seeded_db.execute(delete(AuditEvent).where(AuditEvent.carrier_message_id == stored.id))
+    seeded_db.execute(delete(CarrierMessage).where(CarrierMessage.id == stored.id))
+    connection.status = GmailConnectionStatus.DISCONNECTED
+    seeded_db.commit()
+
+    connection.status = GmailConnectionStatus.CONNECTED
+    seeded_db.commit()
+    reconnect = sync_connection(seeded_db, connection.id, mailbox_factory=factory)
+    assert reconnect.already_ingested == 1
+    assert reconnect.ingested == 0
+
+    connection.user_id = owners[1].id
+    seeded_db.commit()
+    handoff = sync_connection(seeded_db, connection.id, mailbox_factory=factory)
+    assert handoff.already_ingested == 1
+    assert handoff.ingested == 0
+    assert (
+        seeded_db.scalar(
+            select(CarrierMessage.id).where(
+                CarrierMessage.gmail_connection_id == connection.id,
+                CarrierMessage.gmail_message_id == "stable-x",
+            )
+        )
+        is None
+    )
+
+
+def test_same_mailbox_observed_identity_has_database_concurrency_guard(
+    seeded_db: Session,
+) -> None:
+    owner = seeded_db.scalar(select(User).where(User.email == "agent.one@demo.local"))
+    assert owner is not None
+    connection = create_connection(seeded_db, owner, "concurrency@gmail.test")
+    first_seen = utc_now()
+    seeded_db.add(
+        GmailObservedMessage(
+            gmail_connection_id=connection.id,
+            gmail_message_id="concurrent-x",
+            gmail_thread_id="thread-concurrent-x",
+            first_seen_at=first_seen,
+        )
+    )
+    seeded_db.commit()
+
+    with pytest.raises(IntegrityError), seeded_db.begin_nested():
+        seeded_db.add(
+            GmailObservedMessage(
+                gmail_connection_id=connection.id,
+                gmail_message_id="concurrent-x",
+                gmail_thread_id="thread-concurrent-x",
+                first_seen_at=first_seen,
+            )
+        )
+        seeded_db.flush()
+
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(GmailObservedMessage)
+            .where(
+                GmailObservedMessage.gmail_connection_id == connection.id,
+                GmailObservedMessage.gmail_message_id == "concurrent-x",
+            )
+        )
+        == 1
+    )
+
+
+def test_observed_message_backfill_is_complete_idempotent_and_independent(
+    seeded_db: Session,
+) -> None:
+    owners = seeded_db.scalars(select(User).where(User.role == "AGENT").order_by(User.id)).all()
+    assert len(owners) == 2
+    first_connection = create_connection(seeded_db, owners[0], "legacy-one@gmail.test")
+    second_connection = create_connection(seeded_db, owners[1], "legacy-two@gmail.test")
+    carrier = seeded_db.scalar(select(Carrier.id).where(Carrier.name == "Americo"))
+    assert carrier is not None
+    legacy_messages = [
+        CarrierMessage(
+            agency_id=owners[index].agency_id,
+            carrier_id=carrier,
+            gmail_connection_id=connection.id,
+            gmail_message_id="legacy-shared-id",
+            gmail_thread_id=f"legacy-thread-{index}",
+            sender="alerts@americo.com",
+            subject=f"Legacy message {index}",
+            received_at=utc_now(),
+            processing_status=ProcessingStatus.RECEIVED,
+            raw_content="Synthetic legacy content.",
+            cleaned_content="Synthetic legacy content.",
+        )
+        for index, connection in enumerate([first_connection, second_connection])
+    ]
+    seeded_db.add_all(legacy_messages)
+    seeded_db.commit()
+
+    assert backfill_observed_messages(seeded_db) == 2
+    seeded_db.commit()
+    assert backfill_observed_messages(seeded_db) == 0
+    seeded_db.commit()
+    assert seeded_db.scalar(select(func.count()).select_from(GmailObservedMessage)) == 2
+
+    seeded_db.execute(delete(CarrierMessage).where(CarrierMessage.id == legacy_messages[0].id))
+    seeded_db.commit()
+    assert (
+        seeded_db.scalar(
+            select(GmailObservedMessage.id).where(
+                GmailObservedMessage.gmail_connection_id == first_connection.id,
+                GmailObservedMessage.gmail_message_id == "legacy-shared-id",
+            )
+        )
+        is not None
+    )
+    assert (
+        seeded_db.scalar(
+            select(func.count())
+            .select_from(GmailObservedMessage)
+            .where(GmailObservedMessage.gmail_message_id == "legacy-shared-id")
+        )
+        == 2
+    )
 
 
 def test_unrelated_integrity_error_is_not_misreported_as_duplicate(seeded_db: Session) -> None:
@@ -220,6 +466,15 @@ def test_unrelated_integrity_error_is_not_misreported_as_duplicate(seeded_db: Se
     assert (
         seeded_db.scalar(
             select(CarrierMessage).where(CarrierMessage.gmail_message_id == "bad-attachments")
+        )
+        is None
+    )
+    assert (
+        seeded_db.scalar(
+            select(GmailObservedMessage.id).where(
+                GmailObservedMessage.gmail_connection_id == connection.id,
+                GmailObservedMessage.gmail_message_id == "bad-attachments",
+            )
         )
         is None
     )

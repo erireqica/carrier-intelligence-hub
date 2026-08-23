@@ -3,6 +3,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -22,11 +23,16 @@ from app.models.enums import (
     ProcessingStatus,
 )
 from app.models.operations import Attachment, CarrierMessage
-from app.models.organization import GmailConnection, GmailOAuthCredential
+from app.models.organization import (
+    GmailConnection,
+    GmailOAuthCredential,
+    GmailObservedMessage,
+)
 from app.services.audit import record_audit_event
 
 MailboxFactory = Callable[[GmailOAuthCredential], tuple[GmailMailbox, bool]]
 MESSAGE_DUPLICATE_CONSTRAINT = "uq_gmail_connection_message"
+OBSERVED_MESSAGE_DUPLICATE_CONSTRAINT = "uq_gmail_observed_connection_message"
 
 
 @dataclass
@@ -88,7 +94,49 @@ def _record_failure(
 
 def _is_message_duplicate(error: IntegrityError) -> bool:
     diagnostic = getattr(error.orig, "diag", None)
-    return getattr(diagnostic, "constraint_name", None) == MESSAGE_DUPLICATE_CONSTRAINT
+    return getattr(diagnostic, "constraint_name", None) in {
+        MESSAGE_DUPLICATE_CONSTRAINT,
+        OBSERVED_MESSAGE_DUPLICATE_CONSTRAINT,
+    }
+
+
+def backfill_observed_messages(db: Session) -> int:
+    """Remember legacy imported Gmail identities without contacting Gmail."""
+    eligible = (
+        select(
+            CarrierMessage.gmail_connection_id,
+            CarrierMessage.gmail_message_id,
+            CarrierMessage.gmail_thread_id,
+            CarrierMessage.created_at,
+        )
+        .where(
+            CarrierMessage.gmail_connection_id.is_not(None),
+            CarrierMessage.gmail_message_id.is_not(None),
+        )
+        .distinct(CarrierMessage.gmail_connection_id, CarrierMessage.gmail_message_id)
+        .order_by(
+            CarrierMessage.gmail_connection_id,
+            CarrierMessage.gmail_message_id,
+            CarrierMessage.created_at,
+            CarrierMessage.id,
+        )
+    )
+    statement = (
+        insert(GmailObservedMessage)
+        .from_select(
+            [
+                "gmail_connection_id",
+                "gmail_message_id",
+                "gmail_thread_id",
+                "first_seen_at",
+            ],
+            eligible,
+        )
+        .on_conflict_do_nothing(index_elements=["gmail_connection_id", "gmail_message_id"])
+        .returning(GmailObservedMessage.id)
+    )
+    result = db.execute(statement)
+    return len(result.scalars().all())
 
 
 def sync_connection(
@@ -122,14 +170,38 @@ def sync_connection(
                 if not message_id:
                     continue
                 result.messages_seen += 1
-                exists = db.scalar(
-                    select(CarrierMessage.id).where(
+                observed = db.scalar(
+                    select(GmailObservedMessage.id).where(
+                        GmailObservedMessage.gmail_connection_id == connection.id,
+                        GmailObservedMessage.gmail_message_id == message_id,
+                    )
+                )
+                db.commit()
+                if observed is not None:
+                    result.already_ingested += 1
+                    continue
+
+                existing = db.scalar(
+                    select(CarrierMessage).where(
                         CarrierMessage.gmail_connection_id == connection.id,
                         CarrierMessage.gmail_message_id == message_id,
                     )
                 )
-                db.commit()
-                if exists is not None:
+                if existing is not None:
+                    db.add(
+                        GmailObservedMessage(
+                            gmail_connection_id=connection.id,
+                            gmail_message_id=message_id,
+                            gmail_thread_id=existing.gmail_thread_id,
+                            first_seen_at=existing.created_at,
+                        )
+                    )
+                    try:
+                        db.commit()
+                    except IntegrityError as error:
+                        db.rollback()
+                        if not _is_message_duplicate(error):
+                            raise
                     result.already_ingested += 1
                     continue
 
@@ -161,7 +233,13 @@ def sync_connection(
                     raw_content=parsed.raw_content,
                     cleaned_content=parsed.cleaned_content,
                 )
-                db.add(message)
+                observed_message = GmailObservedMessage(
+                    gmail_connection_id=connection.id,
+                    gmail_message_id=message_id,
+                    gmail_thread_id=message.gmail_thread_id,
+                    first_seen_at=utc_now(),
+                )
+                db.add_all([message, observed_message])
                 try:
                     db.flush()
                     for item in parsed.attachments:
