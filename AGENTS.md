@@ -279,13 +279,13 @@ Agents must not receive agency-wide configuration privileges.
 
 ## Manager
 
-Manager inherits Agent capabilities and adds agency-wide oversight/configuration.
+Manager is an agency-wide oversight and configuration role. It does not inherit Agent-only operational mutation authority.
 
 Managers may:
 
 * see all agency cases,
 * see all agents' tasks,
-* assign/reassign work,
+* assign/reassign whole Cases,
 * see urgent and overdue cases agency-wide,
 * see agency analytics,
 * manage agents/users,
@@ -294,11 +294,13 @@ Managers may:
 * manage approved carrier domains,
 * manage approved sender email addresses,
 * enable/disable carriers,
-* review all AI exceptions,
+* view all AI exceptions,
 * inspect processing failures,
 * retry failed processing,
 * inspect audit/system logs,
 * configure supported external integrations such as CRM webhooks.
+
+Managers do not complete Agent Tasks, apply or dismiss Agent Reviews, complete Cases on an Agent's behalf, or connect/reconnect another user's Gmail. When a Manager reassigns a Case, its active Tasks and active Review follow the Case; terminal attribution remains historical.
 
 There is currently no separate Admin role.
 
@@ -318,7 +320,7 @@ Example:
 
 An Agent who manually requests a Manager-only API endpoint must receive an authorization failure even if they bypass the frontend.
 
-Manager inherits Agent permissions.
+Manager authorization is distinct from Agent authorization. Agency-wide visibility does not grant Agent-only decision authority.
 
 Ownership/agency boundaries must be enforced in backend database queries.
 
@@ -501,7 +503,9 @@ Repeated polling must not create duplicate cases or tasks.
 
 Use Gmail identifiers for idempotency.
 
-Because the platform supports multiple Gmail inboxes, prefer uniqueness based on the relevant Gmail connection plus Gmail message identifier rather than assuming one mailbox context forever.
+Because the platform supports multiple Gmail inboxes, uniqueness is based on the logical Gmail connection plus immutable Gmail message identifier rather than assuming one mailbox context forever.
+
+Record every observed Gmail message in the durable `gmail_observed_messages` ledger. The ledger survives deletion or intentional reset of a `CarrierMessage`, follows the same logical connection across reconnect and verified same-mailbox handoff, and prevents the same physical Gmail message from reappearing as new operational work.
 
 The system should safely recognize already-processed messages.
 
@@ -511,9 +515,7 @@ Duplicate protection is a core reliability requirement.
 
 # 15. Email Processing States
 
-Model a clear processing lifecycle.
-
-Useful states may include:
+The processing lifecycle uses:
 
 ```text
 RECEIVED
@@ -521,11 +523,6 @@ PROCESSING
 PROCESSED
 NEEDS_REVIEW
 FAILED
-```
-
-Potentially:
-
-```text
 IGNORED
 ```
 
@@ -573,9 +570,9 @@ Track attachment metadata such as:
 
 Do not assume every PDF contains extractable text.
 
-For the initial version, gracefully route unsupported/scanned/unreadable documents to review rather than silently failing.
+Route unsupported, scanned, or unreadable documents to an operational Task to obtain a readable document rather than creating a Review that cannot be resolved from evidence already in Carrier Hub.
 
-OCR/vision fallback is a later enhancement unless the core pipeline is already stable.
+OCR/vision fallback is not implemented. Its absence must not crash the pipeline.
 
 ---
 
@@ -684,26 +681,14 @@ The system must not blindly trust AI extraction.
 
 After structured output is received, application logic should validate important fields and business rules.
 
-Examples of review triggers:
+Use the operational distinction:
 
-* required policy number missing,
-* client name missing,
-* unknown/ambiguous carrier,
-* conflicting extracted values,
-* unsupported classification,
-* unclear deadline,
-* malformed structured output,
-* attachment extraction failure,
-* AI explicitly indicates ambiguity,
-* business validation fails.
+* **Review** when an Agent can resolve ambiguity using evidence already available inside Carrier Hub, such as conflicting email/PDF values or multiple plausible Case matches.
+* **Task** when the answer requires external information or contact, such as a missing value, external verification, or obtaining a readable copy of a scanned document.
 
-Such cases should move to:
+Generic low confidence alone must not create pointless Review work. A malformed model response or processing failure should follow the safe retry/failure lifecycle rather than being presented as a human evidence decision.
 
-`NEEDS_REVIEW`
-
-rather than being treated as fully trusted.
-
-Agents/Managers should be able to inspect the source and correct the record.
+There is at most one Review row per `CarrierMessage`. Dismissal and return-to-review reuse that record. Assigned Agents make Review decisions; Managers may inspect agency-wide Review state but are read-only for Apply/Dismiss decisions.
 
 ---
 
@@ -877,7 +862,7 @@ Do not produce marketing copy or verbose AI prose.
 
 # 28. Task Management
 
-AI-generated action items should become actual tasks rather than static text.
+Accepted AI-generated action items should become actual source-linked Tasks rather than static text. A successful supported communication may create or update a Case with an empty `action_items` list; zero Tasks does not mean no Case, and the application must not invent placeholder Tasks.
 
 Tasks should support concepts such as:
 
@@ -902,7 +887,9 @@ DISMISSED
 
 Agents manage their own assigned tasks.
 
-Managers may assign/reassign tasks.
+Managers assign/reassign whole Cases. OPEN and IN_PROGRESS Tasks follow the Case; terminal Task and creator/completer attribution remains historical.
+
+Manual Tasks may be created without a source `CarrierMessage`. Source-linked AI Tasks are unique by source message and action index, and AI reconciliation must not duplicate or remove manual Tasks.
 
 Completing a task should create an audit event.
 
@@ -942,11 +929,9 @@ Provide a dedicated Review Queue.
 
 It should surface records where:
 
-* AI extraction is incomplete,
 * important information conflicts,
-* validation failed,
-* an attachment could not be interpreted,
-* human verification is appropriate.
+* multiple grounded interpretations or Case matches are plausible,
+* human verification is possible from evidence already present in Carrier Hub.
 
 Reviewers should be able to:
 
@@ -955,25 +940,38 @@ Reviewers should be able to:
 * see extracted values,
 * understand why review was triggered,
 * correct values,
-* approve/finalize the case.
+* approve/finalize the case when acting as the assigned Agent.
 
 Review actions must be audited.
+
+Missing external facts and unreadable/scanned documents produce Tasks instead of Reviews. One Review row is reused throughout the lifecycle of a source `CarrierMessage`; reopening must not create a duplicate Review.
 
 ---
 
 # 31. Gmail Labels
 
-After successful or review-worthy processing, apply useful Gmail labels.
+Gmail threads receive at most one workflow label and one classification label—two Carrier Hub-managed labels total.
 
-Potential labels:
+Workflow labels, in precedence order, are:
 
 ```text
-AI / Processed
-AI / Action Required
-AI / Urgent
-AI / Policy Issued
-AI / Needs Review
+AI: Failed
+AI: Needs Review
+AI: Action Required
+AI: Processing
+AI: No Further Action Needed
 ```
+
+Classification labels are:
+
+```text
+AI: Policy Issued
+AI: Pending Requirements
+AI: Lapse Notice
+AI: Commission Update
+```
+
+`Processed` is retired and exists only for legacy-label cleanup; it is never a current desired label. Only active source-linked Tasks trigger `AI: Action Required`. Manual Tasks must not change the Gmail workflow label.
 
 Do not apply misleading labels before the relevant processing stage has succeeded.
 

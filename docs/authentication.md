@@ -17,7 +17,7 @@ cryptographically random server session
 GET /auth/me -> identity + agency + role + CSRF token
       |
       +-- Agent
-      +-- Manager (inherits Agent capabilities)
+      +-- Manager (agency oversight/configuration)
 ```
 
 Passwords are verified with Argon2id, a memory-hard password hashing algorithm designed to make stolen password hashes expensive to crack. Login returns the same error for a missing account and a wrong password, and it performs a dummy Argon2 check for a missing account to reduce timing differences.
@@ -30,4 +30,4 @@ Cookies are sent automatically, so an attacker could otherwise try to trigger a 
 
 Logout requires CSRF validation, marks the database session revoked, writes an audit event, and clears the cookie. Login also writes an audit event and updates `last_login_at`.
 
-Authorization is enforced by FastAPI dependencies and agency-scoped service queries. Agents can read and change only their assigned operational records. Managers can see agency-wide records and use Manager endpoints. Hiding Manager links in React improves the interface, but it is not a security control: a manually issued Agent request still receives `403 Forbidden` from the backend.
+Authorization is enforced by FastAPI dependencies and agency-scoped service queries. Agents own operational work and can read and change only their assigned records. Managers have agency-wide visibility and configuration endpoints, including whole-Case assignment/reassignment, but do not inherit Agent-only decision authority: they cannot complete Agent Tasks, apply or dismiss Agent Reviews, complete Cases for Agents, or connect another user's Gmail. Active Tasks and Reviews follow a Manager Case reassignment while terminal creator/completer/reviewer attribution remains historical. Hiding role-specific links in React improves the interface, but it is not a security control: a manually issued unauthorized request still receives `403 Forbidden` from the backend.
