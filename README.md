@@ -8,14 +8,42 @@
 
 <br />
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Open_App-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://carrier-intelligence-hub.vercel.app)
+
+<br />
+
 ![React](https://img.shields.io/badge/React-19-20232A?logo=react&logoColor=61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6?logo=typescript&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Python-009688?logo=fastapi&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
 ![OpenAI](https://img.shields.io/badge/OpenAI-Structured%20AI-111111?logo=openai&logoColor=white)
 ![Gmail](https://img.shields.io/badge/Gmail-OAuth%202.0-EA4335?logo=gmail&logoColor=white)
+![Vercel](https://img.shields.io/badge/Vercel-Frontend-000000?logo=vercel&logoColor=white)
+![Railway](https://img.shields.io/badge/Railway-Backend-0B0D0E?logo=railway&logoColor=white)
 
 </div>
+
+---
+
+# 🌐 Hosted Demo
+
+**Live application:**  
+https://carrier-intelligence-hub.vercel.app
+
+Carrier Intelligence Hub is deployed using a separated frontend, API, worker, and database architecture:
+
+- **Vercel** — React + TypeScript frontend
+- **Railway** — FastAPI backend
+- **Railway** — persistent background Gmail/AI processing worker
+- **Railway PostgreSQL** — production application database
+- **Google OAuth 2.0** — Gmail authorization
+- **OpenAI API** — structured carrier-message interpretation
+
+The frontend proxies `/api/v1` requests through the Vercel deployment to the Railway API, allowing the browser application and authentication flow to remain on a single public origin.
+
+The background worker operates independently of the browser, so Gmail processing does not require the web application to remain open.
+
+> The hosted environment is a demonstration deployment using synthetic insurance data. No real customer or policy data is included in the demo dataset.
 
 ---
 
@@ -63,10 +91,10 @@ flowchart LR
 
 In this representative synthetic example, a carrier sends:
 
-> **Policy Issued — Mary Smith**<br />
-> Policy `ATN-554433221` was approved and issued.<br />
-> Effective date: `09/01/2026`<br />
-> Monthly premium: `$145.00`<br />
+> **Policy Issued — Mary Smith**  
+> Policy `ATN-554433221` was approved and issued.  
+> Effective date: `09/01/2026`  
+> Monthly premium: `$145.00`  
 > Policy packet mailed to the client.
 
 Carrier Intelligence Hub can turn that into:
@@ -287,7 +315,7 @@ flowchart TB
     API[⚡ FastAPI API]
     DB[(🐘 PostgreSQL)]
     GMAIL[📨 Gmail API]
-    WORKER[⚙️ Processing Workers]
+    WORKER[⚙️ Processing Worker]
     PDF[📄 PyMuPDF]
     AI[🤖 OpenAI Structured Output]
 
@@ -302,6 +330,58 @@ flowchart TB
 ```
 
 The browser application and background processing pipeline remain separate so Gmail or AI processing failures do not take down the web application.
+
+---
+
+# ☁️ Deployment architecture
+
+```mermaid
+flowchart LR
+    USER[🌐 Browser]
+    VERCEL[▲ Vercel<br/>React + Vite]
+    API[🚂 Railway<br/>FastAPI]
+    WORKER[⚙️ Railway<br/>Background Worker]
+    DB[(🐘 Railway<br/>PostgreSQL)]
+    GMAIL[📨 Gmail API]
+    AI[🤖 OpenAI API]
+
+    USER --> VERCEL
+    VERCEL -->|/api/v1 proxy| API
+    API <--> DB
+
+    GMAIL <--> WORKER
+    WORKER <--> DB
+    WORKER --> AI
+```
+
+### Production responsibilities
+
+**Vercel**
+- serves the React/Vite application
+- handles SPA route fallback
+- proxies `/api/v1/*` to the Railway backend
+- keeps browser API traffic on the application's public origin
+
+**Railway API**
+- runs the FastAPI application
+- handles authentication and authorization
+- exposes the application API
+- performs business-rule validation
+- reads and writes operational data
+
+**Railway Worker**
+- runs independently from the web server
+- polls connected Gmail inboxes
+- parses approved carrier communication
+- invokes AI analysis
+- materializes validated Cases, Tasks, and Reviews
+- reconciles Gmail workflow labels
+
+**Railway PostgreSQL**
+- acts as the durable system of record
+- stores users, Cases, Tasks, messages, Reviews, Gmail connections, evidence, sessions, and audit events
+
+This separation means closing the browser does not interrupt Gmail processing.
 
 ---
 
@@ -334,7 +414,10 @@ The browser application and background processing pipeline remain separate so Gm
 - **PostgreSQL 17**
 - **Gmail API**
 - **Google OAuth 2.0**
-- background Python workers
+- **OpenAI API**
+- **Vercel**
+- **Railway**
+- persistent background Python worker
 - encrypted OAuth credential storage
 
 ---
@@ -362,29 +445,57 @@ The application includes:
 The synthetic demo dataset exercises both the assignment requirements and representative operational edge cases. It contains no real customer data.
 
 ### Policy Issued
+
 A carrier confirms a policy has been approved and mailed.
 
 **Result:** Case + post-issue follow-up Tasks.
 
 ### Pending Requirements
+
 Underwriting requests multiple documents with a submission deadline.
 
 **Result:** Case + separate grounded Tasks + due date.
 
 ### Lapse Notice
+
 A premium payment is returned NSF and the policy enters its grace period.
 
 **Result:** Urgent Case + client-contact/remediation Tasks.
 
 ### Commission Update
+
 The carrier reports a successful commission posting and states that no action is required.
 
 **Result:** Case with **0 Tasks**, preserving the communication without inventing work.
 
 ### Source conflict requiring Review
+
 Email and attached PDF disagree on the client's surname while all policy identity fields match.
 
 **Result:** Human Review instead of an unsafe automatic guess.
+
+---
+
+# 🎥 Suggested demo flow
+
+The hosted application can be demonstrated from both Manager and Agent perspectives.
+
+A representative walkthrough is:
+
+1. **Dashboard** — show workload, priority, task, and Review visibility.
+2. **Cases** — open a carrier Case and inspect its structured policy information and communication history.
+3. **Tasks** — show how actionable carrier requests become assigned operational work.
+4. **Reviews** — demonstrate how source conflicts are routed to a human rather than guessed.
+5. **Gmail Connections** — show OAuth-connected inboxes and processing status.
+6. **Carrier Configuration** — show the carrier sender/domain whitelist.
+7. **Activity / Audit** — demonstrate the durable record of system and user actions.
+8. **Manager view** — show agency-wide visibility, analytics, assignments, and configuration controls.
+9. **Agent view** — show the narrower operational workflow available to an assigned Agent.
+10. **Live processing** — send or surface an approved carrier-style email and allow the worker to process it into structured operational data.
+
+The key architectural principle during the demonstration is:
+
+> **The LLM proposes; the backend decides whether that proposal is safe to materialize.**
 
 ---
 
@@ -440,7 +551,9 @@ python -m venv .venv
 & .\.venv\Scripts\python.exe -m app.db.seed
 ```
 
-The setup script securely prompts for PostgreSQL administrator and synthetic demo-login passwords. It creates the dedicated local application role plus development and test databases, then writes the ignored `backend/.env`. The seed command is explicit and idempotent; it creates synthetic local Agent/Manager accounts but no Gmail connection or OAuth credential.
+The setup script securely prompts for PostgreSQL administrator and synthetic demo-login passwords. It creates the dedicated local application role plus development and test databases, then writes the ignored `backend/.env`.
+
+The seed command is explicit and idempotent. It creates synthetic local Agent/Manager accounts and representative operational data but no Gmail connection or OAuth credential.
 
 ## 2. Frontend
 
@@ -458,15 +571,17 @@ pwsh -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 
 Then open:
 
-**Frontend:** `http://localhost:5173`<br />
-**API:** `http://localhost:8000`<br />
+**Frontend:** `http://localhost:5173`  
+**API:** `http://localhost:8000`  
 **OpenAPI:** `http://localhost:8000/docs`
 
 ---
 
 # 🔑 Gmail development configuration
 
-For live Gmail testing, enable the Gmail API, configure a Google OAuth **Web application** client, and add the intended account as a test user while the consent screen remains in testing mode. Carrier Hub requests `gmail.modify` so it can read approved messages and maintain its own workflow labels; it does not send, draft, delete, trash, archive, or change read state.
+For live Gmail testing, enable the Gmail API, configure a Google OAuth **Web application** client, and add the intended account as a test user while the consent screen remains in testing mode.
+
+Carrier Hub requests `gmail.modify` so it can read approved messages and maintain its own workflow labels; it does not send, draft, delete, trash, archive, or change read state.
 
 Register this OAuth callback in Google Cloud:
 
@@ -494,7 +609,40 @@ MESSAGE_PROCESS_MAX_AUTO_ATTEMPTS=3
 
 Secrets belong only in the ignored `backend/.env`.
 
-`GOOGLE_TOKEN_ENCRYPTION_KEY` must be a dedicated Fernet key. The complete configuration surface, including database URLs, worker cadence, bounded retries, PDF limits, and frontend origin, is documented with safe placeholders in `backend/.env.example`. The application can start without Gmail or OpenAI credentials; those integrations report safe unconfigured states until enabled.
+`GOOGLE_TOKEN_ENCRYPTION_KEY` must be a dedicated Fernet key.
+
+The complete configuration surface, including database URLs, worker cadence, bounded retries, PDF limits, and frontend origin, is documented with safe placeholders in `backend/.env.example`.
+
+The API application can start without Gmail or OpenAI credentials; those integrations report safe unconfigured states until enabled. The standalone processing worker requires both integrations to be configured before entering its continuous processing loop.
+
+---
+
+# 🚀 Hosted configuration
+
+The hosted application uses:
+
+```text
+Frontend
+https://carrier-intelligence-hub.vercel.app
+```
+
+Production API requests are made through:
+
+```text
+https://carrier-intelligence-hub.vercel.app/api/v1/*
+```
+
+and proxied to the Railway-hosted FastAPI service.
+
+The Google OAuth production callback is:
+
+```text
+https://carrier-intelligence-hub.vercel.app/api/v1/gmail/oauth/callback
+```
+
+Secrets are stored as deployment environment variables and are not committed to the repository.
+
+The FastAPI service and background worker use the same production PostgreSQL database and the same Gmail credential-encryption key.
 
 ---
 
@@ -520,6 +668,40 @@ npm run lint
 npm run format:check
 npm run test -- --run
 npm run build
+```
+
+### Hosted smoke test
+
+The deployed environment has been verified for:
+
+- Vercel SPA routing
+- Vercel → Railway API proxy
+- FastAPI health endpoint
+- PostgreSQL connectivity
+- schema migrations
+- application login
+- session authentication
+- Dashboard
+- Cases
+- Tasks
+- Reviews
+- Gmail credential decryption
+- continuous worker operation
+- Gmail polling cycles
+
+Health endpoint:
+
+```text
+https://carrier-intelligence-hub.vercel.app/api/v1/health
+```
+
+Expected response:
+
+```json
+{
+  "status": "ok",
+  "service": "carrier-intelligence-api"
+}
 ```
 
 ---
@@ -549,19 +731,40 @@ npm run build
 - deduplication
 - managed Gmail workflow labels
 - responsive operations UI
+- persistent PostgreSQL data model
+- separate API and background worker services
+- secure production session configuration
+- hosted Vercel frontend
+- hosted Railway FastAPI backend
+- hosted Railway background worker
+- hosted Railway PostgreSQL database
+- production Gmail OAuth callback configuration
+- same-origin frontend API proxy
+- SPA deep-link routing
 
 ### 🔭 Future improvements
 
 - OCR for image-only/scanned PDFs
-- Gmail push notifications
+- Gmail push notifications instead of polling
 - optional CRM delivery
 - email-based Agent invitations
-- production OAuth verification
-- production deployment/infrastructure hardening
+- Google OAuth production verification
+- automated production backups
+- expanded monitoring and observability
+- CI/CD deployment gates
+- additional production security/compliance hardening
 
-### ⚠️ Development boundaries
+### ⚠️ Prototype boundaries
 
-Gmail discovery currently uses polling rather than push notifications. Text-based PDFs are supported; scanned/image-only documents require future OCR. The sender whitelist is an operational filter, not cryptographic SPF/DKIM/DMARC proof. Confidence is a routing signal rather than a calibrated probability. This prototype is not production-deployed, Google production-verified, HIPAA-compliant, or SOC 2 certified.
+Gmail discovery currently uses polling rather than push notifications.
+
+Text-based PDFs are supported; scanned/image-only documents require future OCR.
+
+The sender whitelist is an operational filter, not cryptographic SPF/DKIM/DMARC proof.
+
+Confidence is a routing signal rather than a calibrated probability.
+
+A hosted demonstration environment exists, but the project remains a **production-minded prototype**. It is not represented as Google production-verified, HIPAA-compliant, SOC 2 certified, or ready for handling real regulated customer data without additional security, compliance, operational, and legal review.
 
 ---
 
@@ -583,5 +786,9 @@ Detailed technical notes live in:
 ## Built as a production-minded insurance operations prototype
 
 **Carrier Intelligence Hub combines AI interpretation with deterministic software controls so routine carrier communication becomes structured work — while ambiguous decisions stay with the human Agent.**
+
+<br />
+
+### [🌐 Open the hosted demo](https://carrier-intelligence-hub.vercel.app)
 
 </div>
