@@ -174,6 +174,7 @@ def audit_events(
     severity: AuditSeverity | None = None,
     actor: str | None = None,
     category: str | None = None,
+    exclude_gmail_sync_completed: bool = False,
 ) -> AuditLogResponse:
     return reporting.audit_logs(
         db,
@@ -184,4 +185,5 @@ def audit_events(
         severity=severity,
         actor=actor,
         category=category,
+        exclude_gmail_sync_completed=exclude_gmail_sync_completed,
     )

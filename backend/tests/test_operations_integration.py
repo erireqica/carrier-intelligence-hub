@@ -886,6 +886,69 @@ def test_case_evidence_returns_trustworthy_attachment_provenance(
     assert "page" not in stored
 
 
+def test_manager_audit_logs_can_exclude_sync_completions_before_pagination(
+    client: TestClient, db: Session, login
+) -> None:
+    auth = login(client, "manager@demo.local")
+    agency_id = auth["user"]["agency"]["id"]
+    baseline_all = client.get("/api/v1/manager/audit-events?category=GMAIL&page_size=1").json()[
+        "page"
+    ]["total"]
+    baseline_excluded = client.get(
+        "/api/v1/manager/audit-events?category=GMAIL&page_size=1&exclude_gmail_sync_completed=true"
+    ).json()["page"]["total"]
+    now = utc_now()
+    db.add_all(
+        [
+            AuditEvent(
+                agency_id=agency_id,
+                event_type="GMAIL_SYNC_FAILED",
+                severity="WARNING",
+                description="Synthetic non-completion Gmail event.",
+                event_metadata={},
+                created_at=now + timedelta(minutes=1),
+            ),
+            AuditEvent(
+                agency_id=agency_id,
+                event_type="GMAIL_SYNC_COMPLETED",
+                severity="INFO",
+                description="Synthetic Gmail sync completion one.",
+                event_metadata={},
+                created_at=now + timedelta(minutes=2),
+            ),
+            AuditEvent(
+                agency_id=agency_id,
+                event_type="GMAIL_SYNC_COMPLETED",
+                severity="INFO",
+                description="Synthetic Gmail sync completion two.",
+                event_metadata={},
+                created_at=now + timedelta(minutes=3),
+            ),
+        ]
+    )
+    db.commit()
+
+    default_response = client.get("/api/v1/manager/audit-events?category=GMAIL&page_size=10")
+    assert default_response.status_code == 200
+    assert default_response.json()["page"]["total"] == baseline_all + 3
+    assert (
+        sum(
+            item["event_type"] == "GMAIL_SYNC_COMPLETED"
+            for item in default_response.json()["items"]
+        )
+        >= 2
+    )
+
+    excluded_response = client.get(
+        "/api/v1/manager/audit-events?category=GMAIL&page_size=1&exclude_gmail_sync_completed=true"
+    )
+    assert excluded_response.status_code == 200
+    assert excluded_response.json()["page"]["total"] == baseline_excluded + 1
+    assert [item["event_type"] for item in excluded_response.json()["items"]] == [
+        "GMAIL_SYNC_FAILED"
+    ]
+
+
 def test_agents_connected_inbox_count_excludes_disconnected_history(
     client: TestClient, db: Session, login
 ) -> None:

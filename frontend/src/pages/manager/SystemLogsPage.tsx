@@ -74,13 +74,25 @@ export function SystemLogsPage() {
   const [severity, setSeverity] = useState('')
   const [category, setCategory] = useState('')
   const [actor, setActor] = useState('')
+  const [excludeGmailSyncCompleted, setExcludeGmailSyncCompleted] =
+    useState(true)
   const [page, setPage] = useState(1)
   const params = new URLSearchParams({ page_size: '25', page: String(page) })
   if (severity) params.set('severity', severity)
   if (category) params.set('category', category)
   if (actor) params.set('actor', actor)
+  if (excludeGmailSyncCompleted)
+    params.set('exclude_gmail_sync_completed', 'true')
   const logs = useQuery({
-    queryKey: ['manager', 'audit-events', severity, category, actor, page],
+    queryKey: [
+      'manager',
+      'audit-events',
+      severity,
+      category,
+      actor,
+      excludeGmailSyncCompleted,
+      page,
+    ],
     queryFn: () => getAuditLogs(params.toString()),
   })
   const agents = useQuery({
@@ -143,19 +155,34 @@ export function SystemLogsPage() {
         >
           <option value="">All actors</option>
           <option value="system">System</option>
+          <option value={auth.data!.user.id}>
+            {auth.data!.user.full_name}
+          </option>
           {agents.data?.map((agent) => (
             <option key={agent.id} value={agent.id}>
               {agent.full_name}
             </option>
           ))}
         </select>
-        {(severity || category || actor) && (
+        <label className="flex min-h-10 items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={excludeGmailSyncCompleted}
+            onChange={(event) => {
+              setExcludeGmailSyncCompleted(event.target.checked)
+              resetPage()
+            }}
+          />
+          <span>Exclude Gmail sync completions</span>
+        </label>
+        {(severity || category || actor || !excludeGmailSyncCompleted) && (
           <button
             className="text-sm font-semibold text-blue-700"
             onClick={() => {
               setSeverity('')
               setCategory('')
               setActor('')
+              setExcludeGmailSyncCompleted(true)
               resetPage()
             }}
           >

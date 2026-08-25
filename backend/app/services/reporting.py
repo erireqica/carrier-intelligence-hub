@@ -725,8 +725,11 @@ def audit_logs(
     severity: AuditSeverity | None,
     actor: str | None,
     category: str | None,
+    exclude_gmail_sync_completed: bool = False,
 ) -> AuditLogResponse:
     query = select(AuditEvent).where(AuditEvent.agency_id == current.user.agency_id)
+    if exclude_gmail_sync_completed:
+        query = query.where(AuditEvent.event_type != "GMAIL_SYNC_COMPLETED")
     if event_type:
         query = query.where(AuditEvent.event_type == event_type)
     if severity:
