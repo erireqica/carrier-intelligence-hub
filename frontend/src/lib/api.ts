@@ -170,6 +170,7 @@ export const updateProfile = (data: {
   full_name: string
   email: string
   current_password?: string
+  timezone: string | null
 }) =>
   apiRequest<AuthResponse>('/auth/profile', {
     method: 'PATCH',

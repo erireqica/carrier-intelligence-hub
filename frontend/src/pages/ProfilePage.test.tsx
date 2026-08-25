@@ -33,7 +33,7 @@ afterEach(cleanup)
 
 describe('ProfilePage', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    vi.resetAllMocks()
     vi.stubGlobal('URL', {
       ...URL,
       createObjectURL: vi.fn(() => 'blob:profile-preview'),
@@ -145,6 +145,7 @@ describe('ProfilePage', () => {
         full_name: 'Elena Updated',
         email: 'elena.updated@demo.local',
         current_password: 'current-demo-password',
+        timezone: null,
       }),
     )
     expect(await screen.findByText('Profile updated.')).toBeInTheDocument()
@@ -152,6 +153,70 @@ describe('ProfilePage', () => {
       (client.getQueryData(['auth', 'me']) as ReturnType<typeof authFixture>)
         .user.email,
     ).toBe('elena.updated@demo.local')
+  })
+
+  it('saves and clears the personal timezone through the profile flow', async () => {
+    const auth = authFixture('MANAGER')
+    auth.user.timezone = 'Europe/London'
+    const updated = {
+      ...auth,
+      user: { ...auth.user, timezone: 'Europe/Belgrade' },
+    }
+    vi.mocked(useCurrentUser).mockReturnValue({
+      data: auth,
+    } as ReturnType<typeof useCurrentUser>)
+    vi.mocked(updateProfile)
+      .mockResolvedValueOnce(updated)
+      .mockResolvedValueOnce({
+        ...updated,
+        user: { ...updated.user, timezone: null },
+      })
+    const client = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={client}>
+        <ProfilePage />
+      </QueryClientProvider>,
+    )
+
+    const timezone = screen.getByLabelText('Timezone')
+    expect(timezone).toHaveValue('Europe/London')
+    expect(
+      screen.getByRole('option', {
+        name: 'Use agency timezone — America/Chicago',
+      }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('option', {
+        name: 'UTC+01 — Pristina, Berlin, Paris, Rome',
+      }),
+    ).toHaveValue('Europe/Belgrade')
+    expect(screen.getAllByRole('option')).toHaveLength(28)
+
+    fireEvent.change(timezone, { target: { value: 'Europe/Belgrade' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save profile' }))
+    await waitFor(() =>
+      expect(updateProfile).toHaveBeenLastCalledWith({
+        full_name: auth.user.full_name,
+        email: auth.user.email,
+        timezone: 'Europe/Belgrade',
+      }),
+    )
+    expect(
+      (client.getQueryData(['auth', 'me']) as ReturnType<typeof authFixture>)
+        .user.timezone,
+    ).toBe('Europe/Belgrade')
+
+    fireEvent.change(timezone, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save profile' }))
+    await waitFor(() =>
+      expect(updateProfile).toHaveBeenLastCalledWith({
+        full_name: auth.user.full_name,
+        email: auth.user.email,
+        timezone: null,
+      }),
+    )
   })
 
   it('submits current, new, and confirmed passwords separately', async () => {

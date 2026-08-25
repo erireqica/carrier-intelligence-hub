@@ -35,6 +35,7 @@ def auth_response(current_user, csrf_token: str) -> AuthResponse:
             role=current_user.role,
             is_active=current_user.is_active,
             last_login_at=current_user.last_login_at,
+            timezone=current_user.timezone,
             avatar_url=avatar_url(current_user),
             agency=AgencySummary(
                 id=current_user.agency.id,
@@ -92,6 +93,7 @@ def patch_profile(data: ProfileUpdateRequest, current: CsrfUser, db: DbSession) 
         full_name=data.full_name,
         email=data.email,
         current_password=data.current_password,
+        timezone=(data.timezone if "timezone" in data.model_fields_set else current.user.timezone),
     )
     return auth_response(user, current.csrf_token)
 

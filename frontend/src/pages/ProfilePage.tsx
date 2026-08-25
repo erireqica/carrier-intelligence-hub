@@ -12,6 +12,7 @@ import {
   uploadProfileAvatar,
 } from '../lib/api'
 import { formatDate } from '../lib/format'
+import { getEffectiveTimezone, getTimezoneOptions } from '../lib/timezone'
 
 const CURRENT_PASSWORD_MIN_LENGTH = 8
 const NEW_PASSWORD_MIN_LENGTH = 12
@@ -22,6 +23,7 @@ export function ProfilePage() {
   const queryClient = useQueryClient()
   const [fullName, setFullName] = useState(user.full_name)
   const [email, setEmail] = useState(user.email)
+  const [timezone, setTimezone] = useState(user.timezone ?? '')
   const [profilePassword, setProfilePassword] = useState('')
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -56,6 +58,7 @@ export function ProfilePage() {
       updateProfile({
         full_name: fullName,
         email,
+        timezone: timezone || null,
         ...(profilePassword ? { current_password: profilePassword } : {}),
       }),
     onSuccess: (response) => {
@@ -97,6 +100,8 @@ export function ProfilePage() {
     },
   })
   const emailChanged = email.trim().toLowerCase() !== user.email
+  const effectiveTimezone = getEffectiveTimezone(user)
+  const timezoneOptions = getTimezoneOptions(user.timezone)
 
   return (
     <div className="app-page space-y-6">
@@ -222,7 +227,7 @@ export function ProfilePage() {
               <div>
                 <h2 className="font-semibold">Account details</h2>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  Your name and sign-in email
+                  Your name, sign-in email, and display timezone
                 </p>
               </div>
             </div>
@@ -245,6 +250,33 @@ export function ProfilePage() {
                 required
               />
             </label>
+            <div>
+              <label
+                className="block text-sm font-medium"
+                htmlFor="profile-timezone"
+              >
+                Timezone
+              </label>
+              <select
+                id="profile-timezone"
+                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950 outline-none focus:border-blue-500 focus:ring-3 focus:ring-blue-100"
+                value={timezone}
+                onChange={(event) => setTimezone(event.target.value)}
+              >
+                <option value="">
+                  Use agency timezone — {user.agency.timezone}
+                </option>
+                {timezoneOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs font-normal text-slate-500">
+                Used throughout Carrier Hub. Daylight-saving changes are applied
+                automatically.
+              </p>
+            </div>
             {emailChanged && (
               <div>
                 <label className="block text-sm font-medium">
@@ -305,7 +337,10 @@ export function ProfilePage() {
                 ['Role', user.role],
                 ['Agency', user.agency.name],
                 ['Agency timezone', user.agency.timezone],
-                ['Last login', formatDate(user.last_login_at)],
+                [
+                  'Last login',
+                  formatDate(user.last_login_at, effectiveTimezone),
+                ],
               ].map(([label, value]) => (
                 <div key={label}>
                   <dt className="text-slate-500">{label}</dt>

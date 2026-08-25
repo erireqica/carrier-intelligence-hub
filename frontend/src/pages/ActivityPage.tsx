@@ -23,6 +23,7 @@ import {
 } from '../components/ui'
 import { getActivity } from '../lib/api'
 import { formatDateTime } from '../lib/format'
+import { getEffectiveTimezone } from '../lib/timezone'
 import type { AuditLog } from '../lib/types'
 
 const actionGroups = [
@@ -119,7 +120,7 @@ export function ActivityPage() {
         retry={() => activity.refetch()}
       />
     )
-  const timezone = auth.data!.user.agency.timezone
+  const timezone = getEffectiveTimezone(auth.data?.user)
   const groupedActivity = groupByDay(activity.data.items, timezone)
   const visibleCategories = Array.from(
     activity.data.items.reduce((counts, item) => {

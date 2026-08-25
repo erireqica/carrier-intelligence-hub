@@ -1,8 +1,12 @@
-export function formatDate(value: string | null | undefined) {
+export function formatDate(
+  value: string | null | undefined,
+  timezone?: string,
+) {
   if (!value) return '—'
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(
-    new Date(value),
-  )
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    ...(timezone ? { timeZone: timezone } : {}),
+  }).format(new Date(value))
 }
 
 export function formatDateTime(

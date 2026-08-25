@@ -1,4 +1,5 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -21,6 +22,7 @@ class ProfileUpdateRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=200)
     email: InternalEmail = Field(max_length=320)
     current_password: str | None = Field(default=None, min_length=8, max_length=256)
+    timezone: str | None = Field(default=None, max_length=64)
 
     @field_validator("full_name")
     @classmethod
@@ -28,6 +30,20 @@ class ProfileUpdateRequest(BaseModel):
         normalized = " ".join(value.split())
         if len(normalized) < 2:
             raise ValueError("Full name must contain at least two characters")
+        return normalized
+
+    @field_validator("timezone", mode="before")
+    @classmethod
+    def validate_timezone(cls, value: object) -> object:
+        if value is None or not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            return None
+        try:
+            ZoneInfo(normalized)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("Select a valid IANA timezone.") from error
         return normalized
 
 
@@ -56,6 +72,7 @@ class UserSummary(BaseModel):
     role: UserRole
     is_active: bool
     last_login_at: datetime | None
+    timezone: str | None
     avatar_url: str | None
     agency: AgencySummary
 

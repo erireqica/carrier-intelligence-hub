@@ -26,6 +26,7 @@ import {
 } from '../components/ui'
 import { getDashboard } from '../lib/api'
 import { formatDate } from '../lib/format'
+import { getEffectiveTimezone } from '../lib/timezone'
 
 function AttentionItem({
   label,
@@ -104,6 +105,7 @@ export function DashboardPage() {
     )
   const data = dashboard.data
   const isManager = auth.data!.user.role === 'MANAGER'
+  const timezone = getEffectiveTimezone(auth.data?.user)
   const decisionCount =
     data.metrics.urgent_cases +
     data.metrics.overdue_tasks +
@@ -511,7 +513,7 @@ export function DashboardPage() {
                 </p>
                 <p className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
                   <Clock3 className="h-3 w-3" aria-hidden />
-                  {formatDate(event.created_at)} ·{' '}
+                  {formatDate(event.created_at, timezone)} ·{' '}
                   {event.event_type.replaceAll('_', ' ')}
                 </p>
               </div>

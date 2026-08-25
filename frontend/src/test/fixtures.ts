@@ -9,6 +9,7 @@ export function authFixture(role: 'AGENT' | 'MANAGER' = 'AGENT'): AuthResponse {
       role,
       is_active: true,
       last_login_at: null,
+      timezone: null,
       agency: {
         id: 1,
         name: 'Harbor Point Insurance Agency',

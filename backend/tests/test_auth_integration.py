@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.security import token_hash
 from app.core.time import utc_now
+from app.models.audit import AuditEvent
 from app.models.enums import UserRole
 from app.models.organization import AuthSession, User
 from app.services import auth as auth_service
@@ -36,6 +37,92 @@ def test_login_me_logout_and_hashed_session(client: TestClient, db: Session, log
     db.refresh(session)
     assert session.revoked_at is not None
     assert client.get("/api/v1/auth/me").status_code == 401
+
+
+def test_agent_and_manager_can_set_and_clear_validated_display_timezones(
+    client: TestClient, db: Session, login
+) -> None:
+    agent_auth = login(client, "agent.one@demo.local")
+    assert agent_auth["user"]["timezone"] is None
+    assert agent_auth["user"]["agency"]["timezone"] == "America/Chicago"
+    agent_headers = {"X-CSRF-Token": agent_auth["csrf_token"]}
+
+    updated_agent = client.patch(
+        "/api/v1/auth/profile",
+        json={
+            "full_name": agent_auth["user"]["full_name"],
+            "email": agent_auth["user"]["email"],
+            "timezone": "Europe/Belgrade",
+        },
+        headers=agent_headers,
+    )
+    assert updated_agent.status_code == 200
+    assert updated_agent.json()["user"]["timezone"] == "Europe/Belgrade"
+    assert client.get("/api/v1/auth/me").json()["user"]["timezone"] == "Europe/Belgrade"
+
+    agent = db.get(User, agent_auth["user"]["id"])
+    assert agent is not None and agent.timezone == "Europe/Belgrade"
+    profile_event = db.scalar(
+        select(AuditEvent)
+        .where(
+            AuditEvent.actor_user_id == agent.id,
+            AuditEvent.event_type == "PROFILE_UPDATED",
+        )
+        .order_by(AuditEvent.id.desc())
+    )
+    assert profile_event is not None
+    assert profile_event.event_metadata["changed_fields"] == ["timezone"]
+
+    invalid = client.patch(
+        "/api/v1/auth/profile",
+        json={
+            "full_name": agent.full_name,
+            "email": agent.email,
+            "timezone": "Mars/Olympus_Mons",
+        },
+        headers=agent_headers,
+    )
+    assert invalid.status_code == 422
+    assert "Select a valid IANA timezone." in invalid.json()["detail"][0]["msg"]
+    db.refresh(agent)
+    assert agent.timezone == "Europe/Belgrade"
+
+    cleared = client.patch(
+        "/api/v1/auth/profile",
+        json={
+            "full_name": agent.full_name,
+            "email": agent.email,
+            "timezone": "",
+        },
+        headers=agent_headers,
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["user"]["timezone"] is None
+
+    manager_auth = login(client, "manager@demo.local")
+    manager_headers = {"X-CSRF-Token": manager_auth["csrf_token"]}
+    updated_manager = client.patch(
+        "/api/v1/auth/profile",
+        json={
+            "full_name": manager_auth["user"]["full_name"],
+            "email": manager_auth["user"]["email"],
+            "timezone": "UTC",
+        },
+        headers=manager_headers,
+    )
+    assert updated_manager.status_code == 200
+    assert updated_manager.json()["user"]["timezone"] == "UTC"
+
+    preserved = client.patch(
+        "/api/v1/auth/profile",
+        json={
+            "full_name": "Morgan Reed Updated",
+            "email": manager_auth["user"]["email"],
+        },
+        headers=manager_headers,
+    )
+    assert preserved.status_code == 200
+    assert preserved.json()["user"]["timezone"] == "UTC"
 
 
 def test_invalid_disabled_expired_and_revoked_sessions(

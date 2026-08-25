@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { type FormEvent, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 
+import { useCurrentUser } from '../app/auth'
 import {
   Badge,
   Button,
@@ -17,6 +18,7 @@ import {
 import { Avatar } from '../components/Avatar'
 import { formatDate } from '../lib/format'
 import { getCases } from '../lib/api'
+import { getEffectiveTimezone } from '../lib/timezone'
 import type { CaseLifecycle } from '../lib/types'
 
 const lifecycleOptions: Array<{
@@ -38,6 +40,7 @@ const lifecycleOptions: Array<{
 ]
 
 export function CasesPage() {
+  const auth = useCurrentUser()
   const [searchParams, setSearchParams] = useSearchParams()
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
@@ -287,7 +290,10 @@ export function CasesPage() {
                     )}
                   </td>
                   <td className="px-4 py-4 text-slate-600" data-label="Updated">
-                    {formatDate(item.updated_at)}
+                    {formatDate(
+                      item.updated_at,
+                      getEffectiveTimezone(auth.data?.user),
+                    )}
                   </td>
                 </tr>
               ))}

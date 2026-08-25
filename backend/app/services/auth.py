@@ -108,6 +108,7 @@ def update_profile(
     full_name: str,
     email: str,
     current_password: str | None,
+    timezone: str | None,
 ) -> User:
     normalized_email = normalize_email(email)
     email_changed = normalized_email != current.user.email
@@ -132,6 +133,9 @@ def update_profile(
     if email_changed:
         current.user.email = normalized_email
         changed_fields.append("email")
+    if current.user.timezone != timezone:
+        current.user.timezone = timezone
+        changed_fields.append("timezone")
     if not changed_fields:
         return current.user
 

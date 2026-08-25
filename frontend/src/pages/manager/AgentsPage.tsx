@@ -21,6 +21,7 @@ import {
 } from '../../lib/api'
 import { apiBaseUrl } from '../../lib/api-url'
 import { formatDateTime } from '../../lib/format'
+import { getEffectiveTimezone } from '../../lib/timezone'
 
 const emptyAgent = {
   full_name: '',
@@ -106,6 +107,7 @@ function AgentPhotoPreview({
 
 export function AgentsPage() {
   const auth = useCurrentUser()
+  const timezone = getEffectiveTimezone(auth.data?.user)
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
   const [showCreate, setShowCreate] = useState(false)
@@ -314,10 +316,7 @@ export function AgentsPage() {
                   {agent.gmail_connections} connected
                 </td>
                 <td className="px-4 py-4" data-label="Last login">
-                  {formatDateTime(
-                    agent.last_login_at,
-                    auth.data!.user.agency.timezone,
-                  )}
+                  {formatDateTime(agent.last_login_at, timezone)}
                 </td>
                 <td
                   className="px-4 py-4"

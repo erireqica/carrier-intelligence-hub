@@ -13,9 +13,11 @@ import {
 } from '../components/ui'
 import { formatDate } from '../lib/format'
 import { getReviews } from '../lib/api'
+import { getEffectiveTimezone } from '../lib/timezone'
 
 export function ReviewsPage() {
   const auth = useCurrentUser()
+  const timezone = getEffectiveTimezone(auth.data?.user)
   const isManager = auth.data?.user.role === 'MANAGER'
   const [view, setView] = useState<
     'ACTIONABLE' | 'RESOLVED' | 'DISMISSED' | 'ALL'
@@ -112,7 +114,7 @@ export function ReviewsPage() {
                     {item.issue_summary ?? item.reason}
                   </p>
                   <p className="mt-3 text-xs text-slate-500">
-                    Opened {formatDate(item.created_at)}
+                    Opened {formatDate(item.created_at, timezone)}
                     {isManager && item.assigned_reviewer
                       ? ` · Assigned to ${item.assigned_reviewer.full_name}`
                       : ''}

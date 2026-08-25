@@ -19,6 +19,7 @@ import {
   formatDate,
 } from '../lib/format'
 import { getAgents, getTasks, updateTask } from '../lib/api'
+import { getEffectiveTimezone } from '../lib/timezone'
 import type { TaskStatus } from '../lib/types'
 
 type TaskView =
@@ -38,6 +39,7 @@ function dueState(dueAt: string | null, status: TaskStatus, timezone: string) {
 
 export function TasksPage() {
   const auth = useCurrentUser()
+  const timezone = getEffectiveTimezone(auth.data?.user)
   const isManager = auth.data?.user.role === 'MANAGER'
   const queryClient = useQueryClient()
   const [view, setView] = useState<TaskView>('TODO')
@@ -195,13 +197,13 @@ export function TasksPage() {
                     {task.is_manual && task.created_by && (
                       <p className="mt-1.5 text-xs font-normal text-slate-500">
                         Added manually by {task.created_by.full_name} ·{' '}
-                        {formatDate(task.created_at)}
+                        {formatDate(task.created_at, timezone)}
                       </p>
                     )}
                     {task.completed_by && task.completed_at && (
                       <p className="mt-1 text-xs font-normal text-emerald-700">
                         Completed by {task.completed_by.full_name} ·{' '}
-                        {formatDate(task.completed_at)}
+                        {formatDate(task.completed_at, timezone)}
                       </p>
                     )}
                   </td>
@@ -226,11 +228,7 @@ export function TasksPage() {
                   <td className="px-4 py-4" data-label="Due">
                     {formatBusinessDate(task.due_at)}
                     <div className="mt-1">
-                      {dueState(
-                        task.due_at,
-                        task.status,
-                        auth.data!.user.agency.timezone,
-                      )}
+                      {dueState(task.due_at, task.status, timezone)}
                     </div>
                   </td>
                   <td className="px-4 py-4" data-label="Status">

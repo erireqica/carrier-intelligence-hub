@@ -13,8 +13,10 @@ vi.mock('../lib/api', () => ({ getActivity: vi.fn() }))
 
 describe('ActivityPage', () => {
   it('shows only self-scoped human-readable activity without actor controls', async () => {
+    const auth = authFixture('AGENT')
+    auth.user.timezone = 'Pacific/Auckland'
     vi.mocked(useCurrentUser).mockReturnValue({
-      data: authFixture('AGENT'),
+      data: auth,
     } as ReturnType<typeof useCurrentUser>)
     vi.mocked(getActivity).mockResolvedValue({
       items: [
@@ -34,7 +36,7 @@ describe('ActivityPage', () => {
           review_id: null,
           review_label: null,
           metadata: {},
-          created_at: '2026-08-20T10:00:00Z',
+          created_at: '2026-08-20T23:30:00Z',
         },
       ],
       page: { page: 1, page_size: 25, total: 26, pages: 2 },
@@ -66,5 +68,6 @@ describe('ActivityPage', () => {
     expect(caseLink).toHaveAttribute('href', '/cases/4')
     expect(caseLink).toHaveClass('text-sm')
     expect(screen.getByLabelText('Go to page')).toHaveValue(1)
+    expect(screen.getByText('Friday, August 21, 2026')).toBeInTheDocument()
   })
 })

@@ -13,6 +13,7 @@ import {
 } from '../../components/ui'
 import { getAgents, getAuditLogs } from '../../lib/api'
 import { formatDateTime } from '../../lib/format'
+import { getEffectiveTimezone } from '../../lib/timezone'
 import type { AuditLog } from '../../lib/types'
 
 const categories = [
@@ -105,7 +106,7 @@ export function SystemLogsPage() {
       <ErrorState message={logs.error.message} retry={() => logs.refetch()} />
     )
   const resetPage = () => setPage(1)
-  const timezone = auth.data!.user.agency.timezone
+  const timezone = getEffectiveTimezone(auth.data?.user)
   return (
     <div className="app-page space-y-6">
       <PageHeader

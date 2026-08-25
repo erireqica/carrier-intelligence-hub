@@ -50,6 +50,7 @@ export type AuthResponse = {
     role: Role
     is_active: boolean
     last_login_at: string | null
+    timezone: string | null
     avatar_url?: string | null
     agency: { id: number; name: string; timezone: string }
   }

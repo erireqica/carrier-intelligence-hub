@@ -29,6 +29,7 @@ import {
 } from '../components/ui'
 import { formatBusinessDate, formatDate } from '../lib/format'
 import { evidenceSourceLabel, humanFieldLabel } from '../lib/humanize'
+import { getEffectiveTimezone } from '../lib/timezone'
 import {
   assignCase,
   completeCase,
@@ -394,6 +395,7 @@ export function CaseDetailPage() {
   const { caseId = '' } = useParams()
   const queryClient = useQueryClient()
   const auth = useCurrentUser()
+  const timezone = getEffectiveTimezone(auth.data?.user)
   const isManager = auth.data?.user.role === 'MANAGER'
   const [correcting, setCorrecting] = useState(false)
   const [addingTask, setAddingTask] = useState(false)
@@ -652,8 +654,8 @@ export function CaseDetailPage() {
             <p className="font-semibold">Case completed</p>
             <p className="mt-1 text-emerald-800">
               {item.completed_by
-                ? `Completed by ${item.completed_by.full_name} · ${formatDate(item.completed_at)}`
-                : `Completed ${formatDate(item.completed_at)}`}
+                ? `Completed by ${item.completed_by.full_name} · ${formatDate(item.completed_at, timezone)}`
+                : `Completed ${formatDate(item.completed_at, timezone)}`}
             </p>
           </div>
         </div>
@@ -857,13 +859,13 @@ export function CaseDetailPage() {
                     {task.is_manual && task.created_by && (
                       <p className="mt-2 text-xs text-slate-500">
                         Added manually by {task.created_by.full_name} ·{' '}
-                        {formatDate(task.created_at)}
+                        {formatDate(task.created_at, timezone)}
                       </p>
                     )}
                     {task.completed_by && task.completed_at && (
                       <p className="mt-1 text-xs text-emerald-700">
                         Completed by {task.completed_by.full_name} ·{' '}
-                        {formatDate(task.completed_at)}
+                        {formatDate(task.completed_at, timezone)}
                       </p>
                     )}
                   </div>
@@ -941,7 +943,8 @@ export function CaseDetailPage() {
                   </div>
                   <h3 className="mt-3 font-semibold">{message.subject}</h3>
                   <p className="mt-1 text-xs text-slate-500">
-                    From {message.sender} · {formatDate(message.received_at)}
+                    From {message.sender} ·{' '}
+                    {formatDate(message.received_at, timezone)}
                   </p>
                   <p className="mt-3 text-xs font-semibold tracking-wide text-slate-500 uppercase">
                     AI analysis
@@ -1122,7 +1125,7 @@ export function CaseDetailPage() {
                   <span className="absolute top-4 -left-1 h-2 w-2 rounded-full bg-blue-600 ring-4 ring-blue-50" />
                   <p className="text-sm font-medium">{event.description}</p>
                   <p className="mt-1 text-xs text-slate-500">
-                    {formatDate(event.created_at)}
+                    {formatDate(event.created_at, timezone)}
                   </p>
                 </div>
               ))}

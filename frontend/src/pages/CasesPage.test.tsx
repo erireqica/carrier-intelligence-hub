@@ -3,14 +3,16 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
-import { getCases } from '../lib/api'
+import { getCases, getMe } from '../lib/api'
+import { authFixture } from '../test/fixtures'
 import { CasesPage } from './CasesPage'
 
-vi.mock('../lib/api', () => ({ getCases: vi.fn() }))
+vi.mock('../lib/api', () => ({ getCases: vi.fn(), getMe: vi.fn() }))
 const mockedGetCases = vi.mocked(getCases)
 
 describe('CasesPage lifecycle filtering', () => {
   it('defaults to Active and switches to mutually exclusive lifecycle categories', async () => {
+    vi.mocked(getMe).mockResolvedValue(authFixture('AGENT'))
     mockedGetCases.mockResolvedValue({
       items: [],
       page: { page: 1, page_size: 20, total: 0, pages: 1 },
@@ -72,6 +74,7 @@ describe('CasesPage lifecycle filtering', () => {
   })
 
   it('resets page one when switching lifecycle and renders completed history distinctly', async () => {
+    vi.mocked(getMe).mockResolvedValue(authFixture('AGENT'))
     mockedGetCases.mockResolvedValue({
       items: [
         {

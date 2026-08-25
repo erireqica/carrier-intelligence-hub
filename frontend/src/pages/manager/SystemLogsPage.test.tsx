@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useCurrentUser } from '../../app/auth'
 import { getAgents, getAuditLogs } from '../../lib/api'
+import { formatDateTime } from '../../lib/format'
 import { authFixture } from '../../test/fixtures'
 import { SystemLogsPage } from './SystemLogsPage'
 
@@ -27,8 +28,10 @@ function renderPage() {
 describe('SystemLogsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    const manager = authFixture('MANAGER')
+    manager.user.timezone = 'Pacific/Auckland'
     vi.mocked(useCurrentUser).mockReturnValue({
-      data: authFixture('MANAGER'),
+      data: manager,
     } as ReturnType<typeof useCurrentUser>)
     vi.mocked(getAgents).mockResolvedValue([
       {
@@ -61,7 +64,7 @@ describe('SystemLogsPage', () => {
           review_id: 7,
           review_label: 'Review Low Confidence',
           metadata: {},
-          created_at: '2026-08-20T10:30:00Z',
+          created_at: '2026-08-20T23:30:00Z',
         },
       ],
       page: {
@@ -180,5 +183,10 @@ describe('SystemLogsPage', () => {
     expect(
       screen.getAllByRole('link', { name: 'Review Low Confidence' })[0],
     ).toHaveAttribute('href', '/reviews/7')
+    expect(
+      screen.getAllByText(
+        formatDateTime('2026-08-20T23:30:00Z', 'Pacific/Auckland'),
+      ),
+    ).not.toHaveLength(0)
   })
 })

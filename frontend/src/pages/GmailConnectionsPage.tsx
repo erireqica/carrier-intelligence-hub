@@ -15,6 +15,7 @@ import {
   StatusBadge,
 } from '../components/ui'
 import { formatDate } from '../lib/format'
+import { getEffectiveTimezone } from '../lib/timezone'
 import {
   disconnectGmailConnection,
   getGmailConnections,
@@ -64,7 +65,13 @@ const labelSyncText: Record<string, string> = {
   FAILED: 'Labels need attention',
 }
 
-function RecentMessages({ connectionId }: { connectionId: number }) {
+function RecentMessages({
+  connectionId,
+  timezone,
+}: {
+  connectionId: number
+  timezone: string
+}) {
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
   const messages = useQuery({
@@ -136,7 +143,7 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
                   {message.subject}
                 </td>
                 <td className="px-3 py-3" data-label="Received">
-                  {formatDate(message.received_at)}
+                  {formatDate(message.received_at, timezone)}
                 </td>
                 <td className="px-3 py-3" data-label="Carrier">
                   {message.carrier.name}
@@ -287,9 +294,11 @@ function RecentMessages({ connectionId }: { connectionId: number }) {
 function ConnectionCard({
   connection,
   isManager,
+  timezone,
 }: {
   connection: GmailConnection
   isManager: boolean
+  timezone: string
 }) {
   const queryClient = useQueryClient()
   const [syncResult, setSyncResult] = useState<GmailSyncResult | null>(null)
@@ -344,7 +353,7 @@ function ConnectionCard({
               </div>
             ) : (
               <p className="mt-1 text-sm text-slate-500">
-                Connected {formatDate(connection.connected_at)}
+                Connected {formatDate(connection.connected_at, timezone)}
               </p>
             )}
           </div>
@@ -411,13 +420,13 @@ function ConnectionCard({
         <div>
           <dt className="text-slate-500">Last successful sync</dt>
           <dd className="mt-1 font-medium">
-            {formatDate(connection.last_successful_sync_at)}
+            {formatDate(connection.last_successful_sync_at, timezone)}
           </dd>
         </div>
         <div>
           <dt className="text-slate-500">Last sync attempt</dt>
           <dd className="mt-1 font-medium">
-            {formatDate(connection.last_attempted_sync_at)}
+            {formatDate(connection.last_attempted_sync_at, timezone)}
           </dd>
         </div>
       </dl>
@@ -466,7 +475,9 @@ function ConnectionCard({
         <summary className="cursor-pointer text-sm font-semibold text-slate-700">
           Ingested carrier messages
         </summary>
-        {messagesOpen && <RecentMessages connectionId={connection.id} />}
+        {messagesOpen && (
+          <RecentMessages connectionId={connection.id} timezone={timezone} />
+        )}
       </details>
     </article>
   )
@@ -499,6 +510,7 @@ export function GmailConnectionsPage() {
     )
   const feedback = oauthResult ? oauthMessages[oauthResult] : null
   const isManager = auth.data!.user.role === 'MANAGER'
+  const timezone = getEffectiveTimezone(auth.data?.user)
   const activeConnections = connections.data.connections.filter(
     (connection) => connection.status !== 'DISCONNECTED',
   )
@@ -563,6 +575,7 @@ export function GmailConnectionsPage() {
               key={connection.id}
               connection={connection}
               isManager={isManager}
+              timezone={timezone}
             />
           ))}
         </div>

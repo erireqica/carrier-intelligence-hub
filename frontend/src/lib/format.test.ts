@@ -22,4 +22,11 @@ describe('business date formatting', () => {
     }).format(new Date(timestamp))
     expect(formatDate(timestamp)).toBe(expected)
   })
+
+  it('formats timestamp dates in an explicit display timezone', () => {
+    const timestamp = '2026-08-20T23:30:00Z'
+    expect(formatDate(timestamp, 'Pacific/Auckland')).not.toBe(
+      formatDate(timestamp, 'America/Chicago'),
+    )
+  })
 })
