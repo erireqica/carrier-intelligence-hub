@@ -51,6 +51,17 @@ describe('AnalyticsPage', () => {
     expect(
       await screen.findByText('Carrier AI performance'),
     ).toBeInTheDocument()
+    expect(screen.getByText('Successful automation')).toBeInTheDocument()
+    expect(screen.getByLabelText('auto-processed: 50')).toBeInTheDocument()
+    expect(
+      screen.getByText('Of successfully processed messages'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('12.5s')).toBeInTheDocument()
+    expect(
+      screen.getByText('Analysis start to processed · normal completed cycles'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Auto-processed')).toBeInTheDocument()
+    expect(screen.queryByText('Automated')).not.toBeInTheDocument()
     expect(screen.getByText('Message classifications')).toBeInTheDocument()
     expect(screen.queryByText('Open workload by agent')).not.toBeInTheDocument()
     expect(screen.queryByText('Open tasks')).not.toBeInTheDocument()
@@ -69,7 +80,7 @@ describe('AnalyticsPage', () => {
       automation_rate: 100,
       review_rate: 0,
       failure_rate: 0,
-      average_processing_seconds: 10,
+      average_processing_seconds: null,
       pdf_extraction_success_rate: null,
       outcomes: [],
       volume_trend: volumeTrend,
@@ -94,6 +105,7 @@ describe('AnalyticsPage', () => {
     expect(
       await screen.findByText('Carrier AI performance'),
     ).toBeInTheDocument()
+    expect(screen.getByText('No timing data')).toBeInTheDocument()
     const ticks = screen.getAllByTestId('volume-axis-label')
     expect(ticks).toHaveLength(7)
     expect(ticks.map((tick) => tick.textContent)).toEqual([

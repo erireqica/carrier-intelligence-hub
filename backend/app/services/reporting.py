@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -20,6 +20,7 @@ from app.api.schemas.domain import (
     DashboardResponse,
     WorkloadItem,
 )
+from app.core.config import get_settings
 from app.core.time import utc_now
 from app.models.audit import AuditEvent
 from app.models.enums import (
@@ -557,14 +558,32 @@ def analytics(
     failures = [
         message for message in handled if message.processing_status is ProcessingStatus.FAILED
     ]
-    durations = [
-        (message.processed_at - message.processing_started_at).total_seconds()
-        for message in messages
-        if message.processing_status is ProcessingStatus.PROCESSED
-        and message.processing_started_at is not None
-        and message.processed_at is not None
-        and message.processed_at >= message.processing_started_at
-    ]
+    processing_starts: dict[int, list[datetime]] = defaultdict(list)
+    if message_ids:
+        start_events = db.execute(
+            select(AuditEvent.carrier_message_id, AuditEvent.created_at).where(
+                AuditEvent.agency_id == current.user.agency_id,
+                AuditEvent.carrier_message_id.in_(message_ids),
+                AuditEvent.event_type == "MESSAGE_PROCESSING_STARTED",
+            )
+        ).all()
+        for carrier_message_id, started_at in start_events:
+            if carrier_message_id is not None:
+                processing_starts[carrier_message_id].append(started_at)
+    durations = []
+    max_duration = get_settings().message_process_stale_after_seconds
+    for message in successful:
+        if message.processed_at is None:
+            continue
+        valid_starts = [
+            started_at
+            for started_at in processing_starts[message.id]
+            if started_at <= message.processed_at
+        ]
+        if valid_starts:
+            duration = (message.processed_at - max(valid_starts)).total_seconds()
+            if duration <= max_duration:
+                durations.append(duration)
 
     outcomes = Counter()
     for message in messages:

@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.time import utc_now
 from app.models.audit import AuditEvent
 from app.models.carriers import Carrier, CarrierDomain, CarrierSender
@@ -205,7 +206,6 @@ def test_manager_analytics_uses_distinct_reviews_processing_times_and_pdf_status
             processing_status=status,
             raw_content="raw",
             cleaned_content="clean",
-            processing_started_at=now - timedelta(minutes=10) if index < 2 else None,
             processed_at=now - timedelta(minutes=10) + timedelta(seconds=10 + index * 10)
             if index < 2
             else None,
@@ -213,6 +213,18 @@ def test_manager_analytics_uses_distinct_reviews_processing_times_and_pdf_status
         db.add(message)
         db.flush()
         messages.append(message)
+    for message in messages[:2]:
+        db.add(
+            AuditEvent(
+                agency_id=carrier.agency_id,
+                carrier_message_id=message.id,
+                event_type="MESSAGE_PROCESSING_STARTED",
+                severity="INFO",
+                description="Synthetic processing start.",
+                event_metadata={},
+                created_at=now - timedelta(minutes=10),
+            )
+        )
     for message, status in zip(
         messages[1:3],
         (ReviewStatus.RESOLVED, ReviewStatus.DISMISSED),
@@ -306,6 +318,65 @@ def test_manager_analytics_uses_distinct_reviews_processing_times_and_pdf_status
     assert empty["failure_rate"] is None
     assert empty["average_processing_seconds"] is None
     assert empty["pdf_extraction_success_rate"] is None
+
+
+def test_manager_analytics_uses_latest_valid_processing_start_audit_event(
+    client: TestClient, db: Session, login
+) -> None:
+    db.query(CarrierMessage).update({CarrierMessage.received_at: datetime(2020, 1, 1, tzinfo=UTC)})
+    carrier = db.scalar(select(Carrier).order_by(Carrier.id))
+    assert carrier is not None
+    now = utc_now()
+    stale_after = get_settings().message_process_stale_after_seconds
+    messages = []
+    for index in range(5):
+        message = CarrierMessage(
+            agency_id=carrier.agency_id,
+            carrier_id=carrier.id,
+            sender="timing@carrier.example",
+            subject=f"Timing {index}",
+            received_at=now,
+            classification="POLICY_ISSUED",
+            summary="Handled",
+            priority="NORMAL",
+            processing_status=ProcessingStatus.PROCESSED,
+            raw_content="raw",
+            cleaned_content="clean",
+            processed_at=now,
+        )
+        db.add(message)
+        db.flush()
+        messages.append(message)
+
+    starts = [
+        (messages[0], now - timedelta(seconds=10)),
+        (messages[1], now - timedelta(seconds=stale_after + 20)),
+        (messages[1], now - timedelta(seconds=stale_after)),
+        (messages[1], now + timedelta(seconds=2)),
+        (messages[2], now - timedelta(seconds=stale_after + 1)),
+        (messages[4], now + timedelta(seconds=1)),
+    ]
+    db.add_all(
+        [
+            AuditEvent(
+                agency_id=carrier.agency_id,
+                carrier_message_id=message.id,
+                event_type="MESSAGE_PROCESSING_STARTED",
+                severity="INFO",
+                description="Synthetic processing start.",
+                event_metadata={},
+                created_at=started_at,
+            )
+            for message, started_at in starts
+        ]
+    )
+    db.commit()
+
+    login(client, "manager@demo.local")
+    response = client.get("/api/v1/manager/analytics?range=7d")
+
+    assert response.status_code == 200
+    assert response.json()["average_processing_seconds"] == round((10 + stale_after) / 2, 1)
 
 
 def test_role_authorization_case_and_task_scoping(client: TestClient, db: Session, login) -> None:

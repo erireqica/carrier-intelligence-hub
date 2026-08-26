@@ -99,11 +99,17 @@ export function AnalyticsPage() {
           <div className="absolute top-6 right-8 h-24 w-24 rounded-full border border-blue-300/10" />
           <div className="relative">
             <div className="flex items-center gap-2 text-xs font-bold tracking-[0.16em] text-blue-200 uppercase">
-              <Gauge className="h-4 w-4" aria-hidden /> Automation performance
+              <Gauge className="h-4 w-4" aria-hidden /> Successful automation
             </div>
             <div className="mt-7 flex flex-wrap items-center gap-8">
-              <ProgressRing value={data.automation_rate} label="automated" />
+              <ProgressRing
+                value={data.automation_rate}
+                label="auto-processed"
+              />
               <div className="max-w-md">
+                <p className="text-xs font-semibold tracking-wide text-blue-200 uppercase">
+                  Of successfully processed messages
+                </p>
                 <p className="text-2xl font-semibold tracking-tight sm:text-3xl">
                   {data.carrier_messages} carrier communications
                 </p>
@@ -126,9 +132,9 @@ export function AnalyticsPage() {
             [
               'Average cycle',
               data.average_processing_seconds === null
-                ? '—'
+                ? 'No timing data'
                 : `${data.average_processing_seconds}s`,
-              'Ingestion to outcome',
+              'Analysis start to processed · normal completed cycles',
             ],
           ].map(([label, value, note]) => (
             <div
@@ -308,7 +314,7 @@ export function AnalyticsPage() {
                   {[
                     'Carrier',
                     'Messages',
-                    'Automated',
+                    'Auto-processed',
                     'Review',
                     'Failure',
                   ].map((label) => (
