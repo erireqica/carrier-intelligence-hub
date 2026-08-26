@@ -98,6 +98,8 @@ export type TaskItem = {
   is_manual: boolean
   created_by: AgentBrief | null
   completed_by: AgentBrief | null
+  dismissed_at?: string | null
+  dismissed_by?: AgentBrief | null
 }
 
 export type ManualTaskInput = {

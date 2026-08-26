@@ -387,6 +387,12 @@ def test_role_authorization_case_and_task_scoping(client: TestClient, db: Sessio
     assert cases.status_code == 200
     names = {item["client_name"] for item in cases.json()["items"]}
     assert names == {"John Doe", "Robert Johnson"}
+    other_agent = db.scalar(select(User).where(User.email == "agent.two@demo.local"))
+    assert other_agent is not None
+    agent_cannot_expand_scope = client.get(
+        f"/api/v1/cases?page_size=100&assigned_agent_id={other_agent.id}"
+    )
+    assert {item["client_name"] for item in agent_cannot_expand_scope.json()["items"]} == names
     mary = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "Mary Smith"))
     assert mary is not None
     assert client.get(f"/api/v1/cases/{mary.id}").status_code == 404
@@ -442,6 +448,22 @@ def test_role_authorization_case_and_task_scoping(client: TestClient, db: Sessio
     manager_auth = login(client, "manager@demo.local")
     assert client.get("/api/v1/manager/agents").status_code == 200
     assert client.get("/api/v1/cases").json()["page"]["total"] == 3
+    manager_agent_filter = client.get(
+        f"/api/v1/cases?page_size=100&assigned_agent_id={other_agent.id}&lifecycle=ACTIVE"
+    )
+    assert manager_agent_filter.status_code == 200
+    assert manager_agent_filter.json()["items"]
+    assert {item["assigned_agent"]["id"] for item in manager_agent_filter.json()["items"]} == {
+        other_agent.id
+    }
+    for lifecycle in ("COMPLETED", "DISMISSED"):
+        response = client.get(
+            f"/api/v1/cases?page_size=100&assigned_agent_id={other_agent.id}&lifecycle={lifecycle}"
+        )
+        assert response.status_code == 200
+        assert all(
+            item["assigned_agent"]["id"] == other_agent.id for item in response.json()["items"]
+        )
     analytics = client.get("/api/v1/manager/analytics")
     assert analytics.status_code == 200
     assert analytics.json()["range"] == "30d"
@@ -642,7 +664,7 @@ def test_case_completion_lifecycle_enforces_work_authorization_and_history(
     )
     assert reassigned.status_code == 200
     db.refresh(open_task)
-    assert open_task.assigned_agent_id == assignee.id
+    assert open_task.assigned_agent_id == other_agent.id
     assert reassigned.json()["completed_by"]["id"] == assignee.id
     assert (
         client.patch(
@@ -1395,7 +1417,7 @@ def test_task_patch_validation_and_change_specific_audits(
     }
 
 
-def test_manager_assigns_case_and_active_work_to_an_active_agent(
+def test_manager_assigns_case_tasks_and_active_reviews_to_an_active_agent(
     client: TestClient, db: Session, login
 ) -> None:
     case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "Mary Smith"))
@@ -1521,7 +1543,7 @@ def test_manager_assigns_case_and_active_work_to_an_active_agent(
     )
     assert active_review.assigned_reviewer_id == target.id
     assert message.case_id == case.id
-    assert terminal_task.assigned_agent_id == original.id
+    assert terminal_task.assigned_agent_id == target.id
     assert terminal_review.assigned_reviewer_id == original.id
     event = db.scalar(
         select(AuditEvent).where(
@@ -1554,6 +1576,129 @@ def test_manager_assigns_case_and_active_work_to_an_active_agent(
         headers={"X-CSRF-Token": agent_auth["csrf_token"]},
     )
     assert forbidden.status_code == 403
+
+
+def test_terminal_tasks_follow_case_ownership_without_losing_attribution(
+    client: TestClient, db: Session, login
+) -> None:
+    policy_case = db.scalar(select(PolicyCase).where(PolicyCase.client_name == "John Doe"))
+    assert policy_case is not None and policy_case.assigned_agent_id is not None
+    original = db.get(User, policy_case.assigned_agent_id)
+    target = db.scalar(
+        select(User).where(
+            User.agency_id == policy_case.agency_id,
+            User.role == UserRole.AGENT,
+            User.id != policy_case.assigned_agent_id,
+        )
+    )
+    assert original is not None and target is not None
+    completed_task = Task(
+        agency_id=policy_case.agency_id,
+        case_id=policy_case.id,
+        assigned_agent_id=original.id,
+        title="Completed before handoff",
+        priority=Priority.NORMAL,
+        status=TaskStatus.OPEN,
+    )
+    dismissed_task = Task(
+        agency_id=policy_case.agency_id,
+        case_id=policy_case.id,
+        assigned_agent_id=original.id,
+        title="Dismissed before handoff",
+        priority=Priority.NORMAL,
+        status=TaskStatus.OPEN,
+    )
+    active_task = Task(
+        agency_id=policy_case.agency_id,
+        case_id=policy_case.id,
+        assigned_agent_id=original.id,
+        title="Active during handoff",
+        priority=Priority.NORMAL,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    db.add_all([completed_task, dismissed_task, active_task])
+    db.commit()
+
+    original_auth = login(client, original.email)
+    original_headers = {"X-CSRF-Token": original_auth["csrf_token"]}
+    completed = client.patch(
+        f"/api/v1/tasks/{completed_task.id}",
+        json={"status": "COMPLETED"},
+        headers=original_headers,
+    )
+    dismissed = client.patch(
+        f"/api/v1/tasks/{dismissed_task.id}",
+        json={"status": "DISMISSED"},
+        headers=original_headers,
+    )
+    assert completed.status_code == dismissed.status_code == 200
+    assert completed.json()["completed_by"]["id"] == original.id
+    assert dismissed.json()["dismissed_by"]["id"] == original.id
+    assert dismissed.json()["dismissed_at"] is not None
+
+    manager = login(client, "manager@demo.local")
+    reassigned = client.patch(
+        f"/api/v1/cases/{policy_case.id}/assignment",
+        json={"assigned_agent_id": target.id},
+        headers={"X-CSRF-Token": manager["csrf_token"]},
+    )
+    assert reassigned.status_code == 200
+    detail_tasks = {item["id"]: item for item in reassigned.json()["tasks"]}
+    assert detail_tasks[completed_task.id]["assigned_agent"]["id"] == target.id
+    assert detail_tasks[completed_task.id]["completed_by"]["id"] == original.id
+    assert detail_tasks[dismissed_task.id]["assigned_agent"]["id"] == target.id
+    assert detail_tasks[dismissed_task.id]["dismissed_by"]["id"] == original.id
+    assert detail_tasks[active_task.id]["assigned_agent"]["id"] == target.id
+
+    old_auth = login(client, original.email)
+    old_owner_denied = client.patch(
+        f"/api/v1/tasks/{completed_task.id}",
+        json={"status": "OPEN"},
+        headers={"X-CSRF-Token": old_auth["csrf_token"]},
+    )
+    assert old_owner_denied.status_code == 404
+
+    target_auth = login(client, target.email)
+    target_headers = {"X-CSRF-Token": target_auth["csrf_token"]}
+    reopened_completed = client.patch(
+        f"/api/v1/tasks/{completed_task.id}",
+        json={"status": "OPEN"},
+        headers=target_headers,
+    )
+    reopened_dismissed = client.patch(
+        f"/api/v1/tasks/{dismissed_task.id}",
+        json={"status": "OPEN"},
+        headers=target_headers,
+    )
+    assert reopened_completed.status_code == reopened_dismissed.status_code == 200
+    assert reopened_completed.json()["completed_by"] is None
+    assert reopened_completed.json()["completed_at"] is None
+    assert reopened_dismissed.json()["dismissed_by"] is None
+    assert reopened_dismissed.json()["dismissed_at"] is None
+
+    target_completed = client.patch(
+        f"/api/v1/tasks/{completed_task.id}",
+        json={"status": "COMPLETED"},
+        headers=target_headers,
+    )
+    target_dismissed = client.patch(
+        f"/api/v1/tasks/{dismissed_task.id}",
+        json={"status": "DISMISSED"},
+        headers=target_headers,
+    )
+    assert target_completed.json()["completed_by"]["id"] == target.id
+    assert target_dismissed.json()["dismissed_by"]["id"] == target.id
+
+    policy_case.completed_at = utc_now()
+    policy_case.completed_by_user_id = target.id
+    db.commit()
+    blocked_by_completed_case = client.patch(
+        f"/api/v1/tasks/{completed_task.id}",
+        json={"status": "OPEN"},
+        headers=target_headers,
+    )
+    assert blocked_by_completed_case.status_code == 409
+    assert "Reopen this case" in blocked_by_completed_case.json()["detail"]
 
 
 def test_manual_task_creation_rbac_attribution_and_reassignment(
@@ -1675,7 +1820,7 @@ def test_manual_task_creation_rbac_attribution_and_reassignment(
     assert terminal_task is not None
     assert manual_task.assigned_agent_id == target.id
     assert manual_task.created_by_user_id == creator.id
-    assert terminal_task.assigned_agent_id == creator.id
+    assert terminal_task.assigned_agent_id == target.id
     assert terminal_task.created_by_user_id == creator.id
     assert terminal_task.completed_by_user_id == creator.id
 
@@ -1684,12 +1829,13 @@ def test_manual_task_creation_rbac_attribution_and_reassignment(
     target_manual = next(item for item in target_detail["tasks"] if item["id"] == manual_task.id)
     assert target_manual["assigned_agent"]["id"] == target.id
     assert target_manual["created_by"]["id"] == creator.id
-    inaccessible_terminal = client.patch(
+    accessible_terminal = client.patch(
         f"/api/v1/tasks/{terminal_task.id}",
         json={"status": "OPEN"},
         headers={"X-CSRF-Token": target_auth["csrf_token"]},
     )
-    assert inaccessible_terminal.status_code == 404
+    assert accessible_terminal.status_code == 200
+    assert accessible_terminal.json()["completed_by"] is None
 
 
 def test_analytics_does_not_duplicate_agent_workload(

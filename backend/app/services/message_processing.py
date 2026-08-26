@@ -87,6 +87,7 @@ class ProcessingResult:
 class OperationalOwnershipReconciliation:
     previous_assignee_id: int | None
     active_tasks_reassigned: int
+    terminal_tasks_reassigned: int
     active_reviews_reassigned: int
     source_messages_linked: int
     ownership_conflicts_reconciled: int
@@ -998,6 +999,7 @@ def _reconcile_case_owner(
             "former_owner_id": former_owner_id,
             "new_owner_id": connection.user_id,
             "active_tasks_transferred": ownership.active_tasks_reassigned,
+            "terminal_tasks_transferred": ownership.terminal_tasks_reassigned,
             "active_reviews_transferred": ownership.active_reviews_reassigned,
             "source_messages_linked": ownership.source_messages_linked,
             "ownership_conflicts_reconciled": ownership.ownership_conflicts_reconciled,
@@ -1597,14 +1599,9 @@ def reconcile_case_operational_ownership(
     assignment_source: CaseAssignmentSource,
     actor_user_id: int | None,
 ) -> OperationalOwnershipReconciliation:
-    """Move all active Case work together and repair safely recoverable associations."""
+    """Align all Task ownership and active Review ownership with the Case."""
     previous_assignee_id = case.assigned_agent_id
-    active_tasks = db.scalars(
-        select(Task).where(
-            Task.case_id == case.id,
-            Task.status.in_([TaskStatus.OPEN, TaskStatus.IN_PROGRESS]),
-        )
-    ).all()
+    tasks = db.scalars(select(Task).where(Task.case_id == case.id)).all()
     active_reviews = db.scalars(
         select(ReviewItem)
         .where(
@@ -1617,12 +1614,16 @@ def reconcile_case_operational_ownership(
     case.assigned_agent_id = assigned_agent_id
     case.assignment_source = assignment_source
     tasks_reassigned = 0
+    terminal_tasks_reassigned = 0
     reviews_reassigned = 0
     messages_linked = 0
-    for task in active_tasks:
+    for task in tasks:
         if task.assigned_agent_id != assigned_agent_id:
             task.assigned_agent_id = assigned_agent_id
-            tasks_reassigned += 1
+            if task.status in {TaskStatus.OPEN, TaskStatus.IN_PROGRESS}:
+                tasks_reassigned += 1
+            else:
+                terminal_tasks_reassigned += 1
     for review in active_reviews:
         if review.assigned_reviewer_id != assigned_agent_id:
             review.assigned_reviewer_id = assigned_agent_id
@@ -1644,6 +1645,7 @@ def reconcile_case_operational_ownership(
     return OperationalOwnershipReconciliation(
         previous_assignee_id=previous_assignee_id,
         active_tasks_reassigned=tasks_reassigned,
+        terminal_tasks_reassigned=terminal_tasks_reassigned,
         active_reviews_reassigned=reviews_reassigned,
         source_messages_linked=messages_linked,
         ownership_conflicts_reconciled=ownership_conflicts,

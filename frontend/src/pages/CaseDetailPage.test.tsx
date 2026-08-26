@@ -718,4 +718,97 @@ describe('CaseDetailPage carrier messages', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reopen case' }))
     await waitFor(() => expect(reopenCase).toHaveBeenCalledWith(5))
   })
+
+  it('confirms before changing another Agent dismissed decision on Case Detail', async () => {
+    const auth = authFixture('AGENT')
+    const dismissedTask = {
+      id: 61,
+      case_id: 6,
+      client_name: 'Handoff Client',
+      policy_number: 'HANDOFF-6',
+      title: 'Dismissed before reassignment',
+      description: 'Historical terminal decision.',
+      priority: 'NORMAL' as const,
+      due_at: null,
+      status: 'DISMISSED' as const,
+      created_at: '2026-08-22T10:00:00Z',
+      completed_at: null,
+      dismissed_at: '2026-08-22T11:00:00Z',
+      assigned_agent: auth.user,
+      is_manual: false,
+      created_by: null,
+      completed_by: null,
+      dismissed_by: {
+        id: 3,
+        full_name: 'Marcus Lee',
+        email: 'agent.two@demo.local',
+      },
+    }
+    const item = {
+      id: 6,
+      client_name: 'Handoff Client',
+      policy_number: 'HANDOFF-6',
+      policy_status: 'ACTIVE' as const,
+      priority: 'NORMAL' as const,
+      summary: 'Case reassigned after a prior decision.',
+      deadline: null,
+      updated_at: '2026-08-22T12:00:00Z',
+      carrier: { id: 1, name: 'Americo', code: 'AMR' },
+      assigned_agent: auth.user,
+      needs_review: false,
+      dismissed_at: null,
+      completed_at: null,
+      can_manage_lifecycle: true,
+      completed_by: null,
+      can_complete: true,
+      can_reopen: false,
+      completion_blockers: [],
+      premium_amount: null,
+      currency: null,
+      effective_date: null,
+      messages: [],
+      attachments: [],
+      tasks: [dismissedTask],
+      evidence: [],
+      activity: [],
+    }
+    vi.mocked(getMe).mockResolvedValue(auth)
+    vi.mocked(getCase).mockResolvedValue(item)
+    vi.mocked(updateTask).mockResolvedValue({
+      ...dismissedTask,
+      status: 'OPEN',
+      dismissed_at: null,
+      dismissed_by: null,
+    })
+    const confirmation = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/cases/6']}>
+          <Routes>
+            <Route path="/cases/:caseId" element={<CaseDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Show dismissed (1)' }),
+    )
+    expect(screen.getByText(/Dismissed by Marcus Lee/)).toBeInTheDocument()
+    const status = screen.getByLabelText('Update Dismissed before reassignment')
+    fireEvent.change(status, { target: { value: 'OPEN' } })
+    expect(confirmation).toHaveBeenCalledWith(
+      "Are you sure you want to change this task's status? It was marked Dismissed by Marcus Lee.",
+    )
+    expect(updateTask).not.toHaveBeenCalled()
+    expect(status).toHaveValue('DISMISSED')
+
+    confirmation.mockReturnValue(true)
+    fireEvent.change(status, { target: { value: 'OPEN' } })
+    await waitFor(() => expect(updateTask).toHaveBeenCalledWith(61, 'OPEN'))
+    confirmation.mockRestore()
+  })
 })

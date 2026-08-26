@@ -1006,7 +1006,7 @@ def test_existing_case_is_reused_preserves_assignment_and_known_non_null_values(
     )
 
 
-def test_same_mailbox_handoff_transfers_case_and_only_active_work(
+def test_same_mailbox_handoff_transfers_case_tasks_and_active_reviews(
     seeded_db: Session,
 ) -> None:
     agents = seeded_db.scalars(
@@ -1123,7 +1123,7 @@ def test_same_mailbox_handoff_transfers_case_and_only_active_work(
     assert result.case_id == existing.id
     assert existing.assigned_agent_id == new_owner.id
     assert existing.assignment_source is CaseAssignmentSource.GMAIL_HANDOFF
-    assert completed.assigned_agent_id == former_owner.id
+    assert completed.assigned_agent_id == new_owner.id
     assert completed.status is TaskStatus.COMPLETED
     assert completed.created_by_user_id == former_owner.id
     assert completed.completed_by_user_id == former_owner.id

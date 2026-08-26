@@ -77,6 +77,26 @@ describe('LoginPage', () => {
     )
   })
 
+  it('shows the safe disabled-account message returned for valid credentials', async () => {
+    mockedLogin.mockRejectedValue(
+      new ApiError(
+        'This account has been disabled. Contact your manager.',
+        401,
+      ),
+    )
+    renderLogin()
+    fireEvent.change(screen.getByLabelText('Email address'), {
+      target: { value: 'disabled.agent@demo.local' },
+    })
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct-password' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This account has been disabled. Contact your manager.',
+    )
+  })
+
   it.each([
     ['another agent', 'AGENT'],
     ['an agent after a manager', 'MANAGER'],

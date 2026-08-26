@@ -101,7 +101,12 @@ def business_date(value: datetime | None, timezone_name: str) -> date | None:
     return value.astimezone(timezone).date()
 
 
-def task_item(task: Task, agency_timezone: str) -> TaskItem:
+def task_item(
+    task: Task,
+    agency_timezone: str,
+    dismissed_attribution: tuple[User, datetime] | None = None,
+) -> TaskItem:
+    dismissed_by, dismissed_at = dismissed_attribution or (None, None)
     return TaskItem(
         id=task.id,
         case_id=task.case_id,
@@ -118,7 +123,42 @@ def task_item(task: Task, agency_timezone: str) -> TaskItem:
         is_manual=task.created_by_user_id is not None,
         created_by=agent_brief(task.created_by) if task.created_by else None,
         completed_by=agent_brief(task.completed_by) if task.completed_by else None,
+        dismissed_at=dismissed_at,
+        dismissed_by=agent_brief(dismissed_by) if dismissed_by else None,
     )
+
+
+def dismissed_task_attributions(db: Session, tasks: list[Task]) -> dict[int, tuple[User, datetime]]:
+    """Resolve current dismissed-state actors in one audit query for a Task collection."""
+    task_ids = [task.id for task in tasks if task.status is TaskStatus.DISMISSED]
+    if not task_ids:
+        return {}
+
+    events = db.scalars(
+        select(AuditEvent)
+        .options(joinedload(AuditEvent.actor))
+        .where(
+            AuditEvent.task_id.in_(task_ids),
+            AuditEvent.event_type == "TASK_STATUS_CHANGED",
+        )
+        .order_by(
+            AuditEvent.task_id.asc(),
+            AuditEvent.created_at.desc(),
+            AuditEvent.id.desc(),
+        )
+    ).all()
+    latest_seen: set[int] = set()
+    attributions: dict[int, tuple[User, datetime]] = {}
+    for event in events:
+        if event.task_id is None or event.task_id in latest_seen:
+            continue
+        latest_seen.add(event.task_id)
+        if (
+            event.event_metadata.get("new_status") == TaskStatus.DISMISSED.value
+            and event.actor is not None
+        ):
+            attributions[event.task_id] = (event.actor, event.created_at)
+    return attributions
 
 
 def task_due_at(value: date | None, timezone_name: str) -> datetime | None:
@@ -399,6 +439,7 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
     ).all()
     base = case_item(case, current.agency.timezone, current).model_dump()
     completion_blockers = case_completion_blockers(case)
+    dismissed_attributions = dismissed_task_attributions(db, list(case.tasks))
     is_assigned_agent = (
         current.user.role is UserRole.AGENT and case.assigned_agent_id == current.user.id
     )
@@ -453,7 +494,14 @@ def get_case_detail(db: Session, current: AuthContext, case_id: int) -> CaseDeta
             for message in case.messages
             for attachment in message.attachments
         ],
-        tasks=[task_item(task, current.agency.timezone) for task in case.tasks],
+        tasks=[
+            task_item(
+                task,
+                current.agency.timezone,
+                dismissed_attributions.get(task.id),
+            )
+            for task in case.tasks
+        ],
         evidence=[
             EvidenceItem(
                 id=evidence.id,
@@ -529,6 +577,7 @@ def assign_case(
                 "previous_assignee_id": previous_assignee_id,
                 "new_assignee_id": assignee.id,
                 "active_tasks_transferred": ownership.active_tasks_reassigned,
+                "terminal_tasks_transferred": ownership.terminal_tasks_reassigned,
                 "active_reviews_transferred": ownership.active_reviews_reassigned,
                 "source_messages_linked": ownership.source_messages_linked,
                 "ownership_conflicts_reconciled": (ownership.ownership_conflicts_reconciled),
@@ -598,8 +647,16 @@ def list_tasks(
         .offset((page - 1) * page_size)
         .limit(page_size)
     ).all()
+    dismissed_attributions = dismissed_task_attributions(db, list(tasks))
     return TaskListResponse(
-        items=[task_item(task, current.agency.timezone) for task in tasks],
+        items=[
+            task_item(
+                task,
+                current.agency.timezone,
+                dismissed_attributions.get(task.id),
+            )
+            for task in tasks
+        ],
         page=page_info(page, page_size, total),
     )
 
@@ -713,14 +770,24 @@ def update_task(db: Session, current: AuthContext, task_id: int, update: TaskUpd
             },
         )
     if not status_changed:
-        return task_item(task, current.agency.timezone)
+        dismissed_attributions = dismissed_task_attributions(db, [task])
+        return task_item(
+            task,
+            current.agency.timezone,
+            dismissed_attributions.get(task.id),
+        )
 
     if status_changed and task.source_message is not None:
         enqueue_for_message(db, task.source_message)
 
     db.commit()
     db.refresh(task)
-    return task_item(task, current.agency.timezone)
+    dismissed_attributions = dismissed_task_attributions(db, [task])
+    return task_item(
+        task,
+        current.agency.timezone,
+        dismissed_attributions.get(task.id),
+    )
 
 
 def list_reviews(

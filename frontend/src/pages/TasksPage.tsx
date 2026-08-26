@@ -20,6 +20,7 @@ import {
 } from '../lib/format'
 import { getAgents, getTasks, updateTask } from '../lib/api'
 import { getEffectiveTimezone } from '../lib/timezone'
+import { terminalTaskOverrideMessage } from '../lib/task-status'
 import type { TaskStatus } from '../lib/types'
 
 type TaskView =
@@ -206,6 +207,12 @@ export function TasksPage() {
                         {formatDate(task.completed_at, timezone)}
                       </p>
                     )}
+                    {task.dismissed_by && task.dismissed_at && (
+                      <p className="mt-1 text-xs font-normal text-slate-600">
+                        Dismissed by {task.dismissed_by.full_name} ·{' '}
+                        {formatDate(task.dismissed_at, timezone)}
+                      </p>
+                    )}
                   </td>
                   <td className="px-4 py-4" data-label="Client / policy">
                     <a
@@ -247,12 +254,22 @@ export function TasksPage() {
                         className="px-2 py-1.5"
                         value={task.status}
                         disabled={statusMutation.isPending}
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          const nextStatus = event.target.value as TaskStatus
+                          const confirmation = terminalTaskOverrideMessage(
+                            task,
+                            auth.data!.user.id,
+                            nextStatus,
+                          )
+                          if (confirmation && !window.confirm(confirmation)) {
+                            event.currentTarget.value = task.status
+                            return
+                          }
                           statusMutation.mutate({
                             id: task.id,
-                            status: event.target.value as TaskStatus,
+                            status: nextStatus,
                           })
-                        }
+                        }}
                       >
                         {['OPEN', 'IN_PROGRESS', 'COMPLETED', 'DISMISSED'].map(
                           (status) => (

@@ -30,6 +30,7 @@ import {
 import { formatBusinessDate, formatDate } from '../lib/format'
 import { evidenceSourceLabel, humanFieldLabel } from '../lib/humanize'
 import { getEffectiveTimezone } from '../lib/timezone'
+import { terminalTaskOverrideMessage } from '../lib/task-status'
 import {
   assignCase,
   completeCase,
@@ -868,6 +869,12 @@ export function CaseDetailPage() {
                         {formatDate(task.completed_at, timezone)}
                       </p>
                     )}
+                    {task.dismissed_by && task.dismissed_at && (
+                      <p className="mt-1 text-xs text-slate-600">
+                        Dismissed by {task.dismissed_by.full_name} ·{' '}
+                        {formatDate(task.dismissed_at, timezone)}
+                      </p>
+                    )}
                   </div>
                   <div className="w-full shrink-0 border-t border-slate-100 pt-3 text-left sm:w-auto sm:border-t-0 sm:pt-0 sm:text-right">
                     <StatusBadge status={task.status} />
@@ -883,12 +890,22 @@ export function CaseDetailPage() {
                         className="mt-2 block w-full border border-slate-300 bg-white px-2 py-1.5 text-sm sm:w-auto"
                         value={task.status}
                         disabled={taskMutation.isPending}
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          const nextStatus = event.target.value as TaskStatus
+                          const confirmation = terminalTaskOverrideMessage(
+                            task,
+                            auth.data!.user.id,
+                            nextStatus,
+                          )
+                          if (confirmation && !window.confirm(confirmation)) {
+                            event.currentTarget.value = task.status
+                            return
+                          }
                           taskMutation.mutate({
                             id: task.id,
-                            status: event.target.value as TaskStatus,
+                            status: nextStatus,
                           })
-                        }
+                        }}
                       >
                         {['OPEN', 'IN_PROGRESS', 'COMPLETED', 'DISMISSED'].map(
                           (status) => (

@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.time import utc_now
 from app.services.audit import record_audit_event
 from app.services.auth import (
+    DisabledAccountError,
     authenticate_user,
     change_password,
     create_session,
@@ -50,7 +51,13 @@ def auth_response(current_user, csrf_token: str) -> AuthResponse:
 
 @router.post("/login", response_model=AuthResponse)
 def login(data: LoginRequest, response: Response, db: DbSession) -> AuthResponse:
-    user = authenticate_user(db, str(data.email), data.password)
+    try:
+        user = authenticate_user(db, str(data.email), data.password)
+    except DisabledAccountError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This account has been disabled. Contact your manager.",
+        ) from None
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

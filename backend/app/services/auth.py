@@ -31,17 +31,19 @@ class AuthContext:
     csrf_token: str
 
 
+class DisabledAccountError(Exception):
+    """The supplied credentials are valid, but this normal user is disabled."""
+
+
 def authenticate_user(db: Session, email: str, password: str) -> User | None:
     user = db.scalar(select(User).where(User.email == normalize_email(email)))
     password_hash = user.password_hash if user is not None else dummy_password_hash
     password_valid = verify_password(password, password_hash)
-    if (
-        user is None
-        or not password_valid
-        or not user.is_active
-        or user.removed_at is not None
-        or not user.agency.is_active
-    ):
+    if user is None or not password_valid:
+        return None
+    if not user.is_active and user.removed_at is None and user.agency.is_active:
+        raise DisabledAccountError
+    if user.removed_at is not None or not user.agency.is_active:
         return None
     return user
 

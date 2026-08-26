@@ -89,6 +89,8 @@ class TaskItem(BaseModel):
     is_manual: bool
     created_by: AgentBrief | None
     completed_by: AgentBrief | None
+    dismissed_at: datetime | None
+    dismissed_by: AgentBrief | None
 
 
 class TaskListResponse(BaseModel):

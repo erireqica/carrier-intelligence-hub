@@ -44,6 +44,7 @@ class MailboxReconciliationResult:
     label_syncs_removed: int = 0
     cases_reassigned: int = 0
     active_tasks_reassigned: int = 0
+    terminal_tasks_reassigned: int = 0
     active_reviews_reassigned: int = 0
 
 
@@ -440,7 +441,7 @@ def reconcile_duplicate_gmail_connections(db: Session) -> MailboxReconciliationR
     totals = MailboxReconciliationResult()
     logical_mailboxes = connections_removed = messages_removed = label_syncs_removed = 0
     attachments_removed = evidence_removed = 0
-    cases_reassigned = tasks_reassigned = reviews_reassigned = 0
+    cases_reassigned = tasks_reassigned = terminal_tasks_reassigned = reviews_reassigned = 0
     duplicate_tasks_reconciled = duplicate_reviews_reconciled = 0
     from app.services.message_processing import reconcile_case_operational_ownership
 
@@ -462,6 +463,7 @@ def reconcile_duplicate_gmail_connections(db: Session) -> MailboxReconciliationR
         )
         group_cases_reassigned = 0
         group_tasks_reassigned = 0
+        group_terminal_tasks_reassigned = 0
         group_reviews_reassigned = 0
         (
             group_messages_removed,
@@ -524,8 +526,10 @@ def reconcile_duplicate_gmail_connections(db: Session) -> MailboxReconciliationR
                     cases_reassigned += 1
                     group_cases_reassigned += 1
                 tasks_reassigned += result.active_tasks_reassigned
+                terminal_tasks_reassigned += result.terminal_tasks_reassigned
                 reviews_reassigned += result.active_reviews_reassigned
                 group_tasks_reassigned += result.active_tasks_reassigned
+                group_terminal_tasks_reassigned += result.terminal_tasks_reassigned
                 group_reviews_reassigned += result.active_reviews_reassigned
 
         for connection in group:
@@ -552,6 +556,7 @@ def reconcile_duplicate_gmail_connections(db: Session) -> MailboxReconciliationR
                 "label_syncs_removed": group_label_syncs_removed,
                 "cases_reassigned": group_cases_reassigned,
                 "active_tasks_reassigned": group_tasks_reassigned,
+                "terminal_tasks_reassigned": group_terminal_tasks_reassigned,
                 "active_reviews_reassigned": group_reviews_reassigned,
             },
         )
@@ -568,6 +573,7 @@ def reconcile_duplicate_gmail_connections(db: Session) -> MailboxReconciliationR
         label_syncs_removed=label_syncs_removed,
         cases_reassigned=cases_reassigned,
         active_tasks_reassigned=tasks_reassigned,
+        terminal_tasks_reassigned=terminal_tasks_reassigned,
         active_reviews_reassigned=reviews_reassigned,
     )
     return totals

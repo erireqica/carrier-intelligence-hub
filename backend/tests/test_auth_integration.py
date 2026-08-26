@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -143,11 +143,40 @@ def test_invalid_disabled_expired_and_revoked_sessions(
     assert disabled is not None
     disabled.is_active = False
     db.commit()
+    sessions_before = db.scalar(
+        select(func.count()).select_from(AuthSession).where(AuthSession.user_id == disabled.id)
+    )
+    login_events_before = db.scalar(
+        select(func.count())
+        .select_from(AuditEvent)
+        .where(AuditEvent.actor_user_id == disabled.id, AuditEvent.event_type == "USER_LOGIN")
+    )
     denied = client.post(
         "/api/v1/auth/login",
         json={"email": disabled.email, "password": TEST_PASSWORD},
     )
     assert denied.status_code == 401
+    assert denied.json() == {"detail": "This account has been disabled. Contact your manager."}
+    wrong_disabled = client.post(
+        "/api/v1/auth/login",
+        json={"email": disabled.email, "password": "wrong-password"},
+    )
+    assert wrong_disabled.status_code == 401
+    assert wrong_disabled.json() == {"detail": "Invalid email or password"}
+    assert (
+        db.scalar(
+            select(func.count()).select_from(AuthSession).where(AuthSession.user_id == disabled.id)
+        )
+        == sessions_before
+    )
+    assert (
+        db.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.actor_user_id == disabled.id, AuditEvent.event_type == "USER_LOGIN")
+        )
+        == login_events_before
+    )
 
     auth = login(client, "agent.one@demo.local")
     assert auth["user"]["role"] == UserRole.AGENT

@@ -17,7 +17,7 @@ import {
 } from '../components/ui'
 import { Avatar } from '../components/Avatar'
 import { formatDate } from '../lib/format'
-import { getCases } from '../lib/api'
+import { getAgents, getCases } from '../lib/api'
 import { getEffectiveTimezone } from '../lib/timezone'
 import type { CaseLifecycle } from '../lib/types'
 
@@ -46,6 +46,8 @@ export function CasesPage() {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [priority, setPriority] = useState('')
+  const [agentId, setAgentId] = useState('')
+  const isManager = auth.data?.user.role === 'MANAGER'
   const lifecycleParam = searchParams.get('lifecycle')
   const lifecycle: CaseLifecycle = ['COMPLETED', 'DISMISSED'].includes(
     lifecycleParam ?? '',
@@ -68,9 +70,15 @@ export function CasesPage() {
   if (search) params.set('search', search)
   if (status) params.set('policy_status', status)
   if (priority) params.set('priority', priority)
+  if (agentId) params.set('assigned_agent_id', agentId)
   const cases = useQuery({
-    queryKey: ['cases', search, status, priority, lifecycle, page],
+    queryKey: ['cases', search, status, priority, agentId, lifecycle, page],
     queryFn: () => getCases(params.toString()),
+  })
+  const agents = useQuery({
+    queryKey: ['manager', 'agents'],
+    queryFn: getAgents,
+    enabled: isManager,
   })
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -82,6 +90,7 @@ export function CasesPage() {
     return (
       <ErrorState message={cases.error.message} retry={() => cases.refetch()} />
     )
+  const eligibleAgents = agents.data?.filter((agent) => agent.role === 'AGENT')
 
   return (
     <div className="app-page space-y-6">
@@ -128,7 +137,7 @@ export function CasesPage() {
       </div>
       <form
         onSubmit={submit}
-        className="filter-toolbar grid gap-3 lg:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_180px_160px_auto]"
+        className="filter-toolbar grid gap-3 lg:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_minmax(150px,180px)_minmax(140px,160px)_minmax(160px,180px)_auto]"
       >
         <label className="sr-only" htmlFor="case-search">
           Search cases
@@ -185,11 +194,34 @@ export function CasesPage() {
             </option>
           ))}
         </select>
+        {isManager && (
+          <>
+            <label className="sr-only" htmlFor="case-agent">
+              Assigned agent
+            </label>
+            <select
+              id="case-agent"
+              className="px-3 py-2 text-sm"
+              value={agentId}
+              onChange={(event) => {
+                setAgentId(event.target.value)
+                navigate(lifecycle)
+              }}
+            >
+              <option value="">All agents</option>
+              {eligibleAgents?.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.full_name}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
         <div className="flex gap-2">
           <Button type="submit" variant="secondary">
             Search
           </Button>
-          {(search || status || priority) && (
+          {(search || status || priority || agentId) && (
             <Button
               type="button"
               variant="secondary"
@@ -198,6 +230,7 @@ export function CasesPage() {
                 setSearch('')
                 setStatus('')
                 setPriority('')
+                setAgentId('')
                 navigate(lifecycle)
               }}
             >
@@ -209,7 +242,7 @@ export function CasesPage() {
       {cases.data.items.length === 0 ? (
         <EmptyState
           title={
-            search || status || priority
+            search || status || priority || agentId
               ? 'No cases match your filters'
               : lifecycle === 'COMPLETED'
                 ? 'No completed cases yet'
@@ -218,7 +251,7 @@ export function CasesPage() {
                   : 'No active carrier cases yet'
           }
           description={
-            search || status || priority
+            search || status || priority || agentId
               ? 'Adjust or reset the search and filters.'
               : lifecycle === 'COMPLETED'
                 ? 'Cases explicitly completed by their assigned agent will appear here.'

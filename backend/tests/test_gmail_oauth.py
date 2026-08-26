@@ -760,7 +760,7 @@ def test_reconnect_preserves_refresh_token_and_disconnected_mailbox_is_transferr
     assert case.assignment_source is CaseAssignmentSource.GMAIL_HANDOFF
     assert open_task.assigned_agent_id == auth["user"]["id"]
     assert open_review.assigned_reviewer_id == auth["user"]["id"]
-    assert completed_task.assigned_agent_id == manager.id
+    assert completed_task.assigned_agent_id == auth["user"]["id"]
     assert resolved_review.assigned_reviewer_id == manager.id
 
     login(client, other_owner.email)

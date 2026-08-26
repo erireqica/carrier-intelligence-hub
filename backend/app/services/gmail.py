@@ -292,7 +292,7 @@ def complete_oauth(
         and former_owner_id is not None
         and former_owner_id != current.user.id
     )
-    transferred_cases = transferred_tasks = transferred_reviews = 0
+    transferred_cases = transferred_tasks = transferred_terminal_tasks = transferred_reviews = 0
     if ownership_transfer:
         from app.services.message_processing import reconcile_case_operational_ownership
 
@@ -315,6 +315,7 @@ def complete_oauth(
             if result.previous_assignee_id != current.user.id:
                 transferred_cases += 1
             transferred_tasks += result.active_tasks_reassigned
+            transferred_terminal_tasks += result.terminal_tasks_reassigned
             transferred_reviews += result.active_reviews_reassigned
         connection.user_id = current.user.id
         # A mailbox handoff installs only the new owner's fresh authorization.
@@ -362,13 +363,14 @@ def complete_oauth(
             agency_id=connection.agency_id,
             actor_user_id=current.user.id,
             event_type="GMAIL_MAILBOX_OWNERSHIP_TRANSFERRED",
-            description="Gmail mailbox ownership and active policy work transferred",
+            description="Gmail mailbox ownership and policy work transferred",
             metadata={
                 "connection_id": connection.id,
                 "former_owner_id": former_owner_id,
                 "new_owner_id": current.user.id,
                 "cases_transferred": transferred_cases,
                 "active_tasks_transferred": transferred_tasks,
+                "terminal_tasks_transferred": transferred_terminal_tasks,
                 "active_reviews_transferred": transferred_reviews,
             },
         )
